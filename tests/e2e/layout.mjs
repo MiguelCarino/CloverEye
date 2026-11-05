@@ -66,9 +66,11 @@ async function audit(page, label) {
         const [a, ra] = boxes[i];
         const [b, rb] = boxes[j];
         if (a.contains(b) || b.contains(a)) continue;
-        // Elements in different stacking layers (an open dialog over the page) are fine.
-        const da = a.closest('dialog[open]');
-        const db = b.closest('dialog[open]');
+        // Elements in different stacking layers (an open dialog, the gallery or
+        // the floating reply form over the page) are fine.
+        const LAYER = 'dialog[open], .gallery, .composer, .hover-preview';
+        const da = a.closest(LAYER);
+        const db = b.closest(LAYER);
         if (da !== db) continue;
         const ix = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left);
         const iy = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
@@ -173,27 +175,46 @@ for (const width of widths) {
       await page.waitForTimeout(300);
       await audit(page, tag('8d-thread-file-open'));
     }
+    // the reply form and the gallery, on the thread
+    await page.locator('[data-key="thread-reply"]').click();
+    await page.waitForSelector('.composer .captcha__stage');
+    await page.waitForTimeout(250);
+    await audit(page, tag('8e-reply-form'));
+    await page.locator('[data-key="compose-close"]').click();
+    await page.keyboard.press('g');
+    await page.waitForSelector('.gallery .gallery__media');
+    await page.waitForTimeout(250);
+    await audit(page, tag('8f-gallery'));
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
     await page.keyboard.press('Escape');
     await page.waitForSelector('.catalog-card');
-    // split view: a second thread beside the catalog
-    await page.locator('[data-key="panel-toggle"]').click();
-    await page.waitForSelector('.panel--split .catalog-card');
-    await page.locator('.panel--split .catalog-card').nth(2).click();
-    await page.waitForSelector('.panel--split .thread .post');
-    await page.waitForTimeout(300);
-    await audit(page, tag('8e-split'));
-    await page.locator('[data-key="panel-close"]').click();
+    // panes: four, in two rows (on a narrow window: tabs)
+    for (const n of [2, 3, 4]) {
+      if (narrow && (await page.locator('[data-key="pane-tab-0"]').count())) await page.locator('[data-key="pane-tab-0"]').click();
+      await page.locator('[data-pane="0"] .catalog__item [data-key^="beside-"]').nth(n).click();
+      await page.waitForTimeout(150);
+    }
+    await page.waitForSelector('.pane .thread .post');
+    if (!narrow) await page.locator('[data-key="rows-2"]').click();
+    await page.waitForTimeout(350);
+    await audit(page, tag('8g-four-panes'));
+    for (let i = 0; i < 4 && (await page.locator('[data-key="p1-pane-close"]').count()); i++) {
+      if (narrow) await page.locator('[data-key="pane-tab-1"]').click();
+      await page.locator('[data-key="p1-pane-close"]').click();
+      await page.waitForTimeout(120);
+    }
     await page.waitForTimeout(150);
     if (!narrow) {
       await page.locator('[data-key="rail-toggle"]').click();
       await page.waitForTimeout(200);
-      await audit(page, tag('8f-sidebar-hidden'));
+      await audit(page, tag('8h-sidebar-hidden'));
       await page.locator('[data-key="rail-toggle"]').click();
       await page.waitForTimeout(200);
     } else {
       await openRail();
       // the rail is an overlay over a scrim here: picture only, no overlap audit
-      await page.screenshot({ path: `${OUT}/${tag('8f-rail-watched')}.png` });
+      await page.screenshot({ path: `${OUT}/${tag('8h-rail-watched')}.png` });
       await page.keyboard.press('Escape');
       await page.waitForTimeout(200);
     }
@@ -201,7 +222,7 @@ for (const width of widths) {
     await page.locator('[data-key="all-boards"]').click();
     await page.waitForSelector('.board-list .star');
     await page.waitForTimeout(250);
-    await audit(page, tag('8g-all-boards'));
+    await audit(page, tag('8i-all-boards'));
     await openRail();
     await page.locator('[data-key="settings"]').click();
     await page.waitForSelector('.settings');

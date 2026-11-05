@@ -474,30 +474,103 @@ const settled = (page) => page.waitForTimeout(300);
   await settled(page);
   check('watch: opening the thread clears the badge', (await page.locator('[data-key^="watched-g-"] .badge').count()) === 0);
   check('watch: saved', await page.evaluate(() => JSON.parse(localStorage.getItem('clovereye.settings')).watched.length === 1));
-  // posting goes to the site's own page (the mock only records it)
-  await page.locator('[data-key="thread-reply"]').click(); await settled(page);
-  check('post: Reply asks the bridge to open the site’s post form', (await page.locator('#toast').textContent()).includes('post form'));
+  // replying from inside the app: the form, the captcha, a file
+  await page.locator('[data-key="thread-reply"]').click();
+  await page.waitForSelector('.composer .captcha__stage');
+  check('post: Reply opens the in-app form with the site’s captcha', (await page.locator('.composer').count()) === 1 && (await page.locator('.captcha__prompt').textContent()) === 'Pick the 3');
   await page.locator('.thread .post__no--reply').nth(1).click(); await settled(page);
-  // split view
+  const quoted = await page.locator('[data-key="compose-com"]').inputValue();
+  check('post: a post’s No. quotes it in the form', /^>>\d+\n/.test(quoted), JSON.stringify(quoted));
+  await page.locator('[data-key="compose-com"]').fill('');
+  await page.locator('[data-key="compose-submit"]').click(); await settled(page);
+  check('post: an empty post is stopped before sending', (await page.locator('.composer__problems').textContent()).includes('Write a comment'));
+  await page.locator('[data-key="compose-com"]').fill('Testing the reply form.');
+  await page.locator('[data-key="compose-file"]').setInputFiles({ name: 'pic.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0, 0, 0, 0]) });
+  await settled(page);
+  check('post: the attached file is listed', (await page.locator('.composer__filename').textContent()).includes('pic.png'));
+  // a wrong answer: the 1st choice, then the 1st choice
+  const solve = async (picks) => {
+    for (const n of picks) {
+      await page.locator('[data-key="compose-slider"]').focus();
+      await page.locator('[data-key="compose-slider"]').fill(String(n));
+      await page.locator('[data-key="compose-captcha-next"]').click();
+      await settled(page);
+    }
+  };
+  await page.locator('[data-key="compose-submit"]').click(); await settled(page);
+  check('post: an unfinished captcha is stopped before sending', (await page.locator('.composer__problems').textContent()).includes('Finish the captcha'));
+  await solve([1, 1]);
+  check('post: each step is kept in the progress row', (await page.locator('.captcha__steps li.done').count()) === 2);
+  await page.locator('[data-key="compose-submit"]').click(); await page.waitForTimeout(700);
+  check('post: the site’s error comes back into the form', (await page.locator('.composer__msg').textContent()).includes('mistyped'));
+  check('post: the text is kept after an error', (await page.locator('[data-key="compose-com"]').inputValue()) === 'Testing the reply form.');
+  await page.waitForSelector('[data-key="compose-slider"]');
+  // the keyboard way: arrows through the choices, Enter keeps one
+  await page.locator('[data-key="compose-slider"]').focus();
+  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Enter'); await settled(page);
+  check('post: ←/→ and Enter answer a step', (await page.locator('.captcha__steps li.done').count()) === 1);
+  await solve([2]);
+  await page.locator('[data-key="compose-submit"]').click(); await page.waitForTimeout(800);
+  check('post: a solved captcha posts and closes the form', (await page.locator('.composer').count()) === 0);
+  const sent = await page.evaluate(() => window.__ceLastPost || null);
+  void sent;
+  const youSaved = await page.evaluate(() => JSON.parse(localStorage.getItem('clovereye.settings')).yous.length === 1);
+  check('post: the post is remembered as (You)', youSaved);
+  // gallery: G opens every file of the thread
+  await page.keyboard.press('g');
+  await page.waitForSelector('.gallery .gallery__media', { timeout: 3000 }).catch(() => {});
+  const total = await page.locator('.gallery__thumb').count();
+  check('gallery: G opens the thread’s files', total >= 1, String(total));
+  const c1 = await page.locator('.gallery__count').textContent();
+  await page.keyboard.press('ArrowRight');
+  const c2 = await page.locator('.gallery__count').textContent();
+  check('gallery: → moves to the next file', total < 2 || c1 !== c2, `${c1} → ${c2}`);
+  await page.locator('.gallery__stage').hover();
+  await page.mouse.wheel(0, 120); await page.waitForTimeout(250);
+  const c3 = await page.locator('.gallery__count').textContent();
+  check('gallery: the mouse wheel moves too', total < 3 || c3 !== c2, `${c2} → ${c3}`);
+  const [download] = await Promise.all([page.waitForEvent('download', { timeout: 3000 }).catch(() => null), page.keyboard.press('d')]);
+  check('gallery: D saves the file', Boolean(download));
+  await page.keyboard.press('Escape'); await settled(page);
+  check('gallery: Esc closes it', (await page.locator('.gallery').count()) === 0);
+  // panes: up to five, in one to three rows
   await page.locator('[data-key="back-catalog"]').click(); await page.waitForSelector('.catalog-card');
   await page.locator('.catalog__item [data-key^="beside-"]').nth(2).click();
-  await page.waitForSelector('.panel--split .thread .post');
-  check('split: a thread opens beside the catalog', (await page.locator('.centre .catalog-card').count()) === 15 && (await page.locator('.panel--split .thread .post').count()) >= 1);
-  await page.locator('.catalog-card').nth(3).click({ modifiers: ['Control'] });
-  await page.waitForSelector('.panel--split .thread .post');
-  check('split: Ctrl+click replaces the thread beside', true);
-  await page.locator('[data-key="split-swap"]').click(); await settled(page);
-  check('split: swap puts the thread in the main pane', (await page.locator('.centre .thread').count()) === 1 && (await page.locator('.panel--split .catalog-card').count()) === 15);
-  const before = await page.locator('.panel--split').evaluate((el) => el.getBoundingClientRect().width);
-  await page.locator('[data-key="split-resize"]').focus();
-  await page.keyboard.press('ArrowLeft'); await page.keyboard.press('ArrowLeft'); await settled(page);
-  const after = await page.locator('.panel--split').evaluate((el) => el.getBoundingClientRect().width);
-  check('split: the divider resizes with the keyboard', after > before, `${before} → ${after}`);
-  check('split: width saved', await page.evaluate(() => JSON.parse(localStorage.getItem('clovereye.settings')).ui.splitWidth > 520));
-  await page.locator('[data-key="panel-close"]').click(); await settled(page);
-  check('split: closes', (await page.locator('.panel--split').count()) === 0);
+  await page.waitForSelector('[data-pane="1"] .thread .post');
+  check('panes: a thread opens in a second pane', (await page.locator('.pane').count()) === 2);
+  await page.locator('[data-pane="0"] .catalog-card').nth(3).click({ modifiers: ['Control'] });
+  await page.waitForSelector('[data-pane="1"] .thread .post');
+  check('panes: Ctrl+click opens another pane beside', (await page.locator('.pane').count()) === 3);
+  await page.locator('[data-key="panel-toggle"]').click(); await settled(page);
+  await page.locator('[data-key="panel-toggle"]').click(); await settled(page);
+  check('panes: five panes', (await page.locator('.pane').count()) === 5);
+  await page.locator('[data-key="rows-2"]').click(); await settled(page);
+  check('panes: two rows', (await page.locator('.workspace__row').count()) === 2);
+  await page.locator('[data-key="rows-3"]').click(); await settled(page);
+  check('panes: three rows', (await page.locator('.workspace__row').count()) === 3);
+  check('panes: rows saved', await page.evaluate(() => JSON.parse(localStorage.getItem('clovereye.settings')).ui.rows === 3));
+  const popup = page.context().waitForEvent('page', { timeout: 3000 }).catch(() => null);
+  await page.locator('[data-key="panel-toggle"]').click(); // a sixth goes to a new window
+  const win = await popup;
+  check('windows: a sixth pane opens in a new window', Boolean(win) && (win?.url() || '').includes('#panes='), win?.url());
+  if (win) {
+    await win.waitForSelector('.pane', { timeout: 5000 }).catch(() => {});
+    check('windows: the new window shows its pane, without setup', (await win.locator('.pane').count()) === 1 && !(await win.locator('#setup').isVisible()));
+    await win.close();
+  }
+  const pop2 = page.context().waitForEvent('page', { timeout: 3000 }).catch(() => null);
+  await page.locator('[data-key="p1-pane-popout"]').click();
+  const win2 = await pop2;
+  check('windows: a pane pops out into its own window', Boolean(win2) && (await page.locator('.pane').count()) === 4);
+  await win2?.close();
+  for (let i = 0; i < 6 && (await page.locator('[data-key="p1-pane-close"]').count()); i++) {
+    await page.locator('[data-key="p1-pane-close"]').click(); await settled(page);
+  }
+  check('panes: closed back to one', (await page.locator('.pane').count()) === 1);
   // hover preview
-  await page.locator('[data-key="back-catalog"]').click(); await page.waitForSelector('.catalog-card');
+  if (await page.locator('[data-key="back-catalog"]').count()) await page.locator('[data-key="back-catalog"]').click();
+  await page.waitForSelector('.catalog-card');
   // scrolling hides a preview on purpose, so scroll first, then rest the mouse
   await page.locator('.catalog-card__thumb[data-preview]').first().scrollIntoViewIfNeeded();
   await page.mouse.move(1, 1); await settled(page);

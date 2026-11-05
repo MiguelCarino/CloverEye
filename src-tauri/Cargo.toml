@@ -19,6 +19,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clovereye-fetch = { path = "../crates/fetch" }
 clovereye-ffcheck = { path = "../crates/ffcheck" }
+tokio = { version = "1", features = ["sync", "time"] }
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
 
 [profile.release]
 codegen-units = 1

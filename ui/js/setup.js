@@ -48,7 +48,7 @@ const videoPrefs = { volume: 0.6, muted: false };
  *  the app, local pictures in the browser mock); without them the local
  *  `_thumb` field of the setup sample is used. Clicking the file expands it
  *  in place: the full image, or a player for WebM/MP4. */
-export function renderPost(post, { backrefs = [], onQuote = null, onReply = null, thumb = null, full = null, idPrefix = 'sample-p' } = {}) {
+export function renderPost(post, { backrefs = [], onQuote = null, onReply = null, isYou = () => false, thumb = null, full = null, idPrefix = 'sample-p' } = {}) {
   const lines = parseComment(post.com || '');
   const com = h('div', { class: 'post__com' });
   for (const line of lines) {
@@ -58,10 +58,10 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
         row.append(
           h('button', {
             type: 'button',
-            class: 'seg-quotelink',
+            class: `seg-quotelink${seg.target && isYou(seg.target) ? ' seg-quotelink--you' : ''}`,
             'data-target': seg.target ?? '',
             onclick: () => onQuote?.(seg.target),
-            text: seg.text,
+            text: seg.target && isYou(seg.target) ? `${seg.text} (You)` : seg.text,
           }),
         );
       } else if (seg.type === 'code') {
@@ -90,6 +90,7 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
     { class: 'post__meta' },
     h('span', { class: 'post__name', text: decodeEntities(post.name || 'Anonymous') }),
     post.trip ? h('span', { text: post.trip }) : null,
+    isYou(post.no) ? h('span', { class: 'pill pill--you', text: 'You' }) : null,
     post.capcode ? h('span', { class: 'pill', text: post.capcode }) : null,
     h('span', { text: post.now || '' }),
     onReply
@@ -189,7 +190,7 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
     : null;
   return h(
     'article',
-    { class: `post${post.resto === 0 ? ' post--op' : ''}`, id: `${idPrefix}${post.no}`, 'data-no': post.no },
+    { class: `post${post.resto === 0 ? ' post--op' : ''}${isYou(post.no) ? ' post--you' : ''}`, id: `${idPrefix}${post.no}`, 'data-no': post.no },
     meta,
     post.sub ? h('div', { class: 'post__sub', text: decodeEntities(post.sub) }) : null,
     h('div', { class: 'post__main' }, file, com),

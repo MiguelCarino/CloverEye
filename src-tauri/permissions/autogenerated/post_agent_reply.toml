@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-post-agent-reply"
+description = "Enables the post_agent_reply command without any pre-configured scope."
+commands.allow = ["post_agent_reply"]
+
+[[permission]]
+identifier = "deny-post-agent-reply"
+description = "Denies the post_agent_reply command without any pre-configured scope."
+commands.deny = ["post_agent_reply"]

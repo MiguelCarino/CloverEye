@@ -11,6 +11,10 @@ fn main() {
             "fetch_catalog",
             "fetch_thread",
             "open_post_window",
+            "post_agent",
+            "post_agent_reply",
+            "open_window",
+            "save_media",
         ])),
     )
     .expect("failed to run tauri-build");

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-post-agent"
+description = "Enables the post_agent command without any pre-configured scope."
+commands.allow = ["post_agent"]
+
+[[permission]]
+identifier = "deny-post-agent"
+description = "Denies the post_agent command without any pre-configured scope."
+commands.deny = ["post_agent"]

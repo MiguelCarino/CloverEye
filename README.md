@@ -22,11 +22,12 @@ Licence: [AGPL-3.0](LICENSE). Scope and phases: [docs/SCOPE.md](docs/SCOPE.md).
 | Reading (`ui/js/browse.js`, `browse-model.js`) | Board list, catalog (search, sort, refresh) and threads (backlinks, files expand in place, WebM plays inline, updates itself every 10 s or more while open, stops on closed/archived/404) through `fetch_catalog`/`fetch_thread` and the one queue; thumbnails and files load in the webview from the image host. Checked against the live /g/ catalog and a live thread on 4 November 2026 |
 | Video | WebM and MP4 play inline (one at a time, volume remembered for the session) and keep playing through thread updates; checked live on /wsg/ in WebKitGTK on 5 November 2026 |
 | Hover preview (`ui/js/hover.js`) | Resting the mouse on a thumbnail shows the full image, or plays the video muted, fitted inside the window; Settings → Look turns it off |
-| Split view | Open a thread beside the catalog (the side-by-side button on a card, Ctrl+click or middle-click), swap panes, drag or arrow-key the divider; on a narrow window the second pane fills it |
+| Panes and windows | Up to five panes per window, in one to three rows (the 1/2/3 switch); open a thread beside (the card's button, Ctrl+click, middle-click); each pane can move to a window of its own, which has its own five panes. Windows share one request queue and one settings file (a change in one reaches the others). On a narrow window, tabs switch panes |
+| Gallery | **G** in a thread: every file, one at a time, as large as the window allows; ←/→, J/K, Home/End or the mouse wheel move, **D** saves (Settings → Files folder, else Downloads/CloverEye), Esc or G closes |
 | Sidebar | Hide or show it from the button left of the title; remembered |
 | Favourites | Star boards in All boards |
 | Thread watcher | Watch from a thread; the rail lists watched threads with unread counts, 404 and archived marks; polled at the watch interval through the same queue (open threads update themselves). (You)s and notifications are not built yet |
-| Posting (`open_post_window`) | Reply, quoting a post (its No.), and New thread open the site's own page in a separate window, where the person posts and solves the site's own captcha (SCOPE §3.3). That window can only browse the site and gets no app commands. Not yet tested with a real post |
+| Posting (`post_agent`, `src/post_agent.js`) | Reply, quote (a post's No.) and New thread open CloverEye's own reply form: name, options, subject, comment with the board's limit, a file (pick, drop or paste; location and camera data stripped from JPEG/PNG first), spoiler, checks against `boards.json` before sending, the site's captcha shown and solved in the form, (You)s remembered and the thread watched. The site's captcha and post endpoints sit behind a Cloudflare check that refuses a plain client (403), so a hidden helper window on the site's own page does what the site's form does; when the site wants its human check, that window comes forward for the person to pass. **Not yet tested with a real post**; the human check was seen live but not passed by the tests. When the site asks for hCaptcha, “Post on the site's page instead” opens the site itself |
 | Logo and start-up | An oekaki-style golden clover; a short start-up animation (skipped with reduced motion) |
 | Live API probe (`crates/fetch/examples/probe.rs`) | Run once on 4 November 2026: no 429s; results in [docs/C0-PROBE.md](docs/C0-PROBE.md) |
 
@@ -97,6 +98,7 @@ built on. Query parameters exercise the other states:
 | `?mock-boards=fail` / `fail-once` | Board list fails (always / first try only): Retry and Skip |
 | `?mock-catalog=fail` | Every catalog fails: the error and Try again |
 | `?mock-grow` | Every later fetch of a thread adds one reply (for the watcher) |
+| `?mock-captcha=wait` / `none` | The captcha asks to wait, or is not needed. The mock captcha's right answer is the 3rd choice, then the 2nd |
 | `?mock-ffmpeg=missing` / `partial` / `no-vp9` | ffmpeg absent, optional extras missing, or VP9 missing |
 | `?mock-delay=0` | No artificial delay |
 | `#setup` | Run setup again after it was finished |

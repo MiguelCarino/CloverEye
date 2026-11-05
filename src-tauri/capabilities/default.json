@@ -1,8 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window: the seven app commands the UI calls (open-post-window opens the site's own post page in a separate window, which gets no app commands), window controls for the custom title bar, and opening the site's rules page in the system browser.",
-  "windows": ["main"],
+  "description": "Every CloverEye window (main and the extra ones, w-*): the app commands the UI calls, settings events, window controls for the custom title bar, and opening the site's rules page in the system browser. The hidden post helper is not in this list; it has its own capability with one command.",
+  "windows": [
+    "main",
+    "w-*"
+  ],
   "permissions": [
     "allow-get-settings",
     "allow-set-settings",
@@ -11,13 +14,21 @@
     "allow-fetch-catalog",
     "allow-fetch-thread",
     "allow-open-post-window",
+    "allow-post-agent",
+    "allow-open-window",
+    "allow-save-media",
+    "core:event:default",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
     "core:window:allow-start-dragging",
     {
       "identifier": "opener:allow-open-url",
-      "allow": [{ "url": "https://www.4chan.org/rules" }]
+      "allow": [
+        {
+          "url": "https://www.4chan.org/rules"
+        }
+      ]
     }
   ]
 }

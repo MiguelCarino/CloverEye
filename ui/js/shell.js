@@ -1,51 +1,77 @@
-// The shell (SCOPE §3.1a): rail (favourites, boards, watched threads), the
-// main pane and an optional second pane beside it (split view). Every
-// request goes through the bridge, and from there through the Rust core's
-// single rate-limited queue.
+// The shell (SCOPE §3.1a): the rail (favourites, boards, watched threads)
+// and a workspace of up to five panes, laid out in one to three rows. A pane
+// can move to a window of its own, which has its own panes. Every request
+// goes through the bridge, and from there through the Rust core's single
+// rate-limited queue (shared by every window).
 
 import * as M from './setup-model.js';
 import * as B from './browse-model.js';
+import * as C from './compose-model.js';
 import { h, clear, icon, toast } from './dom.js';
 import { renderSettings } from './settings-view.js';
 import { catalogView, threadView } from './browse.js';
+import { createComposer } from './compose.js';
+import { galleryItems } from './gallery-model.js';
+import { openGallery } from './gallery.js';
 
 /** A catalog is fetched again on its own after this long (manual Refresh
  *  any time; the queue still keeps ≤ 1 request/s). */
 const CATALOG_MAX_AGE_MS = 60_000;
 const NARROW = '(max-width: 900px)';
-/** The main pane keeps at least this much room next to the split pane. */
-const MAIN_MIN = 360;
+export const MAX_PANES = 5;
 
-export function openShell({ settings: initial, boards: initialBoards = null, bridge = null, onBoards = () => {}, onRunSetup, onSave = () => {}, setTitle = () => {} }) {
+/** Splits n panes into rows (row-major): the first rows take the extra. */
+export function paneRows(n, rows) {
+  const r = Math.max(1, Math.min(rows || 1, n || 1, 3));
+  const base = Math.floor(n / r);
+  const extra = n % r;
+  return Array.from({ length: r }, (_, i) => base + (i < extra ? 1 : 0)).filter((k) => k > 0);
+}
+
+export function openShell({
+  settings: initial,
+  boards: initialBoards = null,
+  bridge = null,
+  panes: initialPanes = null,
+  isMain = true,
+  onBoards = () => {},
+  onRunSetup,
+  onSave = () => {},
+  setTitle = () => {},
+}) {
   let settings = initial;
   let boards = initialBoards;
   const root = document.getElementById('shell');
   const titleOf = (code) => boards?.find((b) => b.board === code)?.title || '';
+  let paneSeq = 0;
+  const newPane = (view) => ({ id: ++paneSeq, view, catView: { query: '', sort: 'bump' } });
   const st = {
-    view: M.firstDestination(settings, boards),
-    split: null, // a second view beside the main one
+    panes: (initialPanes?.length ? initialPanes : [M.firstDestination(settings, boards)]).slice(0, MAX_PANES).map(newPane),
+    focus: 0,
     rail: false, // the narrow-window overlay
     boardList: boards ? 'ok' : 'idle', // idle | loading | ok | error
     boardError: '',
     cats: {}, // board → { status, threads, error, at, freshness }
-    catViews: { main: { query: '', sort: 'bump' }, split: { query: '', sort: 'bump' } },
     threads: {}, // "board/no" → { status, posts, error, at, freshness, gone, fresh }
     timers: new Map(), // "board/no" → timeout, for threads open in a pane
-    scroll: {}, // pane:view key → scrollTop
+    scroll: {}, // "paneId:viewKey" → scrollTop
     watchBusy: false,
   };
   const ac = new AbortController();
   let closed = false;
   let watchTimer = null;
   let saveTimer = null;
+  let boardWaiters = [];
 
   const tkey = (board, no) => `${board}/${no}`;
   const viewKey = (v) => (!v ? '' : v.kind === 'board' ? `b:${v.board}` : v.kind === 'thread' ? `t:${tkey(v.board, v.no)}` : v.kind);
   const intervalMs = () => Math.max(M.MIN_WATCH_INTERVAL, settings.watch?.intervalSec || M.MIN_WATCH_INTERVAL) * 1000;
-  const openThreads = () =>
-    [st.view, st.split].filter((v) => v?.kind === 'thread').map((v) => tkey(v.board, v.no));
+  const views = () => st.panes.map((p) => p.view);
+  const openThreads = () => views().filter((v) => v?.kind === 'thread').map((v) => tkey(v.board, v.no));
   const isOpen = (board, no) => openThreads().includes(tkey(board, no));
-  const isShown = (v) => viewKey(st.view) === viewKey(v) || viewKey(st.split) === viewKey(v);
+  const isShown = (v) => views().some((x) => viewKey(x) === viewKey(v));
+  const focused = () => st.panes[Math.min(st.focus, st.panes.length - 1)];
+  const prefixOf = (i) => (i === 0 ? '' : `p${i}-`);
 
   // ---------------------------------------------------------------- saving
 
@@ -84,7 +110,21 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
       st.boardList = 'error';
       st.boardError = String(e?.message || e);
     }
+    const waiting = boardWaiters;
+    boardWaiters = [];
+    for (const w of waiting) w();
     if (!closed) render();
+  }
+
+  /** The boards.json entry for a board (loads the list once if needed). */
+  async function boardInfo(code) {
+    if (!boards && bridge) {
+      await new Promise((resolve) => {
+        boardWaiters.push(resolve);
+        if (st.boardList !== 'loading') loadBoardList();
+      });
+    }
+    return boards?.find((b) => b.board === code) || null;
   }
 
   async function loadCatalog(board, force = false) {
@@ -153,16 +193,19 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
       const op = entry?.posts?.[0];
       if (!entry || entry.status === 'loading' || entry.gone || op?.archived || op?.closed) continue;
       const [board, no] = key.split('/');
-      st.timers.set(key, setTimeout(() => {
-        st.timers.delete(key);
-        loadThread(board, Number(no));
-      }, intervalMs()));
+      st.timers.set(
+        key,
+        setTimeout(() => {
+          st.timers.delete(key);
+          loadThread(board, Number(no));
+        }, intervalMs()),
+      );
     }
   }
 
-  /** The watcher: every interval, the watched threads that are not open
-   *  are asked for in turn (open ones update themselves). The Rust queue
-   *  spaces the requests ≥ 1 s apart and answers 304 when nothing changed. */
+  /** The watcher (main window only): every interval, the watched threads
+   *  that are not open are asked for in turn. The Rust queue spaces the
+   *  requests ≥ 1 s apart and answers 304 when nothing changed. */
   async function watchTick() {
     if (closed || st.watchBusy) return;
     st.watchBusy = true;
@@ -193,12 +236,104 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
     scheduleOpen();
   }
 
-  function goto(view, pane = 'main') {
-    if (pane === 'split') st.split = view;
-    else st.view = view;
+  /** Shows a view in a pane (default: the focused one). */
+  function goto(view, paneIndex = st.focus) {
+    const i = Math.max(0, Math.min(paneIndex, st.panes.length - 1));
+    st.panes[i].view = view;
+    st.focus = i;
     st.rail = false;
     render();
     enter(view);
+  }
+
+  /** Opens a view in a new pane next to `after`; with five panes already,
+   *  in a new window instead. */
+  function openBeside(view, after = st.focus) {
+    if (st.panes.length >= MAX_PANES) {
+      newWindow([view]);
+      return;
+    }
+    const at = Math.min(after + 1, st.panes.length);
+    st.panes.splice(at, 0, newPane(view));
+    st.focus = at;
+    render();
+    enter(view);
+  }
+
+  function closePane(i) {
+    if (st.panes.length <= 1) return;
+    st.panes.splice(i, 1);
+    st.focus = Math.max(0, Math.min(st.focus >= i ? st.focus - 1 : st.focus, st.panes.length - 1));
+    render();
+    scheduleOpen();
+  }
+
+  async function newWindow(viewsList) {
+    if (!bridge?.openWindow) return;
+    const clean = viewsList.filter((v) => v && v.kind !== 'settings').slice(0, MAX_PANES);
+    try {
+      await bridge.openWindow(encodeURIComponent(JSON.stringify(clean.length ? clean : [{ kind: 'boards' }])));
+    } catch (e) {
+      toast(`Couldn’t open a window: ${e?.message || e}`);
+    }
+  }
+
+  function popOut(i) {
+    const v = st.panes[i].view;
+    newWindow([v]);
+    if (st.panes.length > 1) closePane(i);
+  }
+
+  // ------------------------------------------------------------- posting
+
+  const composer = createComposer({
+    bridge,
+    getSettings: () => settings,
+    saveSettings: (next) => {
+      save(next, { now: true });
+      render();
+    },
+    getBoard: boardInfo,
+    onSitePage: (board, thread, quote) => openSitePage(board, thread || null, quote || null),
+    onPosted: ({ board, thread, no }) => {
+      // A reply: watch the thread and show it fresh. A new thread: open it.
+      if (!M.isWatched(settings, board, thread)) save(M.toggleWatch(settings, { board, no: thread, seen: no }), { now: true });
+      if (isOpen(board, thread)) loadThread(board, thread);
+      else goto({ kind: 'thread', board, no: thread });
+      void no;
+    },
+  });
+
+  async function openSitePage(board, thread = null, quote = null) {
+    if (!bridge?.openPost) return;
+    try {
+      const r = await bridge.openPost(board, thread, quote);
+      if (r?.mock) toast('In the desktop app this opens the site’s own page in a window.');
+    } catch (e) {
+      toast(`Couldn’t open the site’s page: ${e?.message || e}`);
+    }
+  }
+
+  // --------------------------------------------------------------- gallery
+
+  function gallery(paneIndex = st.focus) {
+    const v = st.panes[paneIndex]?.view;
+    if (v?.kind !== 'thread') {
+      toast('The gallery opens from a thread.');
+      return;
+    }
+    const entry = st.threads[tkey(v.board, v.no)];
+    if (!entry?.posts) return;
+    const items = galleryItems(entry.posts, v.board, bridge);
+    openGallery({
+      items,
+      title: B.threadTitle(entry.posts[0], 80),
+      onSave: (it) => bridge.saveMedia(it.full, it.name, settings.files?.downloadDir || ''),
+      onClose: (no) => {
+        const el = root.querySelector(`[data-pane="${paneIndex}"] [data-no="${no}"]`);
+        el?.scrollIntoView({ block: 'center' });
+      },
+    });
   }
 
   // ---------------------------------------------------------------- pieces
@@ -246,17 +381,7 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
     render();
   }
 
-  async function openPost(board, thread = null, quote = null) {
-    if (!bridge?.openPost) return;
-    try {
-      const r = await bridge.openPost(board, thread, quote);
-      if (r?.mock) toast('In the desktop app this opens the site’s own post form, with its captcha.');
-    } catch (e) {
-      toast(`Couldn’t open the post form: ${e?.message || e}`);
-    }
-  }
-
-  function watchedRail(v) {
+  function watchedRail() {
     const list = settings.watched || [];
     if (!list.length) return h('p', { class: 'rail__empty', text: 'Nothing watched yet.' });
     return h(
@@ -265,9 +390,15 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
       list.map((w) => {
         const entry = st.threads[tkey(w.board, w.no)];
         const unread = entry?.posts ? M.unreadCount(entry.posts, w.seen) : 0;
-        const state = w.dead ? h('span', { class: 'pill pill--dead', text: '404' }) : w.archived ? h('span', { class: 'pill', text: 'Archived' }) : unread ? h('span', { class: 'badge', 'aria-label': `${unread} unread`, text: String(unread) }) : null;
+        const state = w.dead
+          ? h('span', { class: 'pill pill--dead', text: '404' })
+          : w.archived
+            ? h('span', { class: 'pill', text: 'Archived' })
+            : unread
+              ? h('span', { class: 'badge', 'aria-label': `${unread} unread`, text: String(unread) })
+              : null;
         return railItem([tag(w.board), h('span', { class: 'rail__label', text: w.title || `No. ${w.no}` }), state], {
-          current: [st.view, st.split].some((x) => x?.kind === 'thread' && x.board === w.board && x.no === w.no),
+          current: views().some((x) => x?.kind === 'thread' && x.board === w.board && x.no === w.no),
           key: `watched-${w.board}-${w.no}`,
           onclick: () => goto({ kind: 'thread', board: w.board, no: w.no }),
           extra: h(
@@ -286,18 +417,21 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
     );
   }
 
-  /** Title, body and window title for a view in a pane. */
-  function paneContent(v, pane) {
+  /** Title, body and window title for the view in pane i. */
+  function paneContent(i) {
+    const pane = st.panes[i];
+    const v = pane.view;
+    const prefix = prefixOf(i);
     const entry = v.kind === 'thread' ? st.threads[tkey(v.board, v.no)] : null;
     const threadName = () => {
       const op = entry?.posts?.[0] || st.cats[v.board]?.threads?.find((t) => t.no === v.no);
       return op ? B.threadTitle(op, 70) : `No. ${v.no}`;
     };
-    const body = h('div', { class: 'centre__body' });
+    const body = h('div', { class: 'centre__body', 'data-scroll-key': `${pane.id}:${viewKey(v)}` });
     let title;
     let windowTitle;
     if (v.kind === 'settings') {
-      title = [h('span', { text: 'Settings' })];
+      title = [h('span', { class: 'centre__title-text', text: 'Settings' })];
       windowTitle = 'Settings';
       body.append(
         renderSettings({
@@ -319,15 +453,15 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
         catalogView({
           board: v.board,
           entry: st.cats[v.board],
-          view: st.catViews[pane],
+          view: pane.catView,
           bridge,
-          keyPrefix: pane === 'split' ? 'split-' : '',
-          onOpen: (no, where = pane) => goto({ kind: 'thread', board: v.board, no }, where),
-          canSplit: pane === 'main',
+          keyPrefix: prefix,
+          canSplit: true,
+          onOpen: (no, where) => (where === 'split' ? openBeside({ kind: 'thread', board: v.board, no }, i) : goto({ kind: 'thread', board: v.board, no }, i)),
           onRefresh: () => loadCatalog(v.board, true),
-          onNewThread: () => openPost(v.board),
+          onNewThread: () => composer.open({ board: v.board, thread: 0 }),
           onView: (patch) => {
-            Object.assign(st.catViews[pane], patch);
+            Object.assign(pane.catView, patch);
             render();
           },
         }),
@@ -340,8 +474,8 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
             type: 'button',
             class: 'icon-btn',
             'aria-label': `Back to the /${v.board}/ catalog`,
-            'data-key': pane === 'split' ? 'split-back-catalog' : 'back-catalog',
-            onclick: () => goto({ kind: 'board', board: v.board }, pane),
+            'data-key': `${prefix}back-catalog`,
+            onclick: () => goto({ kind: 'board', board: v.board }, i),
           },
           icon('arrowLeft'),
         ),
@@ -355,23 +489,26 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
           no: v.no,
           entry,
           bridge,
-          keyPrefix: pane === 'split' ? 'split-' : '',
+          keyPrefix: prefix,
           watched: M.isWatched(settings, v.board, v.no),
           intervalSec: intervalMs() / 1000,
+          isYou: (no) => C.isYou(settings, v.board, no),
           onRefresh: () => loadThread(v.board, v.no),
           onWatch: () => toggleWatchThread(v.board, v.no),
-          onReply: (quote = null) => openPost(v.board, v.no, quote),
+          onReply: (quote = null) => composer.open({ board: v.board, thread: v.no, quote: quote || 0 }),
+          onGallery: () => gallery(i),
         }),
       );
     } else {
-      title = [h('span', { text: 'All boards' })];
+      title = [h('span', { class: 'centre__title-text', text: 'All boards' })];
       windowTitle = 'All boards';
-      body.append(boardListBody(pane));
+      body.append(boardListBody(i));
     }
     return { title, body, windowTitle };
   }
 
-  function boardListBody(pane) {
+  function boardListBody(i) {
+    const prefix = prefixOf(i);
     if (boards) {
       const list = M.visibleBoards(boards, settings);
       return h(
@@ -384,7 +521,7 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
             { class: 'board-list__row' },
             h(
               'button',
-              { type: 'button', class: 'rail__item', 'data-key': `${pane === 'split' ? 'split-' : ''}list-${b.board}`, onclick: () => goto({ kind: 'board', board: b.board }, pane) },
+              { type: 'button', class: 'rail__item', 'data-key': `${prefix}list-${b.board}`, onclick: () => goto({ kind: 'board', board: b.board }, i) },
               tag(b.board),
               h('span', { class: 'rail__label', text: b.title }),
             ),
@@ -395,7 +532,7 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
                 class: `icon-btn star${fav ? ' star--on' : ''}`,
                 'aria-pressed': String(fav),
                 'aria-label': fav ? `Remove /${b.board}/ from favourites` : `Add /${b.board}/ to favourites`,
-                'data-key': `${pane === 'split' ? 'split-' : ''}fav-toggle-${b.board}`,
+                'data-key': `${prefix}fav-toggle-${b.board}`,
                 onclick: () => toggleFav(b.board),
               },
               icon('star'),
@@ -415,63 +552,48 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
           h('strong', { text: 'Couldn’t load the board list. ' }),
           st.boardError,
           ' ',
-          h('button', { type: 'button', class: 'link-btn', 'data-key': 'retry-boards', onclick: () => ((st.boardList = 'idle'), loadBoardList()), text: 'Try again' }),
+          h('button', { type: 'button', class: 'link-btn', 'data-key': `${prefix}retry-boards`, onclick: () => ((st.boardList = 'idle'), loadBoardList()), text: 'Try again' }),
         ),
       );
     }
     return h('p', { class: 'state-line', role: 'status' }, icon('refresh'), 'Loading the board list…');
   }
 
-  // ------------------------------------------------------------ split pane
-
-  function splitWidth() {
-    const shellW = root.clientWidth || window.innerWidth;
-    const railW = settings.ui?.railHidden ? 0 : root.querySelector('.rail')?.offsetWidth || 248;
-    const max = Math.max(M.SPLIT_MIN, shellW - railW - MAIN_MIN);
-    return Math.min(max, Math.max(M.SPLIT_MIN, settings.ui?.splitWidth || 520));
-  }
-
-  function resizer(panel) {
-    const handle = h('div', {
-      class: 'panel__resize',
-      role: 'separator',
-      tabindex: '0',
-      'aria-orientation': 'vertical',
-      'aria-label': 'Resize the second pane',
-      'aria-valuemin': String(M.SPLIT_MIN),
-      'aria-valuemax': String(M.SPLIT_MAX),
-      'aria-valuenow': String(settings.ui?.splitWidth || 520),
-      'data-key': 'split-resize',
-    });
-    const set = (w, store) => {
-      const next = { ...settings, ui: { ...settings.ui, splitWidth: Math.round(w) } };
-      settings = next;
-      const width = splitWidth();
-      panel.style.width = `${width}px`;
-      handle.setAttribute('aria-valuenow', String(width));
-      if (store) save(M.normalizeSettings(next), { now: true });
+  function paneEl(i, narrow) {
+    const pane = st.panes[i];
+    const prefix = prefixOf(i);
+    const c = paneContent(i);
+    const many = st.panes.length > 1;
+    const head = h(
+      'div',
+      { class: 'pane__head' },
+      h('h2', { class: 'centre__title pane__title' }, c.title),
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'icon-btn icon-btn--sm',
+          'aria-label': 'Open this in a new window',
+          title: 'Open in a new window',
+          'data-key': `${prefix}pane-popout`,
+          onclick: () => popOut(i),
+        },
+        icon('external'),
+      ),
+      many
+        ? h('button', { type: 'button', class: 'icon-btn icon-btn--sm', 'aria-label': 'Close this pane', 'data-key': `${prefix}pane-close`, onclick: () => closePane(i) }, icon('x'))
+        : null,
+    );
+    void narrow;
+    return {
+      el: h(
+        'section',
+        { class: 'pane', 'data-pane': String(i), 'aria-label': `Pane ${i + 1}: ${c.windowTitle}`, 'aria-current': many && i === st.focus ? 'true' : null },
+        head,
+        c.body,
+      ),
+      windowTitle: c.windowTitle,
     };
-    handle.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      handle.setPointerCapture(e.pointerId);
-      const right = panel.getBoundingClientRect().right;
-      const move = (ev) => set(right - ev.clientX, false);
-      const up = () => {
-        handle.removeEventListener('pointermove', move);
-        handle.removeEventListener('pointerup', up);
-        set(panel.getBoundingClientRect().width, true);
-      };
-      handle.addEventListener('pointermove', move);
-      handle.addEventListener('pointerup', up);
-    });
-    handle.addEventListener('keydown', (e) => {
-      const step = e.shiftKey ? 96 : 32;
-      if (e.key === 'ArrowLeft') set(splitWidth() + step, true);
-      else if (e.key === 'ArrowRight') set(splitWidth() - step, true);
-      else return;
-      e.preventDefault();
-    });
-    return handle;
   }
 
   // ---------------------------------------------------------------- render
@@ -479,8 +601,8 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
   function render() {
     if (closed) return;
     const active = document.activeElement;
-    const focusKey = active?.dataset?.key;
-    const caret = active?.tagName === 'INPUT' && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
+    const focusKey = root.contains(active) ? active?.dataset?.key : null;
+    const caret = focusKey && active?.tagName === 'INPUT' && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
     for (const body of root.querySelectorAll('.centre__body[data-scroll-key]')) st.scroll[body.dataset.scrollKey] = body.scrollTop;
     // Files the person opened (a playing video, a full image) survive the
     // redraw: the same elements move into the new page within this task,
@@ -491,10 +613,11 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
       if (post?.id) openFiles.set(post.id, fig);
     }
     clear(root);
-    const v = st.view;
     const narrow = matchMedia(NARROW).matches;
     const favs = M.visibleFavourites(settings, boards);
-    const shown = (pred) => [st.view, st.split].some((x) => x && pred(x));
+    const shown = (pred) => views().some((x) => x && pred(x));
+    const railHidden = Boolean(settings.ui?.railHidden);
+    const rows = settings.ui?.rows || 1;
 
     const rail = h(
       'nav',
@@ -534,7 +657,7 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
             }),
           ),
         ),
-        h('section', {}, h('h2', { class: 'rail__heading', text: 'Watched threads' }), watchedRail(v)),
+        h('section', {}, h('h2', { class: 'rail__heading', text: 'Watched threads' }), watchedRail()),
       ),
       h(
         'div',
@@ -544,7 +667,7 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
           {
             type: 'button',
             class: 'rail__item',
-            'aria-current': v.kind === 'settings' ? 'page' : null,
+            'aria-current': shown((x) => x.kind === 'settings') ? 'page' : null,
             'data-key': 'settings',
             onclick: () => goto({ kind: 'settings' }),
           },
@@ -554,119 +677,121 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
       ),
     );
 
-    const main = paneContent(v, 'main');
-    main.body.dataset.scrollKey = `main:${viewKey(v)}`;
-    const railHidden = Boolean(settings.ui?.railHidden);
-    const centre = h(
-      'main',
-      { class: 'centre' },
-      h(
-        'div',
-        { class: 'centre__head' },
-        h(
-          'button',
-          {
-            type: 'button',
-            class: 'icon-btn',
-            'aria-label': narrow ? 'Boards' : railHidden ? 'Show the sidebar' : 'Hide the sidebar',
-            'aria-expanded': String(narrow ? st.rail : !railHidden),
-            'data-key': 'rail-toggle',
-            onclick: () => {
-              if (matchMedia(NARROW).matches) st.rail = !st.rail;
-              else save({ ...settings, ui: { ...settings.ui, railHidden: !settings.ui?.railHidden } }, { now: true });
-              render();
-            },
-          },
-          icon(narrow ? 'menu' : 'sidebar'),
-        ),
-        h('h1', { class: 'centre__title' }, main.title),
-        h(
-          'button',
-          {
-            type: 'button',
-            class: 'icon-btn',
-            'aria-label': st.split ? 'Close the second pane' : 'Open a second pane',
-            'aria-pressed': String(Boolean(st.split)),
-            'data-key': 'panel-toggle',
-            onclick: () => {
-              if (st.split) {
-                st.split = null;
-                render();
-                scheduleOpen();
-              } else {
-                const board = v.kind === 'board' || v.kind === 'thread' ? v.board : favs[0];
-                goto(board ? { kind: 'board', board } : { kind: 'boards' }, 'split');
-              }
-            },
-          },
-          icon('panel'),
-        ),
-      ),
-      main.body,
-    );
-
-    let panel = null;
-    if (st.split) {
-      const sp = paneContent(st.split, 'split');
-      sp.body.dataset.scrollKey = `split:${viewKey(st.split)}`;
-      panel = h(
-        'section',
-        { class: 'panel panel--split', 'aria-label': 'Second pane' },
-        h(
-          'div',
-          { class: 'panel__head' },
-          h('div', { class: 'centre__title panel__title' }, sp.title),
-          h(
-            'button',
-            {
-              type: 'button',
-              class: 'icon-btn',
-              'aria-label': 'Move to the main pane',
-              'data-key': 'split-swap',
-              onclick: () => {
-                const a = st.view;
-                st.view = st.split;
-                st.split = a.kind === 'settings' ? null : a;
-                render();
-              },
-            },
-            icon('swap'),
-          ),
-          h(
-            'button',
-            {
-              type: 'button',
-              class: 'icon-btn',
-              'aria-label': 'Close the second pane',
-              'data-key': 'panel-close',
-              onclick: () => {
-                st.split = null;
-                render();
-                scheduleOpen();
-              },
-            },
-            icon('x'),
-          ),
-        ),
-        sp.body,
-      );
-      if (!narrow) panel.prepend(resizer(panel));
+    // The panes: all of them on a wide window (rows of columns); on a
+    // narrow one the focused pane, with tabs to switch.
+    const built = st.panes.map((_, i) => paneEl(i, narrow));
+    const grid = h('div', { class: 'workspace__grid', 'data-rows': String(narrow ? 1 : paneRows(st.panes.length, rows).length) });
+    if (narrow) {
+      grid.append(built[Math.min(st.focus, built.length - 1)].el);
+    } else {
+      let k = 0;
+      for (const count of paneRows(st.panes.length, rows)) {
+        const row = h('div', { class: 'workspace__row', style: { '--cols': String(count) } });
+        for (let j = 0; j < count; j++) row.append(built[k++].el);
+        grid.append(row);
+      }
     }
+    const focusTitle = built[Math.min(st.focus, built.length - 1)].windowTitle;
+    const head = h(
+      'div',
+      { class: 'workspace__head' },
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'icon-btn',
+          'aria-label': narrow ? 'Boards' : railHidden ? 'Show the sidebar' : 'Hide the sidebar',
+          'aria-expanded': String(narrow ? st.rail : !railHidden),
+          'data-key': 'rail-toggle',
+          onclick: () => {
+            if (matchMedia(NARROW).matches) st.rail = !st.rail;
+            else save({ ...settings, ui: { ...settings.ui, railHidden: !settings.ui?.railHidden } }, { now: true });
+            render();
+          },
+        },
+        icon(narrow ? 'menu' : 'sidebar'),
+      ),
+      h('h1', { class: 'workspace__title', text: focusTitle }),
+      narrow || st.panes.length < 2
+        ? null
+        : h(
+            'div',
+            { class: 'rows-pick', role: 'radiogroup', 'aria-label': 'Rows of panes' },
+            [1, 2, 3].map((n) =>
+              h('button', {
+                type: 'button',
+                role: 'radio',
+                class: 'rows-pick__btn',
+                'aria-checked': String(rows === n),
+                'aria-label': `${n} ${n === 1 ? 'row' : 'rows'}`,
+                title: `${n} ${n === 1 ? 'row' : 'rows'}`,
+                'data-key': `rows-${n}`,
+                disabled: n > st.panes.length,
+                onclick: () => {
+                  save({ ...settings, ui: { ...settings.ui, rows: n } }, { now: true });
+                  render();
+                },
+                text: String(n),
+              }),
+            ),
+          ),
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'icon-btn',
+          'aria-label': st.panes.length >= MAX_PANES ? 'Five panes is the most; this opens a new window' : 'Add a pane',
+          title: 'Add a pane',
+          'data-key': 'panel-toggle',
+          onclick: () => {
+            const v = focused().view;
+            const board = v.kind === 'board' || v.kind === 'thread' ? v.board : favs[0];
+            openBeside(board ? { kind: 'board', board } : { kind: 'boards' });
+          },
+        },
+        icon('panel'),
+      ),
+      h(
+        'button',
+        { type: 'button', class: 'icon-btn', 'aria-label': 'New window', title: 'New window', 'data-key': 'window-new', onclick: () => newWindow([focused().view]) },
+        icon('external'),
+      ),
+    );
+    const tabs =
+      narrow && st.panes.length > 1
+        ? h(
+            'div',
+            { class: 'workspace__tabs', role: 'tablist', 'aria-label': 'Panes' },
+            built.map((b, i) =>
+              h('button', {
+                type: 'button',
+                role: 'tab',
+                class: 'workspace__tab',
+                'aria-selected': String(i === st.focus),
+                'data-key': `pane-tab-${i}`,
+                onclick: () => {
+                  st.focus = i;
+                  render();
+                },
+                text: b.windowTitle,
+              }),
+            ),
+          )
+        : null;
+    const workspace = h('main', { class: 'centre workspace' }, head, tabs, grid);
 
-    root.append(rail, centre);
+    root.append(rail, workspace);
     if (st.rail) root.append(h('div', { class: 'shell__scrim only-narrow', onclick: () => ((st.rail = false), render()) }));
-    if (panel) root.append(panel);
     if (st.rail) root.dataset.railOpen = '';
     else delete root.dataset.railOpen;
     if (railHidden) root.dataset.railHidden = '';
     else delete root.dataset.railHidden;
-    if (panel && !narrow) panel.style.width = `${splitWidth()}px`;
+
     for (const [id, fig] of openFiles) {
       const fresh = root.querySelector(`#${CSS.escape(id)} .post__file`);
       if (fresh) fresh.replaceWith(fig);
     }
-
-    setTitle(main.windowTitle);
+    setTitle(focusTitle);
     for (const body of root.querySelectorAll('.centre__body[data-scroll-key]')) {
       const y = st.scroll[body.dataset.scrollKey];
       if (y) body.scrollTop = y;
@@ -680,36 +805,73 @@ export function openShell({ settings: initial, boards: initialBoards = null, bri
 
   // ------------------------------------------------------------ keyboard
 
+  root.addEventListener(
+    'pointerdown',
+    (e) => {
+      const p = e.target.closest?.('[data-pane]');
+      if (p) st.focus = Number(p.dataset.pane);
+    },
+    { capture: true, signal: ac.signal },
+  );
+  root.addEventListener(
+    'focusin',
+    (e) => {
+      const p = e.target.closest?.('[data-pane]');
+      if (p) st.focus = Number(p.dataset.pane);
+    },
+    { signal: ac.signal },
+  );
+
+  const typing = () => /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '') || document.activeElement?.isContentEditable;
+
   document.addEventListener(
     'keydown',
     (e) => {
-      if (root.hidden || e.key !== 'Escape' || document.querySelector('dialog[open]')) return;
-      if (st.rail) {
-        st.rail = false;
-        render();
-      } else if (st.view.kind === 'thread' && !/^(INPUT|TEXTAREA|SELECT|VIDEO)$/.test(document.activeElement?.tagName || '') && !document.activeElement?.closest?.('.panel')) {
-        goto({ kind: 'board', board: st.view.board });
+      if (root.hidden || document.querySelector('dialog[open], .gallery')) return;
+      if (e.key === 'Escape') {
+        if (st.rail) {
+          st.rail = false;
+          render();
+          return;
+        }
+        const v = focused().view;
+        if (v.kind === 'thread' && !typing() && document.activeElement?.tagName !== 'VIDEO' && !document.activeElement?.closest?.('.composer')) {
+          goto({ kind: 'board', board: v.board });
+        }
+        return;
+      }
+      if ((e.key === 'g' || e.key === 'G') && !e.ctrlKey && !e.metaKey && !e.altKey && !typing()) {
+        if (focused().view.kind === 'thread') {
+          e.preventDefault();
+          gallery(st.focus);
+        }
       }
     },
     { signal: ac.signal },
   );
-  window.addEventListener('resize', () => !closed && root.querySelector('.panel--split') && render(), { signal: ac.signal });
+  window.addEventListener('resize', () => !closed && render(), { signal: ac.signal });
 
   root.hidden = false;
   render();
-  enter(st.view);
-  watchTimer = setTimeout(watchTick, 2000);
+  for (const v of views()) enter(v);
+  if (isMain) watchTimer = setTimeout(watchTick, 2000);
   return {
     close() {
       closed = true;
       clearTimeout(watchTimer);
       clearTimeout(saveTimer);
       onSave(settings);
+      composer.close();
       for (const t of st.timers.values()) clearTimeout(t);
       st.timers.clear();
       ac.abort();
       root.hidden = true;
       clear(root);
+    },
+    /** Settings saved in another window. */
+    applySettings(next) {
+      settings = next;
+      render();
     },
   };
 }

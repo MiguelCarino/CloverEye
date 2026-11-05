@@ -13,7 +13,9 @@ use clovereye_fetch::models::{BoardsResponse, Catalog, Thread};
 use clovereye_fetch::{live_client, Endpoint, Error as FetchError, Freshness, LiveClient};
 use clovereye_ffcheck::FfmpegCheck;
 use serde_json::Value;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+
+mod extra;
 
 /// Settings are plain JSON for C0; SQLite replaces this in C1 (SCOPE §4.1).
 const SETTINGS_FILE: &str = "settings.json";
@@ -61,6 +63,8 @@ async fn set_settings(app: tauri::AppHandle, settings: Value) -> Result<(), Stri
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, &bytes).map_err(|e| format!("writing {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("saving {}: {e}", path.display()))?;
+    // Every window keeps the same settings: the others reload from this.
+    let _ = app.emit("settings-changed", &settings);
     Ok(())
 }
 
@@ -165,7 +169,7 @@ fn post_url(board: &str, thread: Option<u64>, quote: Option<u64>) -> Result<Stri
 /// The post window may only move around the site itself (pages, the post
 /// endpoint, its captcha, its static files) and Cloudflare's challenge
 /// page. Anything else is refused there.
-fn post_window_allows(url: &tauri::Url) -> bool {
+pub(crate) fn post_window_allows(url: &tauri::Url) -> bool {
     if url.scheme() == "about" {
         return true;
     }
@@ -234,6 +238,21 @@ fn main() {
         .manage(AppState {
             client: Arc::new(live_client()),
         })
+        .manage(extra::AgentState::default())
+        // The hidden post helper must not keep the app alive: when the last
+        // CloverEye window closes, the app ends.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                let app = window.app_handle();
+                let content = app
+                    .webview_windows()
+                    .keys()
+                    .any(|l| l != window.label() && (l == "main" || l.starts_with("w-")));
+                if !content && (window.label() == "main" || window.label().starts_with("w-")) {
+                    app.exit(0);
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_settings,
             set_settings,
@@ -241,7 +260,11 @@ fn main() {
             fetch_boards,
             fetch_catalog,
             fetch_thread,
-            open_post_window
+            open_post_window,
+            extra::post_agent,
+            extra::post_agent_reply,
+            extra::open_window,
+            extra::save_media
         ])
         .run(tauri::generate_context!())
         .expect("error while running CloverEye");

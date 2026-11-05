@@ -8,6 +8,7 @@ import { startSetup } from './setup.js';
 import { openShell } from './shell.js';
 import { toast } from './dom.js';
 import { installHoverPreview } from './hover.js';
+import { panesFromHash } from './browse-model.js';
 
 const bridge = createBridge({
   tauri: window.__TAURI__ ?? null,
@@ -38,6 +39,8 @@ let shell = null;
 let boardsCache = null;
 let current = null; // settings the shell is running with
 
+const extraPanes = panesFromHash(location.hash);
+
 function showShell(settings) {
   current = settings;
   shell?.close();
@@ -45,6 +48,8 @@ function showShell(settings) {
     settings,
     boards: boardsCache,
     bridge,
+    panes: extraPanes,
+    isMain: !extraPanes,
     onBoards: (list) => {
       boardsCache = list;
     },
@@ -97,6 +102,18 @@ async function boot() {
   }
   const settings = stored ? normalizeSettings(stored) : defaults();
   applyLook(settings);
+  // Settings saved in another window: this one follows.
+  bridge.onSettingsChanged?.((raw) => {
+    const next = normalizeSettings(raw);
+    if (!shell || JSON.stringify(next) === JSON.stringify(current)) return;
+    current = next;
+    applyLook(next);
+    shell.applySettings(next);
+  });
+  if (extraPanes) {
+    showShell(settings);
+    return;
+  }
   const rerun = location.hash === '#setup' && !needsSetup(settings);
   if (needsSetup(settings) || rerun) runSetup(settings, rerun);
   else showShell(settings);
@@ -112,7 +129,7 @@ window.addEventListener('hashchange', () => {
 function endSplash(started) {
   const splash = document.getElementById('splash');
   if (!splash) return;
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  if (extraPanes || matchMedia('(prefers-reduced-motion: reduce)').matches) {
     splash.remove();
     return;
   }

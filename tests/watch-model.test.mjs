@@ -6,7 +6,7 @@ import { placePreview } from '../ui/js/hover.js';
 
 test('defaults: sidebar shown, split 520 px, hover preview on, nothing watched', () => {
   const d = M.defaults();
-  assert.deepEqual(d.ui, { railHidden: false, splitWidth: 520, hoverPreview: true });
+  assert.deepEqual(d.ui, { railHidden: false, splitWidth: 520, hoverPreview: true, rows: 1 });
   assert.deepEqual(d.watched, []);
 });
 
@@ -21,7 +21,7 @@ test('normalizeSettings keeps ui and watched, clamps and de-duplicates', () => {
       { board: 'diy', no: 9, dead: true, junk: 1 },
     ],
   });
-  assert.deepEqual(s.ui, { railHidden: true, splitWidth: M.SPLIT_MAX, hoverPreview: false });
+  assert.deepEqual(s.ui, { railHidden: true, splitWidth: M.SPLIT_MAX, hoverPreview: false, rows: 1 });
   assert.deepEqual(s.watched, [
     { board: 'g', no: 5, title: 'x', seen: 7, dead: false, archived: false },
     { board: 'diy', no: 9, title: '', seen: 0, dead: true, archived: false },

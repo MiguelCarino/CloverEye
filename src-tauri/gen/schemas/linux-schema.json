@@ -381,6 +381,30 @@
           "markdownDescription": "Enables the open_post_window command without any pre-configured scope."
         },
         {
+          "description": "Enables the open_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-window",
+          "markdownDescription": "Enables the open_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the post_agent command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-post-agent",
+          "markdownDescription": "Enables the post_agent command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the post_agent_reply command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-post-agent-reply",
+          "markdownDescription": "Enables the post_agent_reply command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_media command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-media",
+          "markdownDescription": "Enables the save_media command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_settings command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-settings",
@@ -421,6 +445,30 @@
           "type": "string",
           "const": "deny-open-post-window",
           "markdownDescription": "Denies the open_post_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-window",
+          "markdownDescription": "Denies the open_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the post_agent command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-post-agent",
+          "markdownDescription": "Denies the post_agent command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the post_agent_reply command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-post-agent-reply",
+          "markdownDescription": "Denies the post_agent_reply command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_media command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-media",
+          "markdownDescription": "Denies the save_media command without any pre-configured scope."
         },
         {
           "description": "Denies the set_settings command without any pre-configured scope.",

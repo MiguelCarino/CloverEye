@@ -79,9 +79,11 @@ The owner's requirement is that the UI is modern. Concretely:
 - **Logo**: a golden four-leaf clover with a dark centre, drawn in a
   simple oekaki (hand-drawn) style, with a short start-up animation (owner
   decisions, 4 and 5 November 2026). Gold, never green.
-- **Split view** (owner decision, 5 November 2026): the right panel can hold
-  a second catalog or thread beside the main one, resizable; the sidebar can
-  be hidden. **Hover preview**: resting the mouse on a thumbnail shows the
+- **Panes and windows** (owner decisions, 5 November 2026): up to five
+  panes per window, in one to three rows; any pane can become a window of
+  its own, with its own panes. All windows share the one request queue. The
+  sidebar can be hidden. **Gallery**: G opens every file of a thread, moved
+  through with the keys or the wheel, D saves one. **Hover preview**: resting the mouse on a thumbnail shows the
   file at full quality, never larger than the window.
 - **Three-pane layout** on a wide window: left rail (favourite boards,
   watcher with unread badges), centre (catalog or thread), right panel
@@ -157,8 +159,17 @@ that adds a step shows only the new steps, not the whole flow.
 
 ### 3.3 Post (C4)
 - Reply and new-thread forms (quick reply floats over the thread).
-- **Captcha: the user solves 4chan's own captcha** in an embedded view of
-  4chan's page. The client never solves, bypasses or outsources it.
+- **Captcha: the user solves 4chan's own captcha.** Owner decision, 5
+  November 2026: replying happens from inside the app. The site's captcha
+  (tcaptcha: tasks of a prompt and choices, answered by the picked
+  positions) is drawn in CloverEye's own form. Its endpoints sit behind a
+  Cloudflare check that answers 403 to a plain client, so a hidden helper
+  window on the site's own page loads the captcha frame and sends the post
+  the way the site's form does (`src-tauri/src/post_agent.js`). When the
+  site shows its human check, that window comes forward and the person
+  passes it. The client never solves, bypasses or outsources a captcha or a
+  check. When the site asks for hCaptcha, the person posts on the site's own
+  page (the post window).
 - 4chan Pass login (the user's own cookie, kept in the OS keychain).
 - **Pre-flight checks from `boards.json`**: file size, WebM size/length/sound,
   minimum dimensions, comment length, required subject, and cooldown

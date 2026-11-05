@@ -96,6 +96,29 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
         await invoke('open_post_window', { board, thread, quote });
         return { mock: false };
       },
+      /** The site's captcha for this board/thread, fetched by the post
+       *  helper (src/post_agent.js). Throws 'check-needed' when the site
+       *  wants a browser check first (the helper window is then shown). */
+      async captcha(board, thread = 0) {
+        siteRequests += 1;
+        return invoke('post_agent', { op: 'captcha', args: { board, thread } });
+      },
+      /** Sends a post through the helper: { status, text } from the site. */
+      async submitPost(board, fields, file = null) {
+        siteRequests += 1;
+        return invoke('post_agent', { op: 'post', args: { board, fields, file } });
+      },
+      async openWindow(panes) {
+        return invoke('open_window', { panes });
+      },
+      async saveMedia(url, name, dir = '') {
+        siteRequests += 1;
+        return invoke('save_media', { url, name, dir: dir || null });
+      },
+      /** Another window saved new settings. */
+      onSettingsChanged(cb) {
+        tauri.event?.listen?.('settings-changed', (e) => cb(e.payload));
+      },
       // Media loads in the webview straight from the image host (SCOPE §4.1).
       thumbUrl: (board, post) => (post.tim ? `${MEDIA_BASE}/${board}/${post.tim}s.jpg` : null),
       mediaUrl: (board, post) => (post.tim && post.ext ? `${MEDIA_BASE}/${board}/${post.tim}${post.ext}` : null),
@@ -122,6 +145,7 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
   let boardAttempts = 0;
   let catalogCache = null;
   const threadFetches = new Map();
+  let mockPostNo = 990000;
   const mockCatalog = async () => {
     if (!catalogCache) {
       if (typeof fetchImpl !== 'function') throw new Error('No fixture loader in this environment.');
@@ -200,6 +224,62 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       this.posts.push({ board, thread, quote });
       return { mock: true };
     },
+    // A pretend captcha (local pictures) and a pretend post endpoint: the
+    // answer "21" passes, anything else gets the site's mistyped error.
+    async captcha() {
+      siteRequests += 1;
+      await sleep(Math.min(delay, 200));
+      if (mock.captcha === 'wait') return { error: 'You have to wait a while before doing this again.', cd: 30 };
+      if (mock.captcha === 'none') return { challenge: 'noop' };
+      // Inline pictures, as the site sends (it sends base64 PNGs).
+      const svg = (w, body) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="80">${body}</svg>`)}`;
+      // The site's shape: tasks, each a prompt and choices; the answer is the
+      // picked positions joined. Here: "Pick the 3" (3rd choice) and "Pick
+      // the 7" (2nd), so the right answer is "21".
+      const num = (n) => svg(300, `<rect width="300" height="80" fill="#e8e4da"/><text x="130" y="56" font-size="44" font-family="monospace" fill="#222">${n}</text>`);
+      return {
+        challenge: 'mock-challenge',
+        ttl: 120,
+        tasks: [
+          { str: 'Pick the 3', items: [num(1), num(2), num(3), num(4)] },
+          { str: 'Pick the 7', items: [num(5), num(7), num(9)] },
+        ],
+      };
+    },
+    async submitPost(board, fields, file = null) {
+      siteRequests += 1;
+      await sleep(Math.min(delay, 200));
+      this.lastPost = { board, fields, file: file ? { name: file.name, type: file.type, size: file.b64.length } : null };
+      if (fields['t-challenge'] !== 'noop' && fields['t-response'] !== '21') {
+        return { status: 200, text: '<span id="errmsg" style="color:red;">Error: You seem to have mistyped the CAPTCHA.</span>' };
+      }
+      mockPostNo += 1;
+      const thread = fields.resto ? Number(fields.resto) : 0;
+      return { status: 200, text: `<html><!-- thread:${thread},no:${mockPostNo} --></html>` };
+    },
+    async openWindow(panes) {
+      globalThis.open?.(`${location.pathname}${location.search}#panes=${panes}`, '_blank', 'noopener');
+      return 'mock-window';
+    },
+    async saveMedia(url, name) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      return `Downloads/${name}`;
+    },
+    onSettingsChanged(cb) {
+      globalThis.addEventListener?.('storage', (e) => {
+        if (e.key !== STORAGE_KEY || !e.newValue) return;
+        try {
+          cb(JSON.parse(e.newValue));
+        } catch {
+          /* not ours */
+        }
+      });
+    },
     // No outside requests from the mock: every file shows a local picture.
     thumbUrl: (_board, post) => (post.tim ? MOCK_THUMBS[Number(post.tim) % MOCK_THUMBS.length] : null),
     mediaUrl: (_board, post) => (post.tim ? MOCK_THUMBS[Number(post.tim) % MOCK_THUMBS.length] : null),
@@ -230,6 +310,7 @@ export function mockOptionsFromSearch(search) {
   if (p.get('mock-notify')) o.notify = p.get('mock-notify');
   if (p.get('mock-catalog')) o.catalog = p.get('mock-catalog');
   if (p.has('mock-grow')) o.grow = true;
+  if (p.get('mock-captcha')) o.captcha = p.get('mock-captcha');
   if (p.has('mock-delay')) {
     const n = Number(p.get('mock-delay'));
     if (Number.isFinite(n) && n >= 0) o.delayMs = n;

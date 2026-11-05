@@ -70,3 +70,25 @@ export function loadErrorText(err, what = 'thread') {
   if (msg === 'not-found') return what === 'thread' ? 'This thread is gone: it was archived or deleted.' : 'This board was not found.';
   return msg || 'Something went wrong.';
 }
+
+/** An extra window (opened from a pane) carries its panes in the address:
+ *  #panes=<encoded JSON list of views>. Only known view shapes pass. */
+export function panesFromHash(hash) {
+  const m = /^#panes=(.+)$/.exec(hash || '');
+  if (!m) return null;
+  let list;
+  try {
+    list = JSON.parse(decodeURIComponent(m[1]));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(list)) return null;
+  const ok = list.filter(
+    (v) =>
+      v &&
+      (v.kind === 'boards' ||
+        (v.kind === 'board' && /^[a-z0-9]{1,10}$/.test(v.board)) ||
+        (v.kind === 'thread' && /^[a-z0-9]{1,10}$/.test(v.board) && Number.isSafeInteger(v.no) && v.no > 0)),
+  );
+  return ok.length ? ok.slice(0, 5).map((v) => (v.kind === 'thread' ? { kind: 'thread', board: v.board, no: v.no } : v.kind === 'board' ? { kind: 'board', board: v.board } : { kind: 'boards' })) : null;
+}

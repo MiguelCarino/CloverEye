@@ -182,7 +182,7 @@ export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSpl
  * @param {() => void} [o.onWatch]
  * @param {(quote?: number) => void} [o.onReply]
  */
-export function threadView({ board, no, entry, bridge, keyPrefix = '', watched = false, intervalSec, onRefresh, onWatch = null, onReply = null }) {
+export function threadView({ board, no, entry, bridge, keyPrefix = '', watched = false, intervalSec, isYou = () => false, onRefresh, onWatch = null, onReply = null, onGallery = null }) {
   const out = h('div', { class: 'browse' });
   const first = entry?.posts?.[0];
   const frozen = entry?.gone || first?.closed || first?.archived;
@@ -200,6 +200,7 @@ export function threadView({ board, no, entry, bridge, keyPrefix = '', watched =
           )
         : null,
       onReply && !frozen ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-reply`, onclick: () => onReply() }, icon('reply'), 'Reply') : null,
+      onGallery ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-gallery`, title: 'Gallery (G)', onclick: onGallery }, icon('grid'), 'Gallery') : null,
       frozen ? null : h('span', { class: 'field__hint', text: `Updates by itself every ${intervalSec} s while open.` }),
     ),
   );
@@ -224,6 +225,7 @@ export function threadView({ board, no, entry, bridge, keyPrefix = '', watched =
     const card = renderPost(p, {
       backrefs: refs.get(p.no) || [],
       onQuote: jump,
+      isYou,
       onReply: onReply && !frozen ? () => onReply(p.no) : null,
       thumb: bridge.thumbUrl(board, p),
       full: bridge.mediaUrl(board, p),

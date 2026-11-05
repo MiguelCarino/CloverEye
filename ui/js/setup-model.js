@@ -102,7 +102,12 @@ export function defaults() {
     watch: { notifyReplies: false, keepInTray: false, intervalSec: MIN_WATCH_INTERVAL },
     files: { downloadDir: '', stripMetadata: true, cache: 'memory', cacheCapMB: 256 },
     /** Layout choices made in the shell. */
-    ui: { railHidden: false, splitWidth: 520, hoverPreview: true },
+    ui: { railHidden: false, splitWidth: 520, hoverPreview: true, rows: 1 },
+    /** Posts made from CloverEye: [{ board, no }]. */
+    yous: [],
+    /** The reply form's remembered name, and the deletion password the
+     *  site keeps with each post (made once, kept on this computer). */
+    post: { name: '', pwd: '' },
     /** Watched threads: { board, no, title, seen (last post no read),
      *  dead (404), archived }. */
     watched: [],
@@ -193,6 +198,19 @@ export function normalizeSettings(raw) {
       railHidden: bool(raw.ui.railHidden, d.ui.railHidden),
       splitWidth: Number.isFinite(w) ? Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, w)) : d.ui.splitWidth,
       hoverPreview: bool(raw.ui.hoverPreview, d.ui.hoverPreview),
+      rows: [1, 2, 3].includes(raw.ui.rows) ? raw.ui.rows : d.ui.rows,
+    };
+  }
+  if (Array.isArray(raw.yous)) {
+    out.yous = raw.yous
+      .filter((y) => isObj(y) && isBoardCode(y.board) && Number.isSafeInteger(y.no) && y.no > 0)
+      .map((y) => ({ board: y.board, no: y.no }))
+      .slice(-1000);
+  }
+  if (isObj(raw.post)) {
+    out.post = {
+      name: typeof raw.post.name === 'string' ? raw.post.name.slice(0, 100) : '',
+      pwd: typeof raw.post.pwd === 'string' && /^[A-Za-z0-9]{8,32}$/.test(raw.post.pwd) ? raw.post.pwd : '',
     };
   }
   if (Array.isArray(raw.watched)) {
