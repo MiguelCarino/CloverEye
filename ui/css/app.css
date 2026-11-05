@@ -2562,6 +2562,52 @@ video.post__media {
   justify-content: space-between;
 }
 
+.composer__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__title--btn {
+  display: flex;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer__note {
+  flex: none;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.composer__wait {
+  font-variant-numeric: tabular-nums;
+}
+
+/* minimised: only the title bar, which says what is going on underneath;
+   everything typed stays in place */
+.composer--min {
+  width: min(340px, calc(100vw - 32px));
+  grid-template-rows: auto;
+}
+
+.composer--min .composer__head {
+  border-bottom: 0;
+}
+
+.composer--min .composer__body,
+.composer--min .composer__foot {
+  display: none;
+}
+
 .composer__body {
   overflow-y: auto;
   padding: var(--space-3);

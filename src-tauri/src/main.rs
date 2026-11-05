@@ -177,10 +177,17 @@ pub(crate) fn post_window_allows(url: &tauri::Url) -> bool {
         return false;
     }
     let host = url.host_str().unwrap_or_default();
-    ["4chan.org", "4cdn.org", "4channel.org"]
+    // The site's own domains, and what its captcha page loads in frames: the
+    // Cloudflare check, and the site's abuse-check vendors (spur.us, mcl.io:
+    // without them the site answers "Please unblock spur.us and mcl.io").
+    let ok = ["4chan.org", "4cdn.org", "4channel.org", "spur.us", "mcl.io"]
         .iter()
         .any(|d| host == *d || host.ends_with(&format!(".{d}")))
-        || host == "challenges.cloudflare.com"
+        || host == "challenges.cloudflare.com";
+    if !ok {
+        eprintln!("clovereye post helper: kept the site window from opening {host}");
+    }
+    ok
 }
 
 /// Opens (or reuses) the post window on the site's own page. That window
@@ -225,6 +232,9 @@ mod tests {
         assert!(ok("https://sys.4chan.org/g/post"));
         assert!(ok("https://i.4cdn.org/g/1.jpg"));
         assert!(ok("https://challenges.cloudflare.com/x"));
+        assert!(ok("https://mcl.spur.us/d/mcl.js"));
+        assert!(ok("https://mcl.io/x"));
+        assert!(!ok("https://notspur.us/"));
         assert!(!ok("http://boards.4chan.org/g/"));
         assert!(!ok("https://evil4chan.org/"));
         assert!(!ok("https://4chan.org.evil.com/"));

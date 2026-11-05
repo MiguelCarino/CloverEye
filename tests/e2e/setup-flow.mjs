@@ -505,6 +505,14 @@ const settled = (page) => page.waitForTimeout(300);
   check('post: the site’s error comes back into the form', (await page.locator('.composer__msg').textContent()).includes('mistyped'));
   check('post: the text is kept after an error', (await page.locator('[data-key="compose-com"]').inputValue()) === 'Testing the reply form.');
   await page.waitForSelector('[data-key="compose-slider"]');
+  // minimise: only the title bar shows, everything stays
+  await page.locator('[data-key="compose-min"]').click(); await settled(page);
+  check('post: the form minimises to its title bar', (await page.locator('.composer--min').count()) === 1 && !(await page.locator('.composer__body').isVisible()));
+  await page.locator('[data-key="compose-restore"]').click(); await settled(page);
+  check('post: it opens again with the text in place', (await page.locator('.composer__body').isVisible()) && (await page.locator('[data-key="compose-com"]').inputValue()) === 'Testing the reply form.');
+  await page.waitForTimeout(500);
+  check('post: the draft is saved as it is typed', await page.evaluate(() => Object.values(JSON.parse(localStorage.getItem('clovereye-drafts') || '{}')).some((d) => d.com === 'Testing the reply form.')));
+  await page.waitForSelector('[data-key="compose-slider"]');
   // the keyboard way: arrows through the choices, Enter keeps one
   await page.locator('[data-key="compose-slider"]').focus();
   for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowRight');
@@ -590,6 +598,36 @@ const settled = (page) => page.waitForTimeout(300);
   check('watch/split run: mock made no outside request', page._outside.length === 0, page._outside.slice(0, 3).join(','));
   check('watch/split run: no console errors', page._errors.length === 0, page._errors.join(' | '));
   void firstNo;
+  await ctx.close();
+}
+
+// ---------------------------------------------------- the wait, and drafts
+{
+  const { ctx, page } = await newPage();
+  const panes = encodeURIComponent(JSON.stringify([{ kind: 'thread', board: 'g', no: 500073 }]));
+  await page.goto(`${BASE}?mock-delay=0&mock-captcha=wait#panes=${panes}`);
+  await page.waitForSelector('[data-key="thread-reply"]');
+  await page.locator('[data-key="thread-reply"]').click();
+  await page.waitForSelector('[data-captcha-wait]');
+  const secs = async () => Number(((await page.locator('[data-captcha-wait]').textContent()) || '').replace(/\D+/g, '') || 0);
+  const w1 = await secs();
+  await page.waitForTimeout(2600);
+  const w2 = await secs();
+  check('wait: the site’s wait counts down live', w1 > 0 && w2 > 0 && w2 <= w1 - 2, `${w1} → ${w2}`);
+  await page.locator('[data-key="compose-min"]').click(); await settled(page);
+  const n1 = await page.locator('[data-compose-note]').textContent();
+  await page.waitForTimeout(1200);
+  const n2 = await page.locator('[data-compose-note]').textContent();
+  check('wait: a minimised form shows the wait in its title bar, live', /^Wait \d+ s$/.test(n1) && n1 !== n2, `${n1} → ${n2}`);
+  await page.locator('[data-key="compose-restore"]').click(); await settled(page);
+  await page.locator('[data-key="compose-com"]').fill('A draft that survives closing.');
+  await page.waitForTimeout(600);
+  await page.reload();
+  await page.waitForSelector('[data-key="thread-reply"]');
+  await page.locator('[data-key="thread-reply"]').click();
+  await page.waitForSelector('[data-key="compose-com"]');
+  check('drafts: the text is back after the app was closed', (await page.locator('[data-key="compose-com"]').inputValue()) === 'A draft that survives closing.');
+  check('wait/drafts run: no console errors', page._errors.length === 0, page._errors.join(' | '));
   await ctx.close();
 }
 

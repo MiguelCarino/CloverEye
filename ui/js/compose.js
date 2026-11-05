@@ -15,14 +15,66 @@ import { h, icon, toast } from './dom.js';
  * @param {(p: {board: string, thread: number, no: number}) => void} o.onPosted
  * @param {(board: string, thread: number, quote: number) => void} [o.onSitePage]
  */
+const DRAFTS_KEY = 'clovereye-drafts';
+const MAX_DRAFTS = 50;
+
+/** Drafts saved by an earlier run (see persistDrafts). */
+function loadDrafts() {
+  const out = new Map();
+  try {
+    const raw = JSON.parse(localStorage.getItem(DRAFTS_KEY) || '{}');
+    for (const [k, d] of Object.entries(raw && typeof raw === 'object' ? raw : {})) {
+      if (!/^[a-z0-9]{1,10}\/\d{1,12}$/.test(k) || !d || typeof d !== 'object') continue;
+      out.set(k, { com: String(d.com || ''), sub: String(d.sub || ''), email: String(d.email || ''), at: Number(d.at) || 0 });
+    }
+  } catch (_) {
+    /* nothing saved, or no storage */
+  }
+  return out;
+}
+
+/** "1 min 05 s", "42 s". */
+function formatLeft(s) {
+  if (s < 60) return `${s} s`;
+  return `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`;
+}
+
 export function createComposer({ bridge, getSettings, saveSettings, getBoard, onPosted, onSitePage = null }) {
-  const drafts = new Map(); // "board/thread" → { com, sub, email }
+  const drafts = loadDrafts(); // "board/thread" → { com, sub, email, at }
   const cooldowns = new Map(); // board → time the next post may go
   let st = null; // the open form
   let el = null;
   let tick = null;
+  let saveTimer = 0;
 
   const key = (board, thread) => `${board}/${thread || 0}`;
+
+  // Drafts outlive the app: kept in this app's own storage as they are
+  // typed, so closing CloverEye (or a crash) loses nothing. The attached
+  // file is not kept, only the text.
+  function persistDrafts() {
+    clearTimeout(saveTimer);
+    saveTimer = 0;
+    try {
+      const list = [...drafts.entries()].filter(([, d]) => d.com || d.sub || d.email);
+      list.sort((a, b) => (b[1].at || 0) - (a[1].at || 0));
+      localStorage.setItem(DRAFTS_KEY, JSON.stringify(Object.fromEntries(list.slice(0, MAX_DRAFTS))));
+    } catch (_) {
+      /* no storage: drafts last until the app closes */
+    }
+  }
+
+  function typed() {
+    if (!st) return;
+    drafts.set(key(st.board, st.thread), { com: st.com, sub: st.sub, email: st.email, at: Date.now() });
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(persistDrafts, 400);
+  }
+
+  addEventListener('pagehide', () => {
+    stash();
+    persistDrafts();
+  });
 
   function pwd(settings) {
     if (settings.post?.pwd) return settings.post.pwd;
@@ -34,7 +86,16 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
 
   function stash() {
     if (!st) return;
-    drafts.set(key(st.board, st.thread), { com: st.com, sub: st.sub, email: st.email });
+    drafts.set(key(st.board, st.thread), { com: st.com, sub: st.sub, email: st.email, at: Date.now() });
+    persistDrafts();
+  }
+
+  function setMin(on) {
+    if (!st) return;
+    st.min = on;
+    draw('none');
+    if (!on) el?.querySelector('[data-key="compose-com"]')?.focus({ preventScroll: true });
+    else el?.querySelector('[data-key="compose-restore"]')?.focus({ preventScroll: true });
   }
 
   function close() {
@@ -67,8 +128,10 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
         problems: [],
         message: '',
         info: null,
+        min: false, // folded down to its title bar
       };
     }
+    st.min = false;
     if (quote) {
       const line = `>>${quote}\n`;
       if (!st.com.includes(`>>${quote}`)) st.com = st.com && !st.com.endsWith('\n') ? `${st.com}\n${line}` : `${st.com}${line}`;
@@ -185,6 +248,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     const next = C.addYou({ ...getSettings(), post: { ...(getSettings().post || {}), name: mine.name } }, mine.board, result.no);
     saveSettings(next);
     drafts.delete(key(mine.board, mine.thread));
+    persistDrafts();
     toast(`Posted: No. ${result.no}${cleaned ? ' · location and camera data removed' : ''}`);
     st = null;
     el?.remove();
@@ -229,7 +293,14 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
         'div',
         { class: `callout ${c.state === 'wait' ? 'callout--warn' : 'callout--danger'}`, role: 'status' },
         icon('info'),
-        h('div', {}, c.message, left ? ` (${left} s)` : '', ' ', again),
+        h(
+          'div',
+          {},
+          c.message,
+          c.until ? h('span', { class: 'composer__wait', 'data-captcha-wait': '', text: waitText(left, c.state) }) : null,
+          ' ',
+          again,
+        ),
       );
     }
     const left = Math.max(0, Math.ceil((c.expires - Date.now()) / 1000));
@@ -311,11 +382,35 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     const fileLimit = st.file && /\.(webm|mp4)$/i.test(st.file.name) ? info?.max_webm_filesize : info?.max_filesize;
     const next = h(
       'section',
-      { class: 'composer', role: 'dialog', 'aria-label': isThread ? `New thread on /${st.board}/` : `Reply to No. ${st.thread}`, 'data-key': 'composer' },
+      {
+        class: `composer${st.min ? ' composer--min' : ''}`,
+        role: 'dialog',
+        'aria-label': isThread ? `New thread on /${st.board}/` : `Reply to No. ${st.thread}`,
+        'data-key': 'composer',
+      },
       h(
         'div',
         { class: 'composer__head' },
-        h('strong', { text: isThread ? `New thread on /${st.board}/` : `Reply to /${st.board}/ No. ${st.thread}` }),
+        st.min
+          ? h(
+              'button',
+              { type: 'button', class: 'composer__title composer__title--btn', 'data-key': 'compose-restore', 'aria-expanded': 'false', onclick: () => setMin(false) },
+              h('strong', { text: isThread ? `New thread on /${st.board}/` : `Reply to /${st.board}/ No. ${st.thread}` }),
+            )
+          : h('strong', { class: 'composer__title', text: isThread ? `New thread on /${st.board}/` : `Reply to /${st.board}/ No. ${st.thread}` }),
+        st.min ? h('span', { class: 'composer__note', 'data-compose-note': '', text: headNote() }) : null,
+        h(
+          'button',
+          {
+            type: 'button',
+            class: 'icon-btn icon-btn--sm composer__fold',
+            'aria-label': st.min ? 'Open the reply form again' : 'Minimise the reply form (it keeps everything)',
+            'aria-expanded': String(!st.min),
+            'data-key': 'compose-min',
+            onclick: () => setMin(!st.min),
+          },
+          icon(st.min ? 'maximize' : 'minus'),
+        ),
         h('button', { type: 'button', class: 'icon-btn icon-btn--sm', 'aria-label': 'Close the reply form (the draft is kept)', 'data-key': 'compose-close', onclick: close }, icon('x')),
       ),
       h(
@@ -333,10 +428,10 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
           'div',
           { class: 'composer__row' },
           field('Name', h('input', { class: 'input', value: st.name, placeholder: 'Anonymous', maxlength: '100', 'data-key': 'compose-name', oninput: (e) => (st.name = e.target.value) })),
-          field('Options', h('input', { class: 'input', value: st.email, placeholder: 'sage', maxlength: '100', 'data-key': 'compose-email', oninput: (e) => (st.email = e.target.value) })),
+          field('Options', h('input', { class: 'input', value: st.email, placeholder: 'sage', maxlength: '100', 'data-key': 'compose-email', oninput: (e) => ((st.email = e.target.value), typed()) })),
         ),
         isThread || info?.require_subject
-          ? field('Subject', h('input', { class: 'input', value: st.sub, maxlength: '100', 'data-key': 'compose-sub', oninput: (e) => (st.sub = e.target.value) }))
+          ? field('Subject', h('input', { class: 'input', value: st.sub, maxlength: '100', 'data-key': 'compose-sub', oninput: (e) => ((st.sub = e.target.value), typed()) }))
           : null,
         field(
           'Comment',
@@ -346,6 +441,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
             'data-key': 'compose-com',
             oninput: (e) => {
               st.com = e.target.value;
+              typed();
               const n = el.querySelector('[data-com-count]');
               if (n) {
                 n.textContent = `${st.com.length} / ${max}`;
@@ -426,15 +522,51 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       f?.focus({ preventScroll: true });
       if (f && caret && typeof f.setSelectionRange === 'function') f.setSelectionRange(caret[0], caret[1]);
     }
-    if (!tick) {
-      tick = setInterval(() => {
-        const left = el?.querySelector('[data-captcha-left]');
-        if (left && st?.captcha?.state === 'ready') {
-          const s = Math.max(0, Math.ceil((st.captcha.expires - Date.now()) / 1000));
-          left.textContent = s ? `Expires in ${s} s. Slide (or ←/→), then Enter to keep a choice.` : 'Expired: get a new one.';
-        }
-      }, 1000);
+    if (!tick) tick = setInterval(onTick, 250);
+  }
+
+  // Four times a second, so each second turns on time: the captcha's time
+  // left, and a wait the site asked for, counted down live. When the wait is
+  // over, the next captcha is fetched.
+  function onTick() {
+    const c = st?.captcha;
+    if (!c || !el) return;
+    if (c.state === 'ready') {
+      const left = el.querySelector('[data-captcha-left]');
+      const s = Math.max(0, Math.ceil((c.expires - Date.now()) / 1000));
+      if (left) left.textContent = s ? `Expires in ${s} s. Slide (or ←/→), then Enter to keep a choice.` : 'Expired: get a new one.';
+      return;
     }
+    if (!c.until) return;
+    const s = Math.max(0, Math.ceil((c.until - Date.now()) / 1000));
+    const span = el.querySelector('[data-captcha-wait]');
+    if (span) span.textContent = waitText(s, c.state);
+    if (st.min) drawHeadNote();
+    if (s === 0 && c.state === 'wait' && !c.retried) {
+      c.retried = true;
+      loadCaptcha();
+    }
+  }
+
+  function waitText(s, state) {
+    if (s > 0) return ` ${formatLeft(s)} left.`;
+    return state === 'wait' ? ' Getting a new captcha…' : '';
+  }
+
+  // The title bar of a folded form says what is going on underneath.
+  function headNote() {
+    const c = st.captcha;
+    if (st.busy) return 'Posting…';
+    if (c.state === 'loading' || c.state === 'idle') return 'Loading captcha…';
+    if (c.state === 'wait' && c.until) return `Wait ${formatLeft(Math.max(0, Math.ceil((c.until - Date.now()) / 1000)))}`;
+    if (C.captchaDone(c)) return 'Ready to post';
+    if (c.state === 'ready') return 'Captcha to solve';
+    return c.state === 'error' || c.state === 'blocked' ? 'Captcha problem' : '';
+  }
+
+  function drawHeadNote() {
+    const n = el?.querySelector('[data-compose-note]');
+    if (n) n.textContent = headNote();
   }
 
   return {
