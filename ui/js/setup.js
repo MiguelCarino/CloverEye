@@ -5,6 +5,7 @@ import * as M from './setup-model.js';
 import { h, clear, icon, toast, copyText } from './dom.js';
 import { applyLook } from './look.js';
 import { parseComment, formatBytes, backlinks } from './render.js';
+import { themePicker } from './theme-picker.js';
 
 export const RULES_URL = 'https://www.4chan.org/rules';
 
@@ -125,6 +126,15 @@ export function renderPost(post, { backrefs = [], onQuote = null } = {}) {
 
 let active = null; // the running wizard, for the shared dialogs
 let dialogsWired = false;
+let onAdult = null; // what the 18+ dialog's "Turn on" does this time
+
+/** Asks for the 18+ confirmation (Settings → Content). `onConfirm` runs only
+ *  after the box is ticked and "Turn on" pressed; Cancel and Esc do nothing. */
+export function askAdult(opener, onConfirm) {
+  wireDialogs();
+  onAdult = onConfirm;
+  openDialog('adultDialog', opener);
+}
 
 function wireDialogs() {
   if (dialogsWired) return;
@@ -144,8 +154,13 @@ function wireDialogs() {
   adult.querySelector('[data-act="cancel"]').addEventListener('click', () => adult.close());
   ok.addEventListener('click', () => {
     if (!box.checked) return;
+    const done = onAdult;
+    onAdult = null;
     adult.close();
-    active?.confirmAdult();
+    done?.();
+  });
+  adult.addEventListener('close', () => {
+    onAdult = null;
   });
   for (const d of [skip, adult]) {
     d.addEventListener('close', () => {
@@ -497,7 +512,7 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
             { class: 'fact' },
             h('div', { class: 'fact__title' }, icon('wifiOff'), 'Nothing sent yet'),
             requests === 0
-              ? 'No request to the site has been made. The first one is the board list, in step 4.'
+              ? `No request to the site has been made. The first one is the board list, in step ${indexOf('boards') + 1}.`
               : `${requests} request${requests === 1 ? '' : 's'} to the site so far this session.`,
           ),
           h(
@@ -510,7 +525,7 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
             'div',
             { class: 'fact' },
             h('div', { class: 'fact__title' }, icon('settings'), 'About a minute'),
-            'Eight short steps. Every answer can be changed later in Settings.',
+            `${st.steps.length} short steps. Every answer can be changed later in Settings.`,
           ),
         ),
       );
@@ -559,17 +574,7 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
           h(
             'div',
             { class: 'stack' },
-            segmented(
-              'theme',
-              'Theme',
-              [
-                { value: 'system', label: 'System' },
-                { value: 'dark', label: 'Dark' },
-                { value: 'light', label: 'Light' },
-              ],
-              d.theme,
-              (v) => set((s) => (s.theme = v)),
-            ),
+            themePicker({ value: d.theme, onChange: (v) => set((s) => (s.theme = v)) }),
             segmented(
               'density',
               'Density',
@@ -584,50 +589,6 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
             h('p', { class: 'field__hint', text: 'System follows your desktop’s light or dark setting.' }),
           ),
           h('div', { class: 'preview' }, bar, preview),
-        ),
-      );
-    },
-
-    content() {
-      const d = st.draft;
-      const on = M.nsfwVisible(d);
-      const confirmed = d.nsfw.confirmedAdultAt ? new Date(d.nsfw.confirmedAdultAt) : null;
-      return h(
-        'section',
-        { class: 'step' },
-        head('What to show', 'CloverEye starts with worksafe boards only, and that is the default.'),
-        h(
-          'div',
-          { class: 'choice' },
-          switchRow({
-            key: 'nsfw',
-            title: 'Show NSFW boards',
-            desc: 'Boards the site marks as not worksafe. While this is off they never appear in board lists, search or the command palette. Turning it on asks you to confirm you are 18 or older.',
-            checked: on,
-            onToggle: (btn) => {
-              if (M.nsfwVisible(st.draft)) {
-                update((s) => M.setNsfw(s, false, { boards: st.boards.list }));
-                toast('NSFW boards hidden');
-              } else {
-                openDialog('adultDialog', btn);
-              }
-            },
-          }),
-          h(
-            'div',
-            { class: 'state-line' },
-            on
-              ? h('span', { class: 'pill' }, h('span', { class: 'dot' }), 'All boards, NSFW included')
-              : h('span', { class: 'pill pill--ok' }, h('span', { class: 'dot' }), 'Worksafe boards only'),
-            on && confirmed ? h('span', { text: `18+ confirmed ${confirmed.toLocaleDateString()}` }) : null,
-          ),
-          fieldError('nsfw'),
-          h(
-            'div',
-            { class: 'callout' },
-            icon('info'),
-            h('div', { text: 'You can change this any time in Settings. Turning it off forgets the confirmation, so it is asked again next time.' }),
-          ),
         ),
       );
     },
@@ -744,8 +705,7 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
                 'p',
                 { class: 'field__hint' },
                 `${hidden} NSFW boards are hidden. `,
-                h('button', { type: 'button', class: 'link-btn', onclick: () => go(indexOf('content')), text: 'Change this in Content' }),
-                '.',
+                'Settings → Content can show them.',
               )
             : null,
           grid,
@@ -773,13 +733,17 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
         );
       } else {
         const r = M.clipReadiness(f.check);
-        const hint = M.installHint({ os: f.check?.os, distro: f.check?.distro });
+        const hint = M.installHint({ os: f.check?.os, distro: f.check?.distro, package: f.check?.package });
+        const pkg = M.packageLabel(f.check?.package);
         body.push(
           h(
             'ul',
             { class: 'checks', 'aria-label': 'ffmpeg check' },
             r.rows.map((row) => {
-              const detail = row.id === 'ffmpeg' && f.check?.found ? `${f.check.version || 'unknown version'} · ${f.check.path || ''}` : row.detail;
+              const detail =
+                row.id === 'ffmpeg' && f.check?.found
+                  ? [f.check.version || 'unknown version', pkg ? `from ${pkg}` : '', f.check.path || ''].filter(Boolean).join(' · ')
+                  : row.detail;
               return h(
                 'li',
                 { class: 'check', 'data-ok': String(row.ok), 'data-required': String(row.required) },
@@ -1118,11 +1082,6 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
 
   const api = {
     finish,
-    confirmAdult() {
-      update((s) => M.setNsfw(s, true, { confirmedAdult: true }), 'none');
-      host.querySelector('[data-key="switch-nsfw"]')?.focus();
-      toast('NSFW boards will be shown');
-    },
     state: st,
   };
   active = api;

@@ -15,13 +15,15 @@ export const CANNED_FFMPEG = Object.freeze({
   distro: 'fedora',
   encoders: { libvpx_vp9: true, libsvtav1: true, libopus: true },
   filters: { ass: true, subtitles: true, libplacebo: true },
+  package: Object.freeze({ name: 'ffmpeg', version: '9.0.2', vendor: 'RPM Fusion', source: 'rpmfusion' }),
 });
 
 const MOCK_FFMPEG = {
   ok: CANNED_FFMPEG,
-  missing: { ...CANNED_FFMPEG, found: false, path: null, version: null, encoders: {}, filters: {} },
+  missing: { ...CANNED_FFMPEG, found: false, path: null, version: null, encoders: {}, filters: {}, package: null },
   partial: {
     ...CANNED_FFMPEG,
+    package: { name: 'ffmpeg-free', version: '8.1.3', vendor: 'Fedora Project', source: 'fedora' },
     encoders: { libvpx_vp9: true, libsvtav1: false, libopus: true },
     filters: { ass: true, subtitles: true, libplacebo: false },
   },

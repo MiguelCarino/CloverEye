@@ -71,7 +71,7 @@ fn live_check_of_the_local_ffmpeg_is_well_formed() {
         assert_eq!(r.encoders, Encoders::default());
     }
     let json = serde_json::to_value(&r).unwrap();
-    for key in ["found", "path", "version", "os", "distro", "encoders", "filters"] {
+    for key in ["found", "path", "version", "os", "distro", "encoders", "filters", "package"] {
         assert!(json.get(key).is_some(), "{key} missing from the bridge shape");
     }
     assert!(json["encoders"].get("libvpx_vp9").is_some());

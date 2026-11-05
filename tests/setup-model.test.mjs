@@ -7,10 +7,10 @@ import * as M from '../ui/js/setup-model.js';
 const boards = JSON.parse(readFileSync(new URL('../ui/data/boards.sample.json', import.meta.url))).boards;
 const now = new Date('2026-11-04T12:00:00Z');
 
-test('eight steps in the SCOPE order, all introduced in version 1', () => {
+test('seven steps, all introduced in version 1; NSFW is not one of them', () => {
   assert.deepEqual(
     M.STEPS.map((s) => s.id),
-    ['welcome', 'look', 'content', 'boards', 'video', 'watching', 'files', 'done'],
+    ['welcome', 'look', 'boards', 'video', 'watching', 'files', 'done'],
   );
   assert.ok(M.STEPS.every((s) => s.since === 1 && s.label));
   assert.equal(M.SETUP_VERSION, 1);
@@ -232,18 +232,18 @@ test('boardHue is stable and never lands in the green band', () => {
 });
 
 test('stepsToShow: first run and rerun show all; up to date shows none', () => {
-  assert.equal(M.stepsToShow(M.defaults()).length, 8);
-  assert.equal(M.stepsToShow(null).length, 8);
+  assert.equal(M.stepsToShow(M.defaults()).length, 7);
+  assert.equal(M.stepsToShow(null).length, 7);
   const done = M.completeSetup(M.defaults(), { now });
   assert.deepEqual(M.stepsToShow(done), []);
-  assert.equal(M.stepsToShow(done, { rerun: true }).length, 8);
+  assert.equal(M.stepsToShow(done, { rerun: true }).length, 7);
   assert.equal(M.needsSetup(done), false);
   assert.equal(M.needsSetup(M.defaults()), true);
   assert.equal(M.needsSetup(null), true);
 });
 
 test('setupVersion migration: a later release shows only its new steps, then Done', () => {
-  const v2steps = [...M.STEPS.slice(0, 7), { id: 'filters', label: 'Filters', since: 2 }, M.STEPS[7]];
+  const v2steps = [...M.STEPS.slice(0, 6), { id: 'filters', label: 'Filters', since: 2 }, M.STEPS[6]];
   const v1done = M.completeSetup(M.defaults(), { now, version: 1 });
   const shown = M.stepsToShow(v1done, { steps: v2steps, version: 2 });
   assert.deepEqual(shown.map((s) => s.id), ['filters', 'done']);
@@ -251,7 +251,7 @@ test('setupVersion migration: a later release shows only its new steps, then Don
   const v2done = M.completeSetup(v1done, { now, version: 2 });
   assert.deepEqual(M.stepsToShow(v2done, { steps: v2steps, version: 2 }), []);
   // never finished: still the whole flow
-  assert.equal(M.stepsToShow(M.defaults(), { steps: v2steps, version: 2 }).length, 9);
+  assert.equal(M.stepsToShow(M.defaults(), { steps: v2steps, version: 2 }).length, 8);
 });
 
 test('completeSetup stamps version and time, normalises, and records a skip', () => {
@@ -324,6 +324,20 @@ test('clipReadiness: no ffmpeg disables Clip with a reason; optional gaps do not
   assert.equal(M.clipReadiness(null).ready, false);
 });
 
+test('installHint on Fedora: ffmpeg-free first, then RPM Fusion', () => {
+  const none = M.installHint({ os: 'linux', distro: 'fedora', package: null });
+  assert.equal(none.command, 'sudo dnf install ffmpeg-free');
+  assert.match(none.note, /RPM Fusion/);
+  const free = M.installHint({ os: 'linux', distro: 'fedora', package: { name: 'ffmpeg-free', version: '8.1.3', vendor: 'Fedora Project', source: 'fedora' } });
+  assert.equal(free.command, 'sudo dnf swap ffmpeg-free ffmpeg --allowerasing');
+  const fusion = M.installHint({ os: 'linux', distro: 'fedora', package: { name: 'ffmpeg', version: '9.0.2', vendor: 'RPM Fusion', source: 'rpmfusion' } });
+  assert.match(fusion.command, /^sudo dnf upgrade/);
+  assert.match(fusion.note, /ffmpeg \(RPM Fusion\)/);
+  assert.equal(M.packageLabel({ name: 'ffmpeg-free', source: 'fedora' }), 'ffmpeg-free (Fedora)');
+  assert.equal(M.packageLabel({ name: 'ffmpeg', source: 'other', vendor: 'Someone' }), 'ffmpeg (Someone)');
+  assert.equal(M.packageLabel(null), '');
+});
+
 test('installHint: a copyable command per OS, never run by the app', () => {
   assert.equal(M.installHint({ os: 'linux', distro: 'fedora' }).command, 'sudo dnf install ffmpeg-free');
   assert.equal(M.installHint({ os: 'linux', distro: 'ubuntu' }).command, 'sudo apt install ffmpeg');
@@ -336,17 +350,32 @@ test('installHint: a copyable command per OS, never run by the app', () => {
   assert.match(unknown.note, /package manager/);
 });
 
-test('summary lists every answer and reflects the NSFW state', () => {
+test('summary lists every setup answer and never mentions NSFW', () => {
   const s = M.completeSetup({ ...M.defaults(), favourites: ['g', 'diy'] }, { now });
   const rows = M.summary(s, { clip: M.clipReadiness({ found: false }) });
-  assert.deepEqual(rows.map((r) => r.step), ['look', 'content', 'boards', 'video', 'watching', 'files']);
+  assert.deepEqual(rows.map((r) => r.step), ['look', 'boards', 'video', 'watching', 'files']);
   assert.equal(rows[0].value, 'System theme · Comfortable · Default text');
-  assert.equal(rows[1].value, 'Worksafe boards only');
-  assert.equal(rows[2].value, '/g/ /diy/');
-  assert.match(rows[3].value, /Clip is off/);
-  assert.match(rows[4].value, /every 10 s/);
-  assert.match(rows[5].value, /memory only/);
+  assert.equal(rows[1].value, '/g/ /diy/');
+  assert.match(rows[2].value, /Clip is off/);
+  assert.match(rows[3].value, /every 10 s/);
+  assert.match(rows[4].value, /memory only/);
   const on = M.setNsfw(s, true, { confirmedAdult: true, now });
-  assert.match(M.summary(on)[1].value, /NSFW included/);
-  assert.equal(M.summary(on)[3].value, 'Not checked');
+  assert.ok(M.summary(on).every((r) => !/NSFW/i.test(r.value)));
+  assert.equal(M.summary(on)[2].value, 'Not checked');
+  assert.equal(M.summary({ ...s, theme: 'yotsuba-b' })[0].value.split(' · ')[0], 'Yotsuba B theme');
+});
+
+test('themes: every id is unique, grouped, labelled and kept by normalizeSettings', () => {
+  const ids = M.THEMES;
+  assert.equal(new Set(ids).size, ids.length);
+  assert.deepEqual(M.THEME_GROUPS.map((g) => g.id), ['clovereye', 'classic', 'atrium']);
+  for (const g of M.THEME_GROUPS) {
+    for (const t of g.themes) {
+      assert.ok(t.label && t.swatch.length === 4 && t.swatch.every((c) => /^#[0-9a-f]{6}$/.test(c)), t.id);
+      assert.equal(M.normalizeSettings({ theme: t.id }).theme, t.id);
+    }
+  }
+  assert.ok(ids.includes('yotsuba') && ids.includes('tomorrow') && ids.includes('cyberpunk') && ids.includes('orchard-dark'));
+  assert.equal(M.normalizeSettings({ theme: 'neon' }).theme, 'system');
+  assert.equal(M.themeLabel('win95'), 'Windows 95');
 });

@@ -103,14 +103,26 @@ test('tokens: dark default, light theme, system follow, density, reduced motion'
   assert.match(css, /@media \(prefers-color-scheme: light\)[\s\S]*:root\[data-theme='system'\]/);
   assert.match(css, /:root\[data-density='compact'\]/);
   assert.match(css, /prefers-reduced-motion: reduce/);
-  for (const t of ['--radius-md', '--space-4', '--fs-base', '--accent', '--text-scale']) assert.ok(css.includes(t), t);
+  for (const t of ['--radius-md', '--space-4', '--fs-base', '--accent', '--text-scale', '--post-bg', '--quotelink']) assert.ok(css.includes(t), t);
   assert.match(css, /--dur-fast: 150ms;/);
   assert.match(css, /--dur-slow: 200ms;/);
 });
 
-test('the icon is an original eye mark, not a clover, not green', () => {
+test('themes.css has a block for every theme the picker offers', async () => {
+  const { THEMES } = await import('../ui/js/setup-model.js');
+  const css = readFileSync(join(UI, 'css/themes.css'), 'utf8');
+  for (const id of THEMES.filter((t) => !['system', 'dark', 'light'].includes(t))) {
+    assert.ok(css.includes(`:root[data-theme='${id}']`), id);
+  }
+  const html = readFileSync(join(UI, 'index.html'), 'utf8');
+  assert.ok(html.indexOf('css/tokens.css') < html.indexOf('css/themes.css') && html.indexOf('css/themes.css') < html.indexOf('css/app.css'));
+});
+
+test('the icon is a golden clover, never green', () => {
   const svg = readFileSync(join(UI, 'assets/icon.svg'), 'utf8');
-  assert.ok(!/four-?leaf|shamrock|\bleaf\b|\bclover\b(?!eye)/i.test(svg.replace(/CloverEye/g, '')));
+  assert.match(svg, /id="ce-leaf"/, 'four leaves drawn from one leaf');
+  assert.equal((svg.match(/href="#ce-leaf"/g) || []).length, 4);
+  assert.match(svg, /id="ce-gold"/);
   for (const [, hex] of svg.matchAll(/#([0-9a-f]{6})\b/gi)) {
     const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
     assert.ok(!(g > r + 20 && g > b + 20), `green-dominant colour #${hex}`);

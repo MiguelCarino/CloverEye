@@ -66,11 +66,18 @@ Files, so Clip code moves between them freely (§11, D2).
 
 The owner's requirement is that the UI is modern. Concretely:
 
-- **Own design system**, not 4chan's look and not Carino's. Tokens on
-  `:root` (colour, radius, spacing, type scale), **dark by default**, light
-  theme, follows the OS setting. One accent colour; board identity through a
-  small coloured tag, not full re-skins. Fonts self-hosted (a variable sans
-  for UI, a mono for code tags).
+- **Own design system**, not Carino's. Tokens on `:root` (colour, radius,
+  spacing, type scale), **dark by default**, light theme, follows the OS
+  setting. One accent colour; board identity through a small coloured tag,
+  not full re-skins. Fonts self-hosted (a variable sans for UI, a mono for
+  code tags).
+- **Theme variants** (owner decision, 4 November 2026), all on the same
+  tokens (`ui/css/themes.css`): **Classic**, the site's own board styles
+  (Yotsuba, Yotsuba B, Futaba, Burichan, Tomorrow, Photon), and **Atrium**,
+  the desktop themes of the owner's Atrium setup (Cyberpunk, Matrix, Aero
+  Glass, Windows 95, Lo-fi, Luna, Moe, Orbit, Orchard, Orchard Dark).
+- **Logo**: a golden four-leaf clover with a dark centre (owner decision,
+  4 November 2026). Gold, never green.
 - **Three-pane layout** on a wide window: left rail (favourite boards,
   watcher with unread badges), centre (catalog or thread), right panel
   (media viewer / Clip / reply form) that slides in when needed. Collapses to
@@ -105,27 +112,28 @@ later in Settings, and **Settings → Run setup again** reopens it.
 1. **Welcome**: what CloverEye is, and that it's an unofficial client, not
    affiliated with or endorsed by 4chan. A link to the site's rules. No
    network request has been made yet, and the screen says so.
-2. **Look**: theme (System / Dark / Light), density (Comfortable / Compact),
-   text size, previewed live on a sample thread built from local data.
-3. **Content**: worksafe boards only, which is the default. An opt-in switch for NSFW
-   boards that needs an explicit "I am 18 or older" confirmation; off means
-   NSFW boards never appear in lists, search or the palette (D6).
-4. **Boards**: pick favourites from a grid (the board list is the first
+2. **Look**: theme (System / Dark / Light, the Classic and the Atrium
+   variants), density (Comfortable / Compact), text size, previewed live on
+   a sample thread built from local data.
+3. **Boards**: pick favourites from a grid (the board list is the first
    network request, made only when this step opens; if it fails, the step
    offers Retry or Skip, and favourites can be picked later).
-5. **Video (Clip)**: checks ffmpeg and its encoders (libvpx-vp9, libsvtav1,
+4. **Video (Clip)**: checks ffmpeg and its encoders (libvpx-vp9, libsvtav1,
    libopus, libass, libplacebo) and shows a ✓/✗ row each. When something is
-   missing, it shows the install command for this OS to copy. The app
+   missing, it shows the install command for this OS to copy. On Fedora it
+   reads which package is installed (read-only `rpm -q`): Fedora's
+   `ffmpeg-free` first, then RPM Fusion's `ffmpeg`, and the command fits that
+   (install `ffmpeg-free`, or swap to RPM Fusion's fuller build). The app
    never runs a package manager or asks for admin rights. Clip is disabled
    with a reason until the check passes; everything else works.
-6. **Watching**: notifications for replies to your posts (on/off; asks
+5. **Watching**: notifications for replies to your posts (on/off; asks
    the OS for permission only if on), keep running in the tray when the
    window closes (on/off), and how often watched threads update (10 s
    minimum, the API rule).
-7. **Files and privacy**: download folder; "strip location and camera data
+6. **Files and privacy**: download folder; "strip location and camera data
    from images before posting" (on by default); media cache in memory only
    (default) or a size-capped temp cache.
-8. **Done**: a summary of the choices with links to change each, then
+7. **Done**: a summary of the choices with links to change each, then
    opens the first favourite board (or the board list).
 
 Stored in the app's settings DB with a `setupVersion`; a later release

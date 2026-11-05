@@ -1,8 +1,10 @@
 //! Checks what the local ffmpeg can do for Clip (SCOPE §3.1b step 5).
 //!
-//! It runs exactly three read-only commands, all on the ffmpeg binary:
-//! `ffmpeg -version`, `ffmpeg -hide_banner -encoders` and
-//! `ffmpeg -hide_banner -filters`. It never installs anything, never runs a
+//! It runs three read-only commands on the ffmpeg binary: `ffmpeg -version`,
+//! `ffmpeg -hide_banner -encoders` and `ffmpeg -hide_banner -filters`. On
+//! RPM-based Linux it also asks the RPM database, read-only, which ffmpeg
+//! package is installed: Fedora's `ffmpeg-free` first, then RPM Fusion's
+//! `ffmpeg` (`rpm -q ffmpeg-free ffmpeg`). It never installs anything, never runs a
 //! package manager and never asks for admin rights; when something is
 //! missing, the UI shows an install command for the person to copy.
 
@@ -37,7 +39,63 @@ pub struct FfmpegCheck {
     pub distro: Option<String>,
     pub encoders: Encoders,
     pub filters: Filters,
+    /// RPM-based Linux only: the installed ffmpeg package, if any.
+    pub package: Option<Package>,
     pub error: Option<String>,
+}
+
+/// An installed ffmpeg package, from the RPM database.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Package {
+    /// `ffmpeg-free` (Fedora) or `ffmpeg` (RPM Fusion, or another repo).
+    pub name: String,
+    pub version: String,
+    pub vendor: String,
+    /// "fedora" | "rpmfusion" | "other"
+    pub source: String,
+}
+
+/// The RPM query `check` runs: one line per package, `name\tversion\tvendor`.
+pub const RPM_QUERY: [&str; 5] = ["-q", "--qf", "%{NAME}\t%{VERSION}\t%{VENDOR}\n", "ffmpeg-free", "ffmpeg"];
+
+/// Reads `rpm -q --qf ... ffmpeg-free ffmpeg` output ("package x is not
+/// installed" lines are skipped). Fedora's `ffmpeg-free` wins when present;
+/// otherwise RPM Fusion's (or another repo's) `ffmpeg`.
+pub fn parse_rpm_packages(output: &str) -> Option<Package> {
+    let found: Vec<Package> = output
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split('\t');
+            let (name, version, vendor) = (f.next()?, f.next()?, f.next()?);
+            if name != "ffmpeg-free" && name != "ffmpeg" {
+                return None;
+            }
+            let v = vendor.to_ascii_lowercase();
+            let source = if name == "ffmpeg-free" || v.contains("fedora") {
+                "fedora"
+            } else if v.contains("rpm fusion") || v.contains("rpmfusion") {
+                "rpmfusion"
+            } else {
+                "other"
+            };
+            Some(Package { name: name.into(), version: version.into(), vendor: vendor.into(), source: source.into() })
+        })
+        .collect();
+    let free = found.iter().find(|p| p.name == "ffmpeg-free");
+    free.or_else(|| found.iter().find(|p| p.name == "ffmpeg")).cloned()
+}
+
+/// Asks the RPM database (read-only) where it exists; `None` elsewhere.
+fn rpm_package() -> Option<Package> {
+    if std::env::consts::OS != "linux" {
+        return None;
+    }
+    let rpm = ["/usr/bin/rpm", "/bin/rpm"].into_iter().map(Path::new).find(|p| p.is_file())?;
+    let mut cmd = Command::new(rpm);
+    cmd.args(RPM_QUERY).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    // rpm exits 1 when one of the two is not installed; the output still counts.
+    let out = cmd.output().ok()?;
+    parse_rpm_packages(&String::from_utf8_lossy(&out.stdout))
 }
 
 /// Names from the table `ffmpeg -encoders` or `-filters` prints: the second
@@ -166,6 +224,7 @@ pub fn check(app_dir: Option<&Path>) -> FfmpegCheck {
         distro: linux_distro(),
         encoders: Encoders::default(),
         filters: Filters::default(),
+        package: rpm_package(),
         error: None,
     };
     let version = match run(&bin, &["-version"]) {
@@ -192,6 +251,20 @@ pub fn check(app_dir: Option<&Path>) -> FfmpegCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rpm_prefers_ffmpeg_free_then_rpm_fusion() {
+        let both = "ffmpeg-free\t8.1.3\tFedora Project\nffmpeg\t9.0.2\tRPM Fusion\n";
+        let p = parse_rpm_packages(both).unwrap();
+        assert_eq!((p.name.as_str(), p.source.as_str()), ("ffmpeg-free", "fedora"));
+        let fusion = "package ffmpeg-free is not installed\nffmpeg\t9.0.2\tRPM Fusion\n";
+        let p = parse_rpm_packages(fusion).unwrap();
+        assert_eq!((p.name.as_str(), p.version.as_str(), p.source.as_str()), ("ffmpeg", "9.0.2", "rpmfusion"));
+        let other = "package ffmpeg-free is not installed\nffmpeg\t7.1\tSomeone Else\n";
+        assert_eq!(parse_rpm_packages(other).unwrap().source, "other");
+        assert_eq!(parse_rpm_packages("package ffmpeg-free is not installed\npackage ffmpeg is not installed\n"), None);
+        assert_eq!(parse_rpm_packages(""), None);
+    }
 
     #[test]
     fn table_rows_only_after_the_separator() {

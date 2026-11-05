@@ -6,6 +6,7 @@ import { defaults, needsSetup, normalizeSettings } from './setup-model.js';
 import { applyLook } from './look.js';
 import { startSetup } from './setup.js';
 import { openShell } from './shell.js';
+import { toast } from './dom.js';
 
 const bridge = createBridge({
   tauri: window.__TAURI__ ?? null,
@@ -43,7 +44,15 @@ function showShell(settings) {
     settings,
     boards: boardsCache,
     setTitle,
-    onRunSetup: () => runSetup(settings, true),
+    onRunSetup: () => runSetup(current, true),
+    onSave: async (next) => {
+      current = next;
+      try {
+        await bridge.setSettings(next);
+      } catch (e) {
+        toast(`Settings were not saved: ${e?.message || e}`);
+      }
+    },
   });
 }
 

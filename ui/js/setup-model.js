@@ -9,7 +9,6 @@ export const SETUP_VERSION = 1;
 export const STEPS = Object.freeze([
   { id: 'welcome', label: 'Welcome', since: 1 },
   { id: 'look', label: 'Look', since: 1 },
-  { id: 'content', label: 'Content', since: 1 },
   { id: 'boards', label: 'Boards', since: 1 },
   { id: 'video', label: 'Video', since: 1 },
   { id: 'watching', label: 'Watching', since: 1 },
@@ -17,7 +16,55 @@ export const STEPS = Object.freeze([
   { id: 'done', label: 'Done', since: 1 },
 ]);
 
-export const THEMES = Object.freeze(['system', 'dark', 'light']);
+/** Every theme, grouped for the picker. `swatch` is [page, card, accent,
+ *  text] for the picker's thumbnail; the real colours live in
+ *  ui/css/tokens.css under :root[data-theme='<id>']. Classic recreates the
+ *  site's own board styles; Atrium carries the desktop themes of the Atrium
+ *  setup. */
+export const THEME_GROUPS = Object.freeze([
+  {
+    id: 'clovereye',
+    label: 'CloverEye',
+    themes: [
+      { id: 'system', label: 'System', swatch: ['#0e0f14', '#f6f6f9', '#8f7dff', '#171923'] },
+      { id: 'dark', label: 'Dark', swatch: ['#0e0f14', '#15171e', '#8f7dff', '#e9eaf0'] },
+      { id: 'light', label: 'Light', swatch: ['#f6f6f9', '#ffffff', '#5b45e0', '#171923'] },
+    ],
+  },
+  {
+    id: 'classic',
+    label: 'Classic',
+    themes: [
+      { id: 'yotsuba', label: 'Yotsuba', swatch: ['#ffffee', '#f0e0d6', '#cc1105', '#800000'] },
+      { id: 'yotsuba-b', label: 'Yotsuba B', swatch: ['#eef2ff', '#d6daf0', '#0f0c5d', '#000000'] },
+      { id: 'futaba', label: 'Futaba', swatch: ['#ffffee', '#f0e0d6', '#cc1105', '#800000'] },
+      { id: 'burichan', label: 'Burichan', swatch: ['#eef2ff', '#d6daf0', '#34345c', '#000000'] },
+      { id: 'tomorrow', label: 'Tomorrow', swatch: ['#1d1f21', '#282a2e', '#81a2be', '#c5c8c6'] },
+      { id: 'photon', label: 'Photon', swatch: ['#eeeeee', '#dddddd', '#ff6600', '#333333'] },
+    ],
+  },
+  {
+    id: 'atrium',
+    label: 'Atrium',
+    themes: [
+      { id: 'cyberpunk', label: 'Cyberpunk', swatch: ['#07090f', '#0d1220', '#00f0ff', '#e6fcff'] },
+      { id: 'matrix', label: 'Matrix', swatch: ['#000000', '#000803', '#3ddc68', '#c8d4cb'] },
+      { id: 'aero', label: 'Aero Glass', swatch: ['#06142a', '#0c2240', '#4aa3f0', '#f4f9ff'] },
+      { id: 'win95', label: 'Windows 95', swatch: ['#a0a0a0', '#acacac', '#000080', '#000000'] },
+      { id: 'lofi', label: 'Lo-fi', swatch: ['#1c1830', '#2a2342', '#f2a477', '#e8dccb'] },
+      { id: 'luna', label: 'Luna', swatch: ['#c3bea7', '#d8d3bd', '#2459c8', '#1c1a14'] },
+      { id: 'moe', label: 'Moe', swatch: ['#f6dce8', '#fbeaf1', '#8c2457', '#3d1f3b'] },
+      { id: 'orbit', label: 'Orbit', swatch: ['#070b14', '#16223a', '#5cc8db', '#dbe4f0'] },
+      { id: 'orchard', label: 'Orchard', swatch: ['#ececec', '#ffffff', '#007aff', '#1d1d1f'] },
+      { id: 'orchard-dark', label: 'Orchard Dark', swatch: ['#1e1e1e', '#2c2c2e', '#0a84ff', '#ebebf0'] },
+    ],
+  },
+]);
+
+export const THEMES = Object.freeze(THEME_GROUPS.flatMap((g) => g.themes.map((t) => t.id)));
+
+/** "Yotsuba B", "Orchard Dark"…; the id itself when unknown. */
+export const themeLabel = (id) => THEME_GROUPS.flatMap((g) => g.themes).find((t) => t.id === id)?.label ?? String(id);
 export const DENSITIES = Object.freeze(['comfortable', 'compact']);
 export const TEXT_SCALES = Object.freeze([
   { value: 0.9, label: 'Small' },
@@ -126,6 +173,7 @@ const clone = (s) => JSON.parse(JSON.stringify(s));
 export function validateStep(id, s) {
   const errors = {};
   if (id === 'content') {
+    // Settings → Content (NSFW is never asked during setup).
     if (s.nsfw?.enabled && !s.nsfw?.confirmedAdultAt) {
       errors.nsfw = 'Showing NSFW boards needs the 18+ confirmation.';
     }
@@ -320,8 +368,20 @@ export function clipReadiness(check) {
   return { ready: missingRequired.length === 0, rows, missingRequired, missingOptional, reason, version: c.version || null };
 }
 
-/** The install command to copy for this OS. CloverEye never runs it. */
-export function installHint({ os = 'linux', distro = '' } = {}) {
+/** "ffmpeg-free (Fedora)", "ffmpeg (RPM Fusion)"…, from check_ffmpeg's
+ *  `package` (RPM-based Linux only); '' when unknown. */
+export function packageLabel(pkg) {
+  if (!pkg || typeof pkg.name !== 'string' || !pkg.name) return '';
+  const from = pkg.source === 'fedora' ? 'Fedora' : pkg.source === 'rpmfusion' ? 'RPM Fusion' : String(pkg.vendor || '').trim();
+  return from ? `${pkg.name} (${from})` : pkg.name;
+}
+
+const RPMFUSION_NOTE = 'RPM Fusion’s ffmpeg works too: with the RPM Fusion repositories enabled, `sudo dnf install ffmpeg`.';
+
+/** The install command to copy for this OS. CloverEye never runs it.
+ *  On Fedora it looks at which package is installed: Fedora's ffmpeg-free
+ *  first, then RPM Fusion's ffmpeg. */
+export function installHint({ os = 'linux', distro = '', package: pkg = null } = {}) {
   const d = String(distro || '').toLowerCase();
   if (os === 'windows') {
     return {
@@ -336,7 +396,19 @@ export function installHint({ os = 'linux', distro = '' } = {}) {
     };
   }
   if (/fedora|rhel|centos|rocky|alma|nobara/.test(d)) {
-    return { command: 'sudo dnf install ffmpeg-free', note: "Fedora's ffmpeg-free has VP9, AV1, Opus, libass and libplacebo." };
+    if (pkg?.name === 'ffmpeg-free') {
+      return {
+        command: 'sudo dnf swap ffmpeg-free ffmpeg --allowerasing',
+        note: 'Installed now: Fedora’s ffmpeg-free. RPM Fusion’s ffmpeg is the fuller build; this swaps to it (the RPM Fusion repositories must be enabled).',
+      };
+    }
+    if (pkg?.name === 'ffmpeg') {
+      return {
+        command: 'sudo dnf upgrade --refresh ffmpeg ffmpeg-libs',
+        note: `Installed now: ${packageLabel(pkg)}. An update may bring the missing parts.`,
+      };
+    }
+    return { command: 'sudo dnf install ffmpeg-free', note: `Fedora’s ffmpeg-free has VP9, AV1, Opus, libass and libplacebo. ${RPMFUSION_NOTE}` };
   }
   if (/ubuntu|debian|mint|pop|elementary|zorin/.test(d)) return { command: 'sudo apt install ffmpeg', note: '' };
   if (/arch|manjaro|endeavour|cachy/.test(d)) return { command: 'sudo pacman -S ffmpeg', note: '' };
@@ -355,12 +427,7 @@ export function summary(s, { clip = null } = {}) {
   rows.push({
     step: 'look',
     label: 'Look',
-    value: `${cap(s.theme)} theme · ${cap(s.density)} · ${scaleLabel(s.textScale)} text`,
-  });
-  rows.push({
-    step: 'content',
-    label: 'Content',
-    value: nsfwVisible(s) ? 'All boards, NSFW included (18+ confirmed)' : 'Worksafe boards only',
+    value: `${themeLabel(s.theme)} theme · ${cap(s.density)} · ${scaleLabel(s.textScale)} text`,
   });
   rows.push({
     step: 'boards',

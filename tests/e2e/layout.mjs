@@ -109,44 +109,60 @@ for (const width of widths) {
     await page.waitForSelector('#setup:not([hidden]) .step__title');
     await page.waitForTimeout(400);
     const tag = (s) => `${which}-${width}-${scheme}-${s}`;
-    const steps = ['1-welcome', '2-look', '3-content', '4-boards', '5-video', '6-watching', '7-files', '8-done'];
+    const steps = ['1-welcome', '2-look', '3-boards', '4-video', '5-watching', '6-files', '7-done'];
     for (let i = 0; i < steps.length; i++) {
       if (i === 1) await page.waitForSelector('.preview .post');
-      if (i === 3) await page.waitForSelector('.board-tile');
-      if (i === 4) await page.waitForSelector('.check');
-      if (i === 3) { await page.locator('[data-board="g"]').click(); await page.locator('[data-board="diy"]').click(); }
+      if (i === 2) await page.waitForSelector('.board-tile');
+      if (i === 3) await page.waitForSelector('.check');
+      if (i === 2) { await page.locator('[data-board="g"]').click(); await page.locator('[data-board="diy"]').click(); }
       await page.waitForTimeout(350); // let the enter transition finish
       await audit(page, tag(steps[i]));
-      if (i === 2) {
-        await page.locator('[data-key="switch-nsfw"]').click();
-        await page.waitForTimeout(250);
-        await audit(page, tag('3b-adult-dialog'));
-        await page.locator('#adultDialog [data-act="cancel"]').click();
+      if (i === 1) {
+        for (const t of ['yotsuba', 'tomorrow', 'win95']) {
+          await page.locator(`label:has(input[name="theme"][value="${t}"])`).click();
+          await page.waitForTimeout(150);
+          await audit(page, tag(`2b-look-${t}`));
+        }
+        await page.locator('label:has(input[name="theme"][value="system"])').click();
       }
-      if (i === 5) {
+      if (i === 4) {
         await page.fill('#intervalInput', '3');
         await page.locator('#nextBtn').click();
         await page.waitForTimeout(250);
-        await audit(page, tag('6b-interval-error'));
+        await audit(page, tag('5b-interval-error'));
         await page.fill('#intervalInput', '10');
       }
-      if (i === 6) {
+      if (i === 5) {
         await page.locator('label:has(input[name="cache"][value="temp"])').click();
         await page.waitForTimeout(150);
-        await audit(page, tag('7b-files-temp'));
+        await audit(page, tag('6b-files-temp'));
       }
       if (i < steps.length - 1) await page.locator('#nextBtn').click();
     }
     await page.keyboard.press('Escape'); // no skip on Done (Skip hidden) – make sure nothing breaks
     await page.waitForTimeout(200);
     if (await page.locator('#skipDialog').isVisible()) {
-      await audit(page, tag('8b-skip-dialog'));
+      await audit(page, tag('7b-skip-dialog'));
       await page.keyboard.press('Escape');
     }
     await page.locator('#nextBtn').click();
     await page.waitForSelector('#shell:not([hidden])');
     await page.waitForTimeout(400);
-    await audit(page, tag('9-shell'));
+    await audit(page, tag('8-shell'));
+    if (await page.locator('[data-key="rail-toggle"]').isVisible()) { await page.locator('[data-key="rail-toggle"]').click(); await page.waitForTimeout(250); }
+    await page.locator('[data-key="settings"]').click();
+    await page.waitForSelector('.settings');
+    await page.waitForTimeout(300);
+    await audit(page, tag('9-settings'));
+    await page.locator('[data-key="switch-nsfw"]').click();
+    await page.waitForTimeout(250);
+    await audit(page, tag('9b-adult-dialog'));
+    await page.locator('#adultDialog [data-act="cancel"]').click();
+    for (const t of ['photon', 'matrix', 'moe']) {
+      await page.locator(`label:has(input[name="theme"][value="${t}"])`).click();
+      await page.waitForTimeout(150);
+      await audit(page, tag(`9c-settings-${t}`));
+    }
     await ctx.close();
   }
 }

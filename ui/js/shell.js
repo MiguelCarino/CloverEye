@@ -3,8 +3,10 @@
 
 import * as M from './setup-model.js';
 import { h, clear, icon } from './dom.js';
+import { renderSettings } from './settings-view.js';
 
-export function openShell({ settings, boards = null, onRunSetup, setTitle = () => {} }) {
+export function openShell({ settings: initial, boards = null, onRunSetup, onSave = () => {}, setTitle = () => {} }) {
+  let settings = initial;
   const root = document.getElementById('shell');
   const titleOf = (code) => boards?.find((b) => b.board === code)?.title || '';
   const st = { view: M.firstDestination(settings, boards), panel: false, rail: false };
@@ -82,18 +84,45 @@ export function openShell({ settings, boards = null, onRunSetup, setTitle = () =
       h(
         'div',
         { class: 'rail__foot' },
-        h('h2', { class: 'rail__heading', text: 'Settings' }),
-        h('button', { type: 'button', class: 'rail__item', 'data-key': 'rerun', onclick: () => onRunSetup() }, icon('settings'), h('span', { text: 'Run setup again' })),
+        h(
+          'button',
+          {
+            type: 'button',
+            class: 'rail__item',
+            'aria-current': v.kind === 'settings' ? 'page' : null,
+            'data-key': 'settings',
+            onclick: () => goto({ kind: 'settings' }),
+          },
+          icon('settings'),
+          h('span', { text: 'Settings' }),
+        ),
       ),
     );
 
     const title =
-      v.kind === 'board'
+      v.kind === 'settings'
+        ? h('h1', { class: 'centre__title' }, h('span', { text: 'Settings' }))
+        : v.kind === 'board'
         ? h('h1', { class: 'centre__title' }, tag(v.board), h('span', { text: titleOf(v.board) || 'Catalog' }))
         : h('h1', { class: 'centre__title' }, h('span', { text: 'All boards' }));
 
     const body = h('div', { class: 'centre__body' });
-    if (v.kind === 'board') {
+    if (v.kind === 'settings') {
+      body.append(
+        renderSettings({
+          settings,
+          boards,
+          onRunSetup,
+          onChange: (next, { redraw = true, focus = null } = {}) => {
+            settings = next;
+            onSave(next);
+            if (!redraw) return;
+            render();
+            if (focus) root.querySelector(`[data-key="${CSS.escape(focus)}"]`)?.focus();
+          },
+        }),
+      );
+    } else if (v.kind === 'board') {
       body.append(
         h(
           'div',
@@ -203,7 +232,7 @@ export function openShell({ settings, boards = null, onRunSetup, setTitle = () =
     if (st.rail) root.dataset.railOpen = '';
     else delete root.dataset.railOpen;
 
-    setTitle(v.kind === 'board' ? `/${v.board}/${titleOf(v.board) ? ` · ${titleOf(v.board)}` : ''}` : 'All boards');
+    setTitle(v.kind === 'settings' ? 'Settings' : v.kind === 'board' ? `/${v.board}/${titleOf(v.board) ? ` · ${titleOf(v.board)}` : ''}` : 'All boards');
     if (focusKey) root.querySelector(`[data-key="${CSS.escape(focusKey)}"]`)?.focus();
   }
 

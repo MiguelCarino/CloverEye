@@ -15,8 +15,9 @@ Licence: [AGPL-3.0](LICENSE). Scope and phases: [docs/SCOPE.md](docs/SCOPE.md).
 |---|---|
 | Rust fetch layer (`crates/fetch`) | Built and tested: one queue, ≥ 1 s between requests, ≥ 10 s per thread, `If-Modified-Since`/304, back-off on 429/5xx/other errors that waits out `Retry-After` in full |
 | ffmpeg check (`crates/ffcheck`) | Built and tested: read-only `-version`/`-encoders`/`-filters` |
-| First-time setup (`ui/`) | Runs in a browser with a mock bridge; 8 steps per SCOPE §3.1b |
-| Design tokens (`ui/css/tokens.css`) | Dark default, light, follows the system; density; text size |
+| First-time setup (`ui/`) | Runs in a browser with a mock bridge; 7 steps per SCOPE §3.1b (NSFW is only in Settings) |
+| Design tokens (`ui/css/tokens.css`, `themes.css`) | Dark default, light, follows the system; Classic and Atrium theme variants; density; text size |
+| Settings (`ui/js/settings-view.js`) | Look (theme, density, text size) and Content (NSFW boards, 18+ confirmation); saves as you change it |
 | Desktop shell (`src-tauri/`) | Release-built and packaged as RPMs for Fedora 44 and 45; launched once on Fedora 45 (setup renders in WebKitGTK), not yet exercised further (see below) |
 | Live API probe (`crates/fetch/examples/probe.rs`) | Run once on 4 November 2026: no 429s; results in [docs/C0-PROBE.md](docs/C0-PROBE.md) |
 
@@ -100,10 +101,11 @@ PLAYWRIGHT=/path/to/playwright/index.mjs node tests/e2e/setup-flow.mjs chromium 
 PLAYWRIGHT=/path/to/playwright/index.mjs SHOTS_DIR=shots node tests/e2e/layout.mjs chromium
 ```
 
-`setup-flow.mjs` walks all eight steps with the mouse and again with the
-keyboard only (Enter, Esc, arrows, Tab, Space), plus the board-list failure
-and missing-ffmpeg states. `layout.mjs` screenshots every step, the dialogs
-and the shell at widths 360, 800, 1280 and 1920 in dark and light, and
+`setup-flow.mjs` walks all seven steps and Settings with the mouse and
+again with the keyboard only (Enter, Esc, arrows, Tab, Space), plus the
+board-list failure and missing-ffmpeg states. `layout.mjs` screenshots every step, the dialogs
+the shell and Settings (with a few Classic and Atrium themes) at widths
+360, 800, 1280 and 1920 in dark and light, and
 reports horizontal scroll, off-screen or clipped elements, overlapping
 controls and console errors.
 
@@ -177,8 +179,8 @@ image host answers a polite client or returns 429.
   are cut); without one the delay doubles from 2 s, capped at five minutes.
 - Redirects are not followed, so no request skips the queue.
 - `User-Agent: CloverEye/<version>`. Nothing about the user is sent.
-- NSFW boards (`ws_board: 0`) stay hidden until the user opts in with an
-  explicit 18+ confirmation.
+- NSFW boards (`ws_board: 0`) stay hidden until the user opts in, in
+  Settings → Content, with an explicit 18+ confirmation. Setup never asks.
 - No package manager is ever run and no admin rights are asked for; missing
   tools come with a command to copy.
 

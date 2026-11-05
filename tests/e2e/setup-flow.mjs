@@ -35,10 +35,10 @@ const settled = (page) => page.waitForTimeout(300);
   await page.goto(BASE);
   await page.waitForSelector('#setup:not([hidden]) .step__title');
   check('setup shown on first launch', await page.locator('#setup').isVisible());
-  check('step 1 is Welcome', (await stepLabel(page)).includes('Step 1 of 8 · Welcome'), await stepLabel(page));
+  check('step 1 is Welcome', (await stepLabel(page)).includes('Step 1 of 7 · Welcome'), await stepLabel(page));
   check('Back disabled on step 1', await page.locator('#backBtn').isDisabled());
-  check('welcome says no request made', (await page.locator('.fact').first().textContent()).includes('No request'));
-  check('8 progress steps', (await page.locator('#progress li').count()) === 8);
+  check('welcome says no request made', (await page.locator('.fact').first().textContent()).includes('in step 3'));
+  check('7 progress steps, no Content step', (await page.locator('#progress li').count()) === 7 && (await page.locator('#progress button:has-text("Content")').count()) === 0);
 
   await nextBtn(page).click(); await settled(page);
   check('step 2 Look', (await stepLabel(page)).includes('Look'));
@@ -52,52 +52,32 @@ const settled = (page) => page.waitForTimeout(300);
   check('Back returns to Welcome', (await stepLabel(page)).includes('Welcome'));
   await nextBtn(page).click(); await settled(page);
   check('Look remembers Light after Back', await page.locator('input[name="theme"][value="light"]').isChecked());
+  await page.locator('label:has(input[name="theme"][value="yotsuba"])').click();
+  check('Classic theme applies (Yotsuba)', (await page.getAttribute('html', 'data-theme')) === 'yotsuba');
+  await settled(page); // the post colour transition
+  const replyBg = await page.locator('.preview .post:not(.post--op)').first().evaluate((el) => getComputedStyle(el).backgroundColor);
+  check('Yotsuba replies are the classic colour', replyBg === 'rgb(240, 224, 214)', replyBg);
+  await page.locator('label:has(input[name="theme"][value="cyberpunk"])').click();
+  check('Atrium theme applies (Cyberpunk)', (await page.getAttribute('html', 'data-theme')) === 'cyberpunk');
+  check('19 themes offered in 3 groups', (await page.locator('input[name="theme"]').count()) === 19 && (await page.locator('.theme-picker__group').count()) === 3);
   await page.locator('label:has(input[name="theme"][value="dark"])').click();
   await page.locator('label:has(input[name="density"][value="comfortable"])').click();
-
-  await nextBtn(page).click(); await settled(page);
-  check('step 3 Content', (await stepLabel(page)).includes('Content'));
-  const sw = page.locator('[data-key="switch-nsfw"]');
-  check('NSFW off by default', (await sw.getAttribute('aria-checked')) === 'false');
-  await sw.click();
-  check('18+ dialog opens', await page.locator('#adultDialog').isVisible());
-  check('Turn on disabled until confirmed', await page.locator('#adultDialog [data-act="confirm"]').isDisabled());
-  await page.locator('#adultDialog [data-act="cancel"]').click();
-  check('Cancel keeps NSFW off', (await sw.getAttribute('aria-checked')) === 'false');
-  await sw.click();
-  await page.locator('#adultConfirm').check();
-  await page.locator('#adultDialog [data-act="confirm"]').click(); await settled(page);
-  check('confirm turns NSFW on', (await page.locator('[data-key="switch-nsfw"]').getAttribute('aria-checked')) === 'true');
-  await page.locator('[data-key="switch-nsfw"]').click(); await settled(page);
-  check('turning off needs no dialog', !(await page.locator('#adultDialog').isVisible()) && (await page.locator('[data-key="switch-nsfw"]').getAttribute('aria-checked')) === 'false');
+  check('setup never shows an NSFW switch', (await page.locator('#setup [data-key="switch-nsfw"]').count()) === 0);
 
   check('no outside request before Boards', page._outside.length === 0, page._outside.join(','));
   await nextBtn(page).click();
   await page.waitForSelector('.board-tile');
-  check('step 4 Boards', (await stepLabel(page)).includes('Boards'));
+  check('step 3 Boards', (await stepLabel(page)).includes('Boards'));
   const tiles = await page.locator('.board-tile').count();
   check('only worksafe boards listed (53)', tiles === 53, String(tiles));
   check('/b/ hidden while NSFW off', (await page.locator('[data-board="b"]').count()) === 0);
-  check('hidden-count hint shown', (await page.locator('text=NSFW boards are hidden').count()) === 1);
+  check('hidden-count hint points to Settings', (await page.locator('text=Settings → Content can show them').count()) === 1);
   await page.locator('[data-board="g"]').click();
   await page.locator('[data-board="diy"]').click();
   check('two favourites selected', (await page.locator('.boards-tools .pill').textContent()).includes('2 selected'));
   await page.fill('[data-key="board-filter"]', 'techno');
   check('filter narrows grid', (await page.locator('.board-tile').count()) < 10);
   await page.fill('[data-key="board-filter"]', '');
-  // NSFW on → /b/ appears; off again → hidden and pruned
-  await page.locator('#progress button:has-text("Content")').click(); await settled(page);
-  await page.locator('[data-key="switch-nsfw"]').click();
-  await page.locator('#adultConfirm').check();
-  await page.locator('#adultDialog [data-act="confirm"]').click(); await settled(page);
-  await page.locator('#progress button:has-text("Boards")').click(); await page.waitForSelector('.board-tile');
-  check('NSFW on shows all 77 boards', (await page.locator('.board-tile').count()) === 77);
-  await page.locator('[data-board="b"]').click();
-  await page.locator('#progress button:has-text("Content")').click(); await settled(page);
-  await page.locator('[data-key="switch-nsfw"]').click(); await settled(page);
-  await page.locator('#progress button:has-text("Boards")').click(); await page.waitForSelector('.board-tile');
-  check('NSFW off again hides /b/', (await page.locator('[data-board="b"]').count()) === 0);
-  check('NSFW favourite pruned', (await page.locator('.boards-tools .pill').textContent()).includes('2 selected'), await page.locator('.boards-tools .pill').textContent());
 
   await nextBtn(page).click();
   await page.waitForSelector('.check');
@@ -114,7 +94,7 @@ const settled = (page) => page.waitForTimeout(300);
   check('step 7 Files', (await stepLabel(page)).includes('Files'));
   check('strip metadata on by default', (await page.locator('[data-key="switch-strip"]').getAttribute('aria-checked')) === 'true');
   await nextBtn(page).click(); await settled(page);
-  check('step 8 Done', (await stepLabel(page)).includes('Done'));
+  check('step 7 Done', (await stepLabel(page)).includes('Done'));
   check('Skip hidden on Done', !(await page.locator('#skipBtn').isVisible()));
   await page.keyboard.press('Escape'); await settled(page);
   check('Esc on Done does not open Skip dialog', !(await page.locator('#skipDialog').isVisible()));
@@ -132,11 +112,40 @@ const settled = (page) => page.waitForTimeout(300);
   check('saved favourites g,diy', JSON.stringify(stored?.favourites) === '["g","diy"]', JSON.stringify(stored?.favourites));
   check('saved interval 15', stored?.watch?.intervalSec === 15);
   check('saved NSFW off', stored?.nsfw && !stored.nsfw.enabled, JSON.stringify(stored?.nsfw));
+  check('summary has no Content row', (await page.locator('[data-key="change-content"]').count()) === 0);
+
+  // Settings → Content: the only place NSFW boards can be turned on
+  await page.locator('[data-key="settings"]').click(); await page.waitForSelector('.settings');
+  check('Settings opens in the shell', (await page.locator('.centre__title').textContent()).includes('Settings'));
+  const sw = page.locator('[data-key="switch-nsfw"]');
+  check('NSFW off by default', (await sw.getAttribute('aria-checked')) === 'false');
+  await sw.click();
+  check('18+ dialog opens', await page.locator('#adultDialog').isVisible());
+  check('Turn on disabled until confirmed', await page.locator('#adultDialog [data-act="confirm"]').isDisabled());
+  await page.locator('#adultDialog [data-act="cancel"]').click(); await settled(page);
+  check('Cancel keeps NSFW off', (await page.locator('[data-key="switch-nsfw"]').getAttribute('aria-checked')) === 'false');
+  await page.locator('[data-key="switch-nsfw"]').click();
+  await page.locator('#adultConfirm').check();
+  await page.locator('#adultDialog [data-act="confirm"]').click(); await settled(page);
+  check('confirm turns NSFW on', (await page.locator('[data-key="switch-nsfw"]').getAttribute('aria-checked')) === 'true');
+  check('NSFW on is saved with the 18+ date', await page.evaluate(() => { const s = JSON.parse(localStorage.getItem('clovereye.settings')); return s.nsfw.enabled && Boolean(s.nsfw.confirmedAdultAt); }));
+  await page.locator('[data-key="all-boards"]').click(); await settled(page);
+  check('NSFW on: All boards lists 77', (await page.locator('.board-list .rail__item').count()) === 77, String(await page.locator('.board-list .rail__item').count()));
+  await page.locator('[data-key="settings"]').click(); await page.waitForSelector('.settings');
+  await page.locator('[data-key="switch-nsfw"]').click(); await settled(page);
+  check('turning off needs no dialog', !(await page.locator('#adultDialog').isVisible()) && (await page.locator('[data-key="switch-nsfw"]').getAttribute('aria-checked')) === 'false');
+  await page.locator('[data-key="all-boards"]').click(); await settled(page);
+  check('NSFW off: All boards back to 53', (await page.locator('.board-list .rail__item').count()) === 53);
+  await page.locator('[data-key="settings"]').click(); await page.waitForSelector('.settings');
+  await page.locator('label:has(input[name="theme"][value="tomorrow"])').click(); await settled(page);
+  check('Settings theme applies and saves', (await page.getAttribute('html', 'data-theme')) === 'tomorrow' && (await page.evaluate(() => JSON.parse(localStorage.getItem('clovereye.settings')).theme)) === 'tomorrow');
 
   await page.reload(); await page.waitForSelector('#shell:not([hidden])');
   check('reload goes straight to shell', !(await page.locator('#setup').isVisible()));
+  check('theme survives a reload', (await page.getAttribute('html', 'data-theme')) === 'tomorrow');
+  await page.locator('[data-key="settings"]').click(); await page.waitForSelector('.settings');
   await page.locator('[data-key="rerun"]').click(); await page.waitForSelector('#setup:not([hidden])');
-  check('Run setup again reopens all 8 steps', (await stepLabel(page)).includes('Step 1 of 8'));
+  check('Run setup again reopens all 7 steps', (await stepLabel(page)).includes('Step 1 of 7'));
   await page.locator('#skipBtn').click();
   check('Skip opens confirm dialog', await page.locator('#skipDialog').isVisible());
   await page.locator('#skipDialog [data-act="confirm"]').click(); await page.waitForSelector('#shell:not([hidden])');
@@ -145,7 +154,7 @@ const settled = (page) => page.waitForTimeout(300);
   check('Skip keeps earlier answers', JSON.stringify(stored2?.favourites) === '["g","diy"]', JSON.stringify(stored2?.favourites));
 
   await page.goto(BASE + '#setup'); await page.waitForSelector('#setup:not([hidden])');
-  check('#setup reopens setup', (await stepLabel(page)).includes('Step 1 of 8'));
+  check('#setup reopens setup', (await stepLabel(page)).includes('Step 1 of 7'));
   check('mouse run: no console errors', page._errors.length === 0, page._errors.join(' | '));
   await ctx.close();
 }
@@ -158,43 +167,16 @@ const settled = (page) => page.waitForTimeout(300);
   const k = (key) => page.keyboard.press(key);
   await k('Enter'); await settled(page);
   check('kb: Enter → Look', (await stepLabel(page)).includes('Look'));
-  await k('ArrowRight'); await settled(page);
-  check('kb: → → Content', (await stepLabel(page)).includes('Content'));
-  await k('ArrowLeft'); await settled(page);
-  check('kb: ← → Look', (await stepLabel(page)).includes('Look'));
   // Theme radios with arrows
   await page.locator('input[name="theme"]:checked').focus();
   await k('ArrowRight'); await settled(page);
-  check('kb: arrows move theme radio, not step', (await stepLabel(page)).includes('Look'));
-  await k('Enter'); await settled(page);
-  check('kb: Enter on radio → Content', (await stepLabel(page)).includes('Content'));
-  // Tab to the NSFW switch
-  let found = false;
-  for (let i = 0; i < 12; i++) {
-    await k('Tab');
-    if (await page.evaluate(() => document.activeElement?.dataset?.key === 'switch-nsfw')) { found = true; break; }
-  }
-  check('kb: Tab reaches NSFW switch', found);
-  await k('Enter'); await settled(page);
-  check('kb: Enter on switch opens 18+ dialog', await page.locator('#adultDialog').isVisible());
-  check('kb: focus starts on 18+ checkbox', await page.evaluate(() => document.activeElement?.id === 'adultConfirm'));
-  await k('Escape'); await settled(page);
-  check('kb: Esc closes dialog only', !(await page.locator('#adultDialog').isVisible()) && (await stepLabel(page)).includes('Content') && !(await page.locator('#skipDialog').isVisible()));
-  check('kb: focus back on switch', await page.evaluate(() => document.activeElement?.dataset?.key === 'switch-nsfw'));
-  await k('Space'); await settled(page);
-  await k('Space'); // tick checkbox
-  await k('Tab'); await k('Tab');
-  const onConfirm = await page.evaluate(() => document.activeElement?.dataset?.act);
-  await k('Enter'); await settled(page);
-  check('kb: confirm via keyboard turns NSFW on', (await page.locator('[data-key="switch-nsfw"]').getAttribute('aria-checked')) === 'true', `focus was ${onConfirm}`);
-  await k('Space'); await settled(page); // off again
-  check('kb: Space turns it off', (await page.locator('[data-key="switch-nsfw"]').getAttribute('aria-checked')) === 'false');
-  await page.evaluate(() => document.activeElement.blur());
+  check('kb: arrows move theme radio, not step', (await stepLabel(page)).includes('Look') && (await page.getAttribute('html', 'data-theme')) === 'dark');
+  await k('ArrowLeft'); await settled(page);
   await k('Enter');
   await page.waitForSelector('.board-tile');
-  check('kb: Enter → Boards', (await stepLabel(page)).includes('Boards'));
+  check('kb: Enter on radio → Boards', (await stepLabel(page)).includes('Boards'));
   // Tab into the grid
-  found = false;
+  let found = false;
   for (let i = 0; i < 10; i++) {
     await k('Tab');
     if (await page.evaluate(() => document.activeElement?.classList.contains('board-tile'))) { found = true; break; }
@@ -235,12 +217,35 @@ const settled = (page) => page.waitForTimeout(300);
   check('kb: Enter on Done opens shell', await page.locator('#shell').isVisible());
   const stored = JSON.parse(await page.evaluate(() => localStorage.getItem('clovereye.settings')));
   check('kb: favourite saved', stored?.favourites?.length === 1, JSON.stringify(stored?.favourites));
+  // Settings from the keyboard: the NSFW switch and its 18+ dialog
+  const tabTo = async (key, max = 60) => {
+    for (let i = 0; i < max; i++) {
+      await k('Tab');
+      if (await page.evaluate((want) => document.activeElement?.dataset?.key === want, key)) return true;
+    }
+    return false;
+  };
+  check('kb: Tab reaches Settings', await tabTo('settings'));
+  await k('Enter'); await page.waitForSelector('.settings');
+  found = await tabTo('switch-nsfw', 40);
+  check('kb: Tab reaches NSFW switch', found);
+  await k('Enter'); await settled(page);
+  check('kb: Enter on switch opens 18+ dialog', await page.locator('#adultDialog').isVisible());
+  check('kb: focus starts on 18+ checkbox', await page.evaluate(() => document.activeElement?.id === 'adultConfirm'));
+  await k('Escape'); await settled(page);
+  check('kb: Esc closes dialog only', !(await page.locator('#adultDialog').isVisible()) && (await page.locator('.settings').count()) === 1);
+  check('kb: focus back on switch', await page.evaluate(() => document.activeElement?.dataset?.key === 'switch-nsfw'));
+  await k('Space'); await settled(page);
+  await k('Space'); // tick checkbox
+  await k('Tab'); await k('Tab');
+  const onConfirm = await page.evaluate(() => document.activeElement?.dataset?.act);
+  await k('Enter'); await settled(page);
+  check('kb: confirm via keyboard turns NSFW on', (await page.locator('[data-key="switch-nsfw"]').getAttribute('aria-checked')) === 'true', `focus was ${onConfirm}`);
+  check('kb: focus stays on the switch', await page.evaluate(() => document.activeElement?.dataset?.key === 'switch-nsfw'));
+  await k('Space'); await settled(page); // off again
+  check('kb: Space turns it off', (await page.locator('[data-key="switch-nsfw"]').getAttribute('aria-checked')) === 'false');
   // Run setup again from keyboard
-  found = false;
-  for (let i = 0; i < 40; i++) {
-    await k('Tab');
-    if (await page.evaluate(() => document.activeElement?.dataset?.key === 'rerun')) { found = true; break; }
-  }
+  found = await tabTo('rerun', 60);
   check('kb: Tab reaches Run setup again', found);
   await k('Enter');
   await page.waitForSelector('#setup:not([hidden])', { timeout: 3000 }).catch(() => {});
@@ -259,7 +264,7 @@ const settled = (page) => page.waitForTimeout(300);
   const { ctx, page } = await newPage();
   await page.goto(BASE + '?mock-boards=fail-once&mock-ffmpeg=missing');
   await page.waitForSelector('#setup:not([hidden])');
-  for (let i = 0; i < 3; i++) { await nextBtn(page).click(); await settled(page); }
+  for (let i = 0; i < 2; i++) { await nextBtn(page).click(); await settled(page); }
   await page.waitForSelector('[data-key="retry"]');
   check('boards failure shows Retry', await page.locator('[data-key="retry"]').isVisible());
   check('boards failure shows Skip this step', await page.locator('[data-key="skip-step"]').isVisible());
@@ -269,6 +274,7 @@ const settled = (page) => page.waitForTimeout(300);
   await nextBtn(page).click(); await page.waitForSelector('.check');
   check('ffmpeg missing: all ✗', (await page.locator('.check[data-ok="false"]').count()) === 6);
   check('install command shown', (await page.locator('.command code').count()) === 1, await page.locator('.command code').textContent().catch(() => ''));
+  check('Fedora without ffmpeg: ffmpeg-free first, RPM Fusion named', (await page.locator('.command code').textContent()) === 'sudo dnf install ffmpeg-free' && (await page.locator('.step').textContent()).includes('RPM Fusion'));
   check('fail run: no console errors', page._errors.length === 0, page._errors.join(' | '));
   await ctx.close();
 }
@@ -276,7 +282,7 @@ const settled = (page) => page.waitForTimeout(300);
   const { ctx, page } = await newPage();
   await page.goto(BASE + '?mock-boards=fail');
   await page.waitForSelector('#setup:not([hidden])');
-  for (let i = 0; i < 3; i++) { await nextBtn(page).click(); await settled(page); }
+  for (let i = 0; i < 2; i++) { await nextBtn(page).click(); await settled(page); }
   await page.waitForSelector('[data-key="skip-step"]');
   await page.locator('[data-key="skip-step"]').click(); await settled(page);
   check('Skip this step → Video', (await stepLabel(page)).includes('Video'));
@@ -293,29 +299,31 @@ const settled = (page) => page.waitForTimeout(300);
   const { ctx, page } = await newPage();
   await page.goto(BASE + '?mock-delay=0');
   await page.waitForSelector('#setup:not([hidden])');
-  for (let i = 0; i < 2; i++) { await nextBtn(page).click(); await settled(page); }
+  // Skip setup, turn NSFW on in Settings, then pick /b/ in Run setup again.
+  await page.keyboard.press('Escape'); await settled(page);
+  await page.locator('#skipDialog [data-act="confirm"]').click(); await page.waitForSelector('#shell:not([hidden])');
+  await page.locator('[data-key="settings"]').click(); await page.waitForSelector('.settings');
   await page.locator('[data-key="switch-nsfw"]').click();
   await page.locator('#adultConfirm').check();
   await page.locator('#adultDialog [data-act="confirm"]').click(); await settled(page);
-  await nextBtn(page).click(); await page.waitForSelector('.board-tile');
+  await page.locator('[data-key="rerun"]').click(); await page.waitForSelector('#setup:not([hidden])');
+  for (let i = 0; i < 2; i++) { await nextBtn(page).click(); await settled(page); }
+  await page.waitForSelector('.board-tile');
+  check('nsfw: setup Boards shows all 77 once Settings allows it', (await page.locator('.board-tile').count()) === 77);
   await page.locator('[data-board="b"]').click();
   await page.locator('[data-board="g"]').click();
-  await page.locator('#progress button:has-text("Files")').click().catch(() => {});
-  for (let i = 0; i < 4 && !(await stepLabel(page)).includes('Done'); i++) { await nextBtn(page).click(); await settled(page); }
+  for (let i = 0; i < 6 && !(await stepLabel(page)).includes('Done'); i++) { await nextBtn(page).click(); await settled(page); }
   await nextBtn(page).click(); await page.waitForSelector('#shell:not([hidden])');
   check('nsfw: opted-in /b/ favourite saved', JSON.stringify(JSON.parse(await page.evaluate(() => localStorage.getItem('clovereye.settings'))).favourites) === '["b","g"]');
-  // Restart: no board list this session. Run setup again, NSFW off, skip.
+  // Restart: no board list this session. Settings → NSFW off.
   await page.reload(); await page.waitForSelector('#shell:not([hidden])');
-  await page.locator('[data-key="rerun"]').click(); await page.waitForSelector('#setup:not([hidden])');
-  await page.locator('#progress button:has-text("Content")').click().catch(() => {});
-  for (let i = 0; i < 2 && !(await stepLabel(page)).includes('Content'); i++) { await nextBtn(page).click(); await settled(page); }
+  await page.locator('[data-key="settings"]').click(); await page.waitForSelector('.settings');
   await page.locator('[data-key="switch-nsfw"]').click(); await settled(page);
   check('nsfw: switched off', (await page.locator('[data-key="switch-nsfw"]').getAttribute('aria-checked')) === 'false');
-  await page.keyboard.press('Escape'); await settled(page);
-  await page.locator('#skipDialog [data-act="confirm"]').click(); await page.waitForSelector('#shell:not([hidden])');
   const s = JSON.parse(await page.evaluate(() => localStorage.getItem('clovereye.settings')));
-  check('nsfw: off + skip drops /b/ without a board list', JSON.stringify(s.favourites) === '["g"]' && !s.nsfw.enabled, JSON.stringify(s.favourites));
+  check('nsfw: off drops /b/ without a board list', JSON.stringify(s.favourites) === '["g"]' && !s.nsfw.enabled, JSON.stringify(s.favourites));
   check('nsfw: rail has no /b/', (await page.locator('[data-key="fav-b"]').count()) === 0);
+  await page.reload(); await page.waitForSelector('#shell:not([hidden])');
   check('nsfw: shell opens /g/, not /b/', (await page.locator('[data-key="fav-g"][aria-current="page"]').count()) === 1);
   check('nsfw run: no console errors', page._errors.length === 0, page._errors.join(' | '));
   await ctx.close();
@@ -326,10 +334,11 @@ const settled = (page) => page.waitForTimeout(300);
   const { ctx, page } = await newPage();
   await page.goto(BASE + '?mock-delay=1500');
   await page.waitForSelector('#setup:not([hidden])');
-  for (let i = 0; i < 3; i++) { await nextBtn(page).click(); await settled(page); }
+  for (let i = 0; i < 2; i++) { await nextBtn(page).click(); await settled(page); }
   check('late: Boards step loading', (await stepLabel(page)).includes('Boards') && (await page.locator('.board-grid--skeleton').count()) === 1);
   await page.keyboard.press('Escape'); await settled(page);
   await page.locator('#skipDialog [data-act="confirm"]').click(); await page.waitForSelector('#shell:not([hidden])');
+  await page.locator('[data-key="settings"]').click(); await page.waitForSelector('.settings');
   await page.locator('[data-key="rerun"]').click(); await page.waitForSelector('#setup:not([hidden])');
   await page.waitForTimeout(2000); // the first wizard's fetch resolves now
   check('late: new wizard still on Welcome', (await stepLabel(page)).includes('Welcome'), await stepLabel(page));
