@@ -22,6 +22,10 @@ clovereye-ffcheck = { path = "../crates/ffcheck" }
 tokio = { version = "1", features = ["sync", "time"] }
 ureq = { version = "2.12", default-features = false, features = ["tls"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# the helper window's crash signal (web-process-terminated); same crate Tauri uses
+webkit2gtk = { version = "2.0", features = ["v2_20"] }
+
 [profile.release]
 codegen-units = 1
 lto = true

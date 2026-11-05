@@ -203,10 +203,22 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     const c = st.captcha;
     if (c.state === 'loading' || c.state === 'idle') {
       return h(
-        'p',
-        { class: 'state-line', role: 'status' },
+        'div',
+        { class: 'state-line composer__loading', role: 'status' },
         icon('refresh'),
-        'Loading the site’s captcha… If a CloverEye window with the site’s check opens, complete the check there; this form continues by itself.',
+        h(
+          'div',
+          {},
+          'Loading the site’s captcha… If the site wants its human check, a CloverEye “Site check” window comes forward: complete it there; this form continues by itself. ',
+          bridge.showSiteWindow
+            ? h(
+                'button',
+                { type: 'button', class: 'btn btn--sm', 'data-key': 'compose-site-window', onclick: () => bridge.showSiteWindow().catch(() => {}) },
+                icon('external'),
+                'Show the site window',
+              )
+            : null,
+        ),
       );
     }
     if (c.state === 'none') return h('p', { class: 'state-line', role: 'status' }, icon('check'), 'No captcha needed this time.');

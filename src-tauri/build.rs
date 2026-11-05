@@ -13,6 +13,7 @@ fn main() {
             "open_post_window",
             "post_agent",
             "post_agent_reply",
+            "post_agent_show",
             "open_window",
             "save_media",
         ])),

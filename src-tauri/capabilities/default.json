@@ -15,6 +15,7 @@
     "allow-fetch-thread",
     "allow-open-post-window",
     "allow-post-agent",
+    "allow-post-agent-show",
     "allow-open-window",
     "allow-save-media",
     "core:event:default",

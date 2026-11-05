@@ -22,6 +22,8 @@ use tokio::sync::{oneshot, Notify};
 
 pub const AGENT_LABEL: &str = "post-agent";
 const AGENT_JS: &str = include_str!("post_agent.js");
+/// A captcha not here after this long: the helper window comes forward.
+const SHOW_AFTER_SECS: u64 = 7;
 
 #[derive(Default)]
 pub struct AgentState {
@@ -60,6 +62,10 @@ fn ensure_agent(app: &tauri::AppHandle, board: &str) -> Result<tauri::WebviewWin
             }
         })
         .build()
+        .map(|w| {
+            watch_crashes(&w);
+            w
+        })
         .map_err(|e| e.to_string())
 }
 
@@ -105,7 +111,23 @@ pub async fn post_agent(app: tauri::AppHandle, op: String, args: Value) -> Resul
         return Err(e.to_string());
     }
     // A captcha can wait on the site's human check, which the person passes.
-    let limit = Duration::from_secs(if op == "post" { 180 } else { 200 });
+    // One that has not come after a few seconds brings the window forward
+    // from here, whatever the page itself managed to say.
+    let mut rx = rx;
+    let mut limit = Duration::from_secs(if op == "post" { 180 } else { 200 });
+    if op == "captcha" {
+        let first = Duration::from_secs(SHOW_AFTER_SECS);
+        if let Ok(done) = tokio::time::timeout(first, &mut rx).await {
+            return done.unwrap_or_else(|_| Err("The helper stopped.".into()));
+        }
+        if state.pending.lock().unwrap().contains_key(&id) {
+            eprintln!("clovereye post helper: no captcha after {SHOW_AFTER_SECS} s; showing the window");
+            let _ = win.show();
+            let _ = win.unminimize();
+            let _ = win.set_focus();
+        }
+        limit -= first;
+    }
     match tokio::time::timeout(limit, rx).await {
         Ok(Ok(result)) => result,
         _ => {
@@ -122,13 +144,55 @@ pub async fn post_agent(app: tauri::AppHandle, op: String, args: Value) -> Resul
 /// The helper window was closed (by the person, say, instead of passing the
 /// site's check): whatever it was doing ends now, with a reason.
 pub fn agent_closed(app: &tauri::AppHandle) {
+    fail_pending(app, "The site check window was closed before the site answered.");
+}
+
+/// Ends every request in flight with `why`.
+fn fail_pending(app: &tauri::AppHandle, why: &str) {
     let state = app.state::<AgentState>();
     state.ready.store(false, Ordering::SeqCst);
     let waiting: Vec<_> = state.pending.lock().unwrap().drain().map(|(_, tx)| tx).collect();
     for tx in waiting {
-        let _ = tx.send(Err("The site check window was closed before the site answered.".into()));
+        let _ = tx.send(Err(why.to_string()));
     }
 }
+
+/// Brings the helper window forward (the reply form's "Show the site
+/// window"), creating it on the board's page if it is not there.
+#[tauri::command]
+pub fn post_agent_show(app: tauri::AppHandle) -> Result<(), String> {
+    let w = match app.get_webview_window(AGENT_LABEL) {
+        Some(w) => w,
+        None => ensure_agent(&app, "g")?,
+    };
+    let _ = w.show();
+    let _ = w.unminimize();
+    let _ = w.set_focus();
+    Ok(())
+}
+
+/// When the helper's web page dies (WebKit's web process crashed or was
+/// killed), whatever it was doing ends with a reason, and the page reloads.
+#[cfg(target_os = "linux")]
+fn watch_crashes(win: &tauri::WebviewWindow) {
+    use webkit2gtk::{WebViewExt, WebProcessTerminationReason};
+    let app = win.app_handle().clone();
+    let _ = win.with_webview(move |pw| {
+        let app = app.clone();
+        pw.inner().connect_web_process_terminated(move |view, reason| {
+            let why = match reason {
+                WebProcessTerminationReason::ExceededMemoryLimit => "ran out of memory",
+                _ => "crashed",
+            };
+            eprintln!("clovereye post helper: the site page {why}; reloading it");
+            fail_pending(&app, &format!("The site page {why} in CloverEye's helper window. It has been reloaded: press New captcha to try again."));
+            view.reload();
+        });
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn watch_crashes(_win: &tauri::WebviewWindow) {}
 
 /// The one command the helper page may call (capabilities/post-agent.json):
 /// "ready" when a board page has loaded, "show" when the site wants its human

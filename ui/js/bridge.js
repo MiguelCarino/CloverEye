@@ -103,6 +103,10 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
         siteRequests += 1;
         return invoke('post_agent', { op: 'captcha', args: { board, thread } });
       },
+      /** Brings the helper window (the site's check) forward. */
+      async showSiteWindow() {
+        return invoke('post_agent_show');
+      },
       /** Sends a post through the helper: { status, text } from the site. */
       async submitPost(board, fields, file = null) {
         siteRequests += 1;
@@ -260,6 +264,9 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
     async openWindow(panes) {
       globalThis.open?.(`${location.pathname}${location.search}#panes=${panes}`, '_blank', 'noopener');
       return 'mock-window';
+    },
+    async showSiteWindow() {
+      return null; // no helper window in the browser preview
     },
     async saveMedia(url, name) {
       const a = document.createElement('a');

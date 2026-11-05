@@ -232,13 +232,65 @@ mod tests {
     }
 }
 
+/// The AppImage carries its own WebKit (from Ubuntu 22.04), which aborts
+/// while drawing some colour fonts (COLRv1, as Fedora's colour emoji): the
+/// page just dies. Inside the AppImage, fonts are the system's minus the
+/// colour ones. CLOVEREYE_COLOR_FONTS=1 keeps them.
+#[cfg(target_os = "linux")]
+fn appimage_fonts() {
+    if std::env::var_os("APPIMAGE").is_none() || std::env::var_os("CLOVEREYE_COLOR_FONTS").is_some() {
+        return;
+    }
+    let base = std::env::var_os("FONTCONFIG_FILE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from("/etc/fonts/fonts.conf"));
+    let dir = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .map(|d| d.join("clovereye"));
+    let Some(dir) = dir else { return };
+    let conf = dir.join("fonts-no-colour.conf");
+    let text = format!(
+        "<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n<!-- Written by CloverEye (AppImage): the system's fonts minus colour fonts, which crash the bundled WebKit. -->\n<fontconfig>\n  <include ignore_missing=\"yes\">{}</include>\n  <selectfont>\n    <rejectfont>\n      <pattern><patelt name=\"color\"><bool>true</bool></patelt></pattern>\n    </rejectfont>\n  </selectfont>\n</fontconfig>\n",
+        xml_escape(&base.to_string_lossy())
+    );
+    if std::fs::create_dir_all(&dir).is_ok() && std::fs::write(&conf, text).is_ok() {
+        std::env::set_var("FONTCONFIG_FILE", &conf);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
 fn main() {
+    #[cfg(target_os = "linux")]
+    appimage_fonts();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             client: Arc::new(live_client()),
         })
         .manage(extra::AgentState::default())
+        // CLOVEREYE_TRY_CAPTCHA=<board>: asks for one captcha at start and
+        // prints what came back. For finding out why a captcha does not
+        // arrive, from a terminal; it never posts.
+        .setup(|app| {
+            if let Ok(board) = std::env::var("CLOVEREYE_TRY_CAPTCHA") {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let args = serde_json::json!({ "board": board, "thread": 0 });
+                    match extra::post_agent(handle, "captcha".into(), args).await {
+                        Ok(v) => eprintln!("clovereye post helper: try-captcha answered: {}", v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default()),
+                        Err(e) => eprintln!("clovereye post helper: try-captcha failed: {e}"),
+                    }
+                });
+            }
+            Ok(())
+        })
         // The hidden post helper must not keep the app alive: when the last
         // CloverEye window closes, the app ends.
         .on_window_event(|window, event| {
@@ -266,6 +318,7 @@ fn main() {
             open_post_window,
             extra::post_agent,
             extra::post_agent_reply,
+            extra::post_agent_show,
             extra::open_window,
             extra::save_media
         ])
