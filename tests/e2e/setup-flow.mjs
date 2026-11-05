@@ -478,6 +478,7 @@ const settled = (page) => page.waitForTimeout(300);
   await page.locator('[data-key="thread-reply"]').click();
   await page.waitForSelector('.composer .captcha__stage');
   check('post: Reply opens the in-app form with the site’s captcha', (await page.locator('.composer').count()) === 1 && (await page.locator('.captcha__prompt').textContent()) === 'Pick the 3');
+  check('post: a question in words opens on the first choice’s picture', (await page.locator('.captcha__stage img.captcha__img').count()) === 1 && (await page.locator('[data-key="compose-slider"]').inputValue()) === '1');
   await page.locator('.thread .post__no--reply').nth(1).click(); await settled(page);
   const quoted = await page.locator('[data-key="compose-com"]').inputValue();
   check('post: a post’s No. quotes it in the form', /^>>\d+\n/.test(quoted), JSON.stringify(quoted));
@@ -515,7 +516,7 @@ const settled = (page) => page.waitForTimeout(300);
   await page.waitForSelector('[data-key="compose-slider"]');
   // the keyboard way: arrows through the choices, Enter keeps one
   await page.locator('[data-key="compose-slider"]').focus();
-  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowRight');
+  for (let i = 0; i < 2; i++) await page.keyboard.press('ArrowRight'); // a question in words opens on choice 1
   await page.keyboard.press('Enter'); await settled(page);
   check('post: ←/→ and Enter answer a step', (await page.locator('.captcha__steps li.done').count()) === 1);
   await solve([2]);

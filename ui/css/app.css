@@ -2697,9 +2697,12 @@ video.post__media {
 
 .captcha__stage {
   position: relative;
-  width: 300px;
+  /* at least the site's own box (300 by 80); a larger picture keeps its
+     size up to the form's width, so the details can be compared */
+  width: fit-content;
+  min-width: min(300px, 100%);
   max-width: 100%;
-  height: 80px;
+  min-height: 80px;
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -2711,7 +2714,9 @@ video.post__media {
 .captcha__img {
   display: block;
   max-width: 100%;
-  max-height: 100%;
+  max-height: 280px;
+  width: auto;
+  height: auto;
 }
 
 .captcha__prompt {

@@ -42,10 +42,11 @@ test('captchaState reads the site’s captcha shapes (tcaptcha.js)', () => {
   assert.equal(ready.expires, now + 120000);
   assert.equal(C.captchaDone(ready), false);
   // the person slides to a choice and keeps it, task by task
-  let c = C.captchaNext(ready);
-  assert.equal(c, ready, 'nothing chosen yet: no move');
+  assert.equal(ready.current, 1, 'a question in words opens on the first choice, so a picture shows');
+  let c = C.captchaNext(C.captchaShow(ready, 0));
+  assert.equal(c.step, 0, 'on the question itself: no move');
   c = C.captchaNext(C.captchaShow(ready, 3));
-  assert.deepEqual([c.step, c.picks, c.current], [1, [2], 0]);
+  assert.deepEqual([c.step, c.picks, c.current], [1, [2], 0], 'a question that is a picture opens on it');
   c = C.captchaShow(c, 9);
   assert.equal(c.current, 2, 'clamped to the number of choices');
   c = C.captchaNext(c);

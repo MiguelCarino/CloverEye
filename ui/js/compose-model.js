@@ -81,11 +81,17 @@ export function captchaState(data, now = Date.now()) {
     challenge: String(data.challenge),
     tasks,
     step: 0, // which task
-    current: 0, // 0 = the prompt; 1..n = items[n-1]
+    current: firstView(tasks[0]), // 0 = the prompt; 1..n = items[n-1]
     picks: [],
     expires: now + (Number(data.ttl) || 120) * 1000,
   };
 }
+
+// Where a task opens. A question that is a picture opens on it; a question
+// in words opens on the first choice: the site's choices carry the picture
+// the words point at ("the object on the right"), so an empty view would
+// show nothing to compare. Nothing is kept until the person says so.
+const firstView = (task) => (task && !task.promptImg && task.items.length ? 1 : 0);
 
 const dataUrl = (b64) => (String(b64).startsWith('data:') ? String(b64) : `data:image/png;base64,${b64}`);
 
@@ -102,7 +108,8 @@ export function captchaShow(c, n) {
 /** Keeps the shown item as this task's answer and moves on. */
 export function captchaNext(c) {
   if (c?.state !== 'ready' || c.current < 1 || c.step >= c.tasks.length) return c;
-  return { ...c, picks: [...c.picks, c.current - 1], step: c.step + 1, current: 0 };
+  const step = c.step + 1;
+  return { ...c, picks: [...c.picks, c.current - 1], step, current: step < c.tasks.length ? firstView(c.tasks[step]) : 0 };
 }
 
 /** The answer the post form sends: the picks, joined. */
