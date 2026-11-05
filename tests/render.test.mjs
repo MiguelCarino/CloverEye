@@ -58,7 +58,7 @@ test('quotedPosts and backlinks on the synthetic thread', () => {
   assert.deepEqual(map.get(900001), [900002]);
 });
 
-test('every comment in the recorded /g/ catalog parses to plain text', () => {
+test('every comment in the /g/ catalog fixture parses to plain text', () => {
   const [page] = fx('g-catalog-page1.json');
   let n = 0;
   for (const t of page.threads) {

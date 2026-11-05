@@ -17,7 +17,7 @@ Licence: [AGPL-3.0](LICENSE). Scope and phases: [docs/SCOPE.md](docs/SCOPE.md).
 | ffmpeg check (`crates/ffcheck`) | Built and tested: read-only `-version`/`-encoders`/`-filters` |
 | First-time setup (`ui/`) | Runs in a browser with a mock bridge; 8 steps per SCOPE §3.1b |
 | Design tokens (`ui/css/tokens.css`) | Dark default, light, follows the system; density; text size |
-| Desktop shell (`src-tauri/`) | Written; type-checked with `cargo check` (see below) but not yet built into a binary or run |
+| Desktop shell (`src-tauri/`) | Release-built and packaged as RPMs for Fedora 44 and 45; launched once on Fedora 45 (setup renders in WebKitGTK), not yet exercised further (see below) |
 | Live API probe (`crates/fetch/examples/probe.rs`) | Run once on 4 November 2026: no 429s; results in [docs/C0-PROBE.md](docs/C0-PROBE.md) |
 
 Not done yet (C0 gates in SCOPE §7): the week of normal browsing with zero
@@ -36,7 +36,7 @@ src-tauri/        Tauri 2 shell (excluded from the root Cargo workspace)
 tests/            node tests for ui/
 ```
 
-## Build dependencies (Linux, Fedora 44)
+## Build dependencies (Linux, Fedora 44 and 45)
 
 The Rust crates and the UI need only Rust and Node. The desktop shell also
 needs the WebKitGTK and GTK 3 development files. Install them yourself; the
@@ -46,7 +46,7 @@ project never runs a package manager:
 sudo dnf install webkit2gtk4.1-devel gtk3-devel libsoup3-devel librsvg2-devel
 ```
 
-Package names checked against Fedora 44 with
+Package names checked against Fedora 44 and Fedora 45 with
 `dnf repoquery --whatprovides 'pkgconfig(webkit2gtk-4.1)'` (and the same for
 `gtk+-3.0`, `libsoup-3.0`, `librsvg-2.0`). `javascriptcoregtk4.1-devel`
 comes in as a dependency of `webkit2gtk4.1-devel`. TLS uses rustls, so
@@ -77,8 +77,8 @@ python3 -m http.server 7397 --bind 127.0.0.1 --directory ui
 
 In a browser the bridge is a mock: settings live in `localStorage`, the board
 list comes from the recorded `ui/data/boards.sample.json`, and the ffmpeg
-check returns a canned result matching the Fedora 44 machine CloverEye was
-started on. Query parameters exercise the other states:
+check returns a canned result matching the Fedora 45 machine CloverEye is
+built on. Query parameters exercise the other states:
 
 | Parameter | Effect |
 |---|---|
@@ -114,11 +114,11 @@ cd src-tauri
 CARGO_BUILD_JOBS=4 cargo run
 ```
 
-Notes for the first real build:
+Notes for the first test builds:
 
-- The shell was written before the development packages were installed on
-  the machine; it has since passed `cargo check` (no warnings) but has not
-  been linked or launched. Check the window controls on the custom title
+- The release build was launched once on Fedora 45 (4 November 2026): the
+  window opens with the custom title bar and the setup's first step renders
+  with its fonts and icon. Not checked yet: the window controls on the title
   bar, the `ipc:` connection under the page's own CSP (`ui/index.html`
   carries a meta CSP as well as `tauri.conf.json`; if the IPC is blocked,
   drop the meta tag), and that the rules link opens in the system browser.
@@ -126,6 +126,27 @@ Notes for the first real build:
   (`get_settings`, `set_settings`, `check_ffmpeg`, `fetch_boards`), the
   title-bar window controls, and opening `https://www.4chan.org/rules`.
 - Settings are JSON in the app config folder for now (SQLite comes in C1).
+
+## Packages (Fedora 44 and 45)
+
+Test RPMs for each release are attached to the GitHub releases:
+
+```sh
+sudo dnf install ./clovereye-0.1.0-1.fc45.x86_64.rpm   # or .fc44
+```
+
+To build them yourself (results go to `~/.cache/clovereye/packaging`, never
+into the repository):
+
+```sh
+packaging/build-rpm.sh                 # the Fedora release you are on
+packaging/build-in-container.sh 44     # another release, in a podman container
+```
+
+`build-rpm.sh` makes the same release build as `cargo tauri build` (the UI
+embedded, no dev server) and packages it with `packaging/clovereye.spec`. The
+RPM recommends `/usr/bin/ffmpeg`, so Fedora's `ffmpeg-free` and RPM Fusion's
+`ffmpeg` both satisfy it.
 
 ## Live API probe (C0 gate)
 

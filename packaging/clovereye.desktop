@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=CloverEye
+GenericName=Board reader
+Comment=Unofficial desktop client for 4chan
+Exec=clovereye
+Icon=clovereye
+Terminal=false
+Categories=Network;News;
+Keywords=imageboard;threads;webm;
+StartupWMClass=clovereye

@@ -210,6 +210,7 @@ mod tests {
     #[test]
     fn os_release() {
         assert_eq!(parse_os_release("NAME=Fedora\nID=fedora\nVERSION_ID=44\n"), Some("fedora".into()));
+        assert_eq!(parse_os_release("NAME=Fedora Linux\nID=fedora\nVERSION_ID=45\n"), Some("fedora".into()));
         assert_eq!(
             parse_os_release("ID=nobara\nID_LIKE=\"rhel centos fedora\"\n"),
             Some("nobara rhel centos fedora".into())

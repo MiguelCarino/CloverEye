@@ -6,11 +6,11 @@
 const STORAGE_KEY = 'clovereye.settings';
 
 /** What `check_ffmpeg` reports on the machine CloverEye was built on
- *  (Fedora 44, ffmpeg 8.1.3 with every encoder and filter present). */
+ *  (Fedora 45, ffmpeg 9.0.2 with every encoder and filter present). */
 export const CANNED_FFMPEG = Object.freeze({
   found: true,
   path: '/usr/bin/ffmpeg',
-  version: '8.1.3',
+  version: '9.0.2',
   os: 'linux',
   distro: 'fedora',
   encoders: { libvpx_vp9: true, libsvtav1: true, libopus: true },

@@ -1,5 +1,6 @@
 //! Parsing against ffmpeg output captured on the build machine
-//! (Fedora 44, ffmpeg 8.1.3 from RPM Fusion), plus one live check of the
+//! (Fedora 44 with ffmpeg 8.1.3 and Fedora 45 with ffmpeg 9.0.2, both from
+//! RPM Fusion), plus one live check of the
 //! local ffmpeg that passes whether or not ffmpeg is installed.
 
 use clovereye_ffcheck::{check, parse_encoders, parse_filters, parse_version, table_names, Encoders, Filters};
@@ -8,28 +9,37 @@ fn fx(name: &str) -> String {
     std::fs::read_to_string(format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
 }
 
+/// Supported Fedora releases and the ffmpeg version captured on each.
+const RELEASES: [(&str, &str); 2] = [("fedora44", "8.1.3"), ("fedora45", "9.0.2")];
+
 #[test]
-fn fedora44_has_everything_clip_uses() {
-    assert_eq!(
-        parse_encoders(&fx("fedora44-encoders.txt")),
-        Encoders { libvpx_vp9: true, libsvtav1: true, libopus: true }
-    );
-    assert_eq!(
-        parse_filters(&fx("fedora44-filters.txt")),
-        Filters { ass: true, subtitles: true, libplacebo: true }
-    );
-    assert_eq!(parse_version(&fx("fedora44-version.txt")).as_deref(), Some("8.1.3"));
+fn every_supported_fedora_has_everything_clip_uses() {
+    for (rel, version) in RELEASES {
+        assert_eq!(
+            parse_encoders(&fx(&format!("{rel}-encoders.txt"))),
+            Encoders { libvpx_vp9: true, libsvtav1: true, libopus: true },
+            "{rel}"
+        );
+        assert_eq!(
+            parse_filters(&fx(&format!("{rel}-filters.txt"))),
+            Filters { ass: true, subtitles: true, libplacebo: true },
+            "{rel}"
+        );
+        assert_eq!(parse_version(&fx(&format!("{rel}-version.txt"))).as_deref(), Some(version), "{rel}");
+    }
 }
 
 #[test]
 fn legend_lines_are_not_mistaken_for_rows() {
-    let enc = table_names(&fx("fedora44-encoders.txt"));
-    assert!(!enc.iter().any(|n| n == "=" || n == "Video"));
-    assert!(enc.len() > 150, "{} encoders", enc.len());
-    assert!(enc.contains(&"libvpx".to_string()), "VP8 too");
-    let fil = table_names(&fx("fedora44-filters.txt"));
-    assert!(fil.len() > 400, "{} filters", fil.len());
-    assert!(!fil.iter().any(|n| n == "=" || n == "Timeline"));
+    for (rel, _) in RELEASES {
+        let enc = table_names(&fx(&format!("{rel}-encoders.txt")));
+        assert!(!enc.iter().any(|n| n == "=" || n == "Video"), "{rel}");
+        assert!(enc.len() > 150, "{rel}: {} encoders", enc.len());
+        assert!(enc.contains(&"libvpx".to_string()), "{rel}: VP8 too");
+        let fil = table_names(&fx(&format!("{rel}-filters.txt")));
+        assert!(fil.len() > 400, "{rel}: {} filters", fil.len());
+        assert!(!fil.iter().any(|n| n == "=" || n == "Timeline"), "{rel}");
+    }
 }
 
 #[test]
