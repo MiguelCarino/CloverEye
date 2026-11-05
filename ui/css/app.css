@@ -1839,6 +1839,34 @@ dialog[open] {
   gap: var(--space-2);
 }
 
+/* A thread's controls stay at the top of the pane. Scrolling down tucks
+   them away; scrolling up, reaching the end, pointing at them or tabbing
+   to them brings them back. */
+.browse__tools--thread {
+  position: sticky;
+  top: calc(-1 * var(--space-5));
+  z-index: 6;
+  margin: calc(-1 * var(--space-5)) calc(-1 * var(--space-5)) 0;
+  padding: var(--space-3) var(--space-5);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  transition:
+    transform var(--dur) ease,
+    opacity var(--dur) ease;
+}
+
+.browse__tools--thread.is-tucked {
+  transform: translateY(calc(-100% + 6px));
+  opacity: 0;
+}
+
+/* the strip left showing is enough to point at */
+.browse__tools--thread.is-tucked:hover,
+.browse__tools--thread.is-tucked:focus-within {
+  transform: none;
+  opacity: 1;
+}
+
 .browse__tools .input[type='search'] {
   flex: 1 1 220px;
   min-width: 0;
@@ -2523,6 +2551,8 @@ video.post__media {
 
 .composer {
   position: fixed;
+  /* the grip in the corner sits over this */
+  isolation: isolate;
   right: 16px;
   bottom: 16px;
   z-index: 800;
@@ -2560,6 +2590,53 @@ video.post__media {
 .composer__foot {
   border-top: 1px solid var(--border);
   justify-content: space-between;
+}
+
+/* the resize grip: top-left, since the form is anchored bottom-right */
+/* a poster's flag (/int/, /bant/ ...): the site's own 16 by 11 picture */
+.post__flag {
+  flex: none;
+  width: 16px;
+  height: 11px;
+  align-self: center;
+  image-rendering: pixelated;
+}
+
+.post__flag--code {
+  width: auto;
+  height: auto;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.composer__grip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-top-left-radius: var(--radius-lg);
+  background:
+    linear-gradient(135deg, var(--text-muted) 0 2px, transparent 2px 5px, var(--text-muted) 5px 7px, transparent 7px) top left / 10px 10px no-repeat;
+  opacity: 0.55;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.composer__grip:hover,
+.composer__grip:focus-visible {
+  opacity: 1;
+}
+
+.composer--resizing {
+  user-select: none;
 }
 
 .composer__title {

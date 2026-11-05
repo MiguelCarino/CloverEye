@@ -598,6 +598,35 @@ export function openShell({
 
   // ---------------------------------------------------------------- render
 
+  // A thread's control bar: tucked away while scrolling down, back when
+  // scrolling up or at the end. Remembered per pane across redraws (the
+  // thread redraws itself every few seconds).
+  const tucked = new Map(); // scroll key → true
+  function watchToolsScroll(body) {
+    const bar = body.querySelector('[data-thread-tools]');
+    if (!bar) return;
+    const k = body.dataset.scrollKey;
+    bar.classList.toggle('is-tucked', Boolean(tucked.get(k)));
+    let last = body.scrollTop;
+    body.addEventListener(
+      'scroll',
+      () => {
+        const y = body.scrollTop;
+        const atEnd = y + body.clientHeight >= body.scrollHeight - 24;
+        let hide = tucked.get(k) || false;
+        if (atEnd || y < 40) hide = false;
+        else if (y > last + 4) hide = true;
+        else if (y < last - 4) hide = false;
+        last = y;
+        if (hide !== Boolean(tucked.get(k))) {
+          tucked.set(k, hide);
+          bar.classList.toggle('is-tucked', hide);
+        }
+      },
+      { passive: true },
+    );
+  }
+
   function render() {
     if (closed) return;
     const active = document.activeElement;
@@ -795,6 +824,7 @@ export function openShell({
     for (const body of root.querySelectorAll('.centre__body[data-scroll-key]')) {
       const y = st.scroll[body.dataset.scrollKey];
       if (y) body.scrollTop = y;
+      watchToolsScroll(body);
     }
     if (focusKey) {
       const el = root.querySelector(`[data-key="${CSS.escape(focusKey)}"]`);

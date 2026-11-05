@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { createBridge, safeStorage, mockOptionsFromSearch, CANNED_FFMPEG } from '../ui/js/bridge.js';
+import { createBridge, safeStorage, mockOptionsFromSearch, CANNED_FFMPEG, postFlag } from '../ui/js/bridge.js';
 
 const fixture = readFileSync(new URL('../ui/data/boards.sample.json', import.meta.url), 'utf8');
 
@@ -158,4 +158,17 @@ test('mock options come from the query string', () => {
     delayMs: 0,
   });
   assert.deepEqual(mockOptionsFromSearch('?mock-delay=-5'), {});
+});
+
+test('postFlag: country and board flags, as the site shows them', () => {
+  assert.deepEqual(postFlag('int', { country: 'NZ', country_name: 'New Zealand' }), {
+    src: 'https://s.4cdn.org/image/country/nz.gif',
+    code: 'NZ',
+    title: 'New Zealand',
+  });
+  assert.equal(postFlag('bant', { board_flag: 'TM', flag_name: 'Templar' }).src, 'https://s.4cdn.org/image/flags/bant/tm.gif');
+  assert.equal(postFlag('int', { country: 'NZ' }, false).src, null, 'pictures off: the code only');
+  assert.equal(postFlag('g', {}), null);
+  assert.equal(postFlag('int', { country: '../x' }), null, 'odd codes never reach a URL');
+  assert.equal(postFlag('../x', { board_flag: 'TM' }), null);
 });

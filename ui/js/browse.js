@@ -189,7 +189,7 @@ export function threadView({ board, no, entry, bridge, keyPrefix = '', watched =
   out.append(
     h(
       'div',
-      { class: 'browse__tools' },
+      { class: 'browse__tools browse__tools--thread', 'data-thread-tools': '' },
       h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-refresh`, onclick: onRefresh, disabled: entry?.status === 'loading' || entry?.gone }, icon('refresh'), 'Update'),
       onWatch
         ? h(
@@ -228,6 +228,7 @@ export function threadView({ board, no, entry, bridge, keyPrefix = '', watched =
       isYou,
       onReply: onReply && !frozen ? () => onReply(p.no) : null,
       thumb: bridge.thumbUrl(board, p),
+      flag: bridge.flag ? bridge.flag(board, p) : null,
       full: bridge.mediaUrl(board, p),
       idPrefix: `${keyPrefix}p`,
     });

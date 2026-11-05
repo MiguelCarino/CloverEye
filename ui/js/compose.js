@@ -16,6 +16,36 @@ import { h, icon, toast } from './dom.js';
  * @param {(board: string, thread: number, quote: number) => void} [o.onSitePage]
  */
 const DRAFTS_KEY = 'clovereye-drafts';
+const SIZE_KEY = 'clovereye-composer-size';
+const MIN_W = 300;
+const MIN_H = 240;
+
+/** The size the person gave the form, kept for next time ({ w, h } or null). */
+function loadSize() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SIZE_KEY) || 'null');
+    return s && Number.isFinite(s.w) && Number.isFinite(s.h) ? { w: s.w, h: s.h } : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveSize(size) {
+  try {
+    if (size) localStorage.setItem(SIZE_KEY, JSON.stringify(size));
+    else localStorage.removeItem(SIZE_KEY);
+  } catch (_) {
+    /* no storage: the size lasts until the app closes */
+  }
+}
+
+/** Keeps a size inside the window (the form sits 16 px from its corner). */
+function fitSize(size) {
+  if (!size) return null;
+  const maxW = Math.max(MIN_W, innerWidth - 32);
+  const maxH = Math.max(MIN_H, innerHeight - 80);
+  return { w: Math.round(Math.min(maxW, Math.max(MIN_W, size.w))), h: Math.round(Math.min(maxH, Math.max(MIN_H, size.h))) };
+}
 const MAX_DRAFTS = 50;
 
 /** Drafts saved by an earlier run (see persistDrafts). */
@@ -46,6 +76,65 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   let el = null;
   let tick = null;
   let saveTimer = 0;
+  let size = loadSize(); // set by dragging the corner grip
+
+  function applySize(node) {
+    const s = fitSize(size);
+    if (!node || !s || st?.min) return;
+    node.style.width = `${s.w}px`;
+    node.style.height = `${s.h}px`;
+    node.style.maxHeight = 'none';
+  }
+
+  // The grip in the top-left corner (the form is anchored bottom-right):
+  // drag it, or use the arrow keys on it; double-click puts the size back.
+  function grip() {
+    const start = (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const box = el.getBoundingClientRect();
+      const x0 = e.clientX;
+      const y0 = e.clientY;
+      const move = (ev) => {
+        size = fitSize({ w: box.width - (ev.clientX - x0), h: box.height - (ev.clientY - y0) });
+        applySize(el);
+      };
+      const up = () => {
+        removeEventListener('pointermove', move);
+        removeEventListener('pointerup', up);
+        el?.classList.remove('composer--resizing');
+        saveSize(size);
+      };
+      el.classList.add('composer--resizing');
+      addEventListener('pointermove', move);
+      addEventListener('pointerup', up);
+    };
+    const keys = (e) => {
+      const step = e.shiftKey ? 60 : 20;
+      const box = el.getBoundingClientRect();
+      const d = { ArrowLeft: [step, 0], ArrowRight: [-step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] }[e.key];
+      if (!d) return;
+      e.preventDefault();
+      size = fitSize({ w: box.width + d[0], h: box.height + d[1] });
+      applySize(el);
+      saveSize(size);
+    };
+    const reset = () => {
+      size = null;
+      saveSize(null);
+      draw('keep');
+    };
+    return h('button', {
+      type: 'button',
+      class: 'composer__grip',
+      'aria-label': 'Resize the reply form: drag, or arrow keys (double-click: default size)',
+      title: 'Drag to resize · double-click: default size',
+      'data-key': 'compose-grip',
+      onpointerdown: start,
+      onkeydown: keys,
+      ondblclick: reset,
+    });
+  }
 
   const key = (board, thread) => `${board}/${thread || 0}`;
 
@@ -403,6 +492,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       h(
         'div',
         { class: 'composer__head' },
+        st.min ? null : grip(),
         st.min
           ? h(
               'button',
@@ -524,6 +614,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
         h('button', { type: 'button', class: 'btn btn--primary', 'data-key': 'compose-submit', disabled: st.busy, onclick: submit }, icon('reply'), st.busy ? 'Posting…' : 'Post'),
       ),
     );
+    applySize(next);
     if (el) el.replaceWith(next);
     else document.body.append(next);
     el = next;

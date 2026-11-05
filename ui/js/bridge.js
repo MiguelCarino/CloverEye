@@ -6,6 +6,26 @@
 
 const STORAGE_KEY = 'clovereye.settings';
 const MEDIA_BASE = 'https://i.4cdn.org';
+const FLAG_BASE = 'https://s.4cdn.org/image';
+
+/**
+ * A post's flag, as the site shows it: a country flag (/int/, /sp/, /pol/,
+ * /bant/ ...: post.country) or a board's own flag (post.board_flag).
+ * Returns { src, code, title } or null; src is null when pictures are off.
+ */
+export function postFlag(board, post, pictures = true) {
+  const okCode = (c) => typeof c === 'string' && /^[A-Za-z0-9_-]{1,12}$/.test(c);
+  const okBoard = /^[a-z0-9]{1,10}$/.test(String(board || ''));
+  if (okCode(post?.country)) {
+    const code = post.country.toLowerCase();
+    return { src: pictures ? `${FLAG_BASE}/country/${code}.gif` : null, code: post.country, title: String(post.country_name || post.country) };
+  }
+  if (okCode(post?.board_flag) && okBoard) {
+    const code = post.board_flag.toLowerCase();
+    return { src: pictures ? `${FLAG_BASE}/flags/${board}/${code}.gif` : null, code: post.board_flag, title: String(post.flag_name || post.board_flag) };
+  }
+  return null;
+}
 const MOCK_THUMBS = Object.freeze(['assets/sample-bench.svg', 'assets/sample-hook.svg']);
 
 /** What `check_ffmpeg` reports on the machine CloverEye was built on
@@ -125,6 +145,7 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       },
       // Media loads in the webview straight from the image host (SCOPE §4.1).
       thumbUrl: (board, post) => (post.tim ? `${MEDIA_BASE}/${board}/${post.tim}s.jpg` : null),
+      flag: (board, post) => postFlag(board, post, true),
       mediaUrl: (board, post) => (post.tim && post.ext ? `${MEDIA_BASE}/${board}/${post.tim}${post.ext}` : null),
       // Native notifications arrive with the tray in C2; until then the
       // switch is stored and the OS is asked when the feature lands.
@@ -217,6 +238,11 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       // ?mock-grow: every later fetch of the same thread brings one new reply.
       const n = (threadFetches.get(op.no) || 0) + 1;
       threadFetches.set(op.no, n);
+      // flags, as /int/ (country) and /bant/ (board flags) send them
+      replies.forEach((r, i) => {
+        if (i === 0) Object.assign(r, { country: 'NZ', country_name: 'New Zealand' });
+        if (i === 1) Object.assign(r, { board_flag: 'TM', flag_name: 'Templar' });
+      });
       const grown = mock.grow
         ? Array.from({ length: n - 1 }, (_, i) => ({ no: op.no + 900000 + i, resto: op.no, now: '', time: op.time + i + 1, name: 'Anonymous', com: `New reply ${i + 1}` }))
         : [];
@@ -290,6 +316,8 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
     },
     // No outside requests from the mock: every file shows a local picture.
     thumbUrl: (_board, post) => (post.tim ? MOCK_THUMBS[Number(post.tim) % MOCK_THUMBS.length] : null),
+    // no outside requests in the preview: the flag shows as its code
+    flag: (board, post) => postFlag(board, post, false),
     mediaUrl: (_board, post) => (post.tim ? MOCK_THUMBS[Number(post.tim) % MOCK_THUMBS.length] : null),
     async requestNotificationPermission() {
       if (mock.notify) return mock.notify;

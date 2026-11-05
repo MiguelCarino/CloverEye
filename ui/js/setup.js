@@ -48,7 +48,16 @@ const videoPrefs = { volume: 0.6, muted: false };
  *  the app, local pictures in the browser mock); without them the local
  *  `_thumb` field of the setup sample is used. Clicking the file expands it
  *  in place: the full image, or a player for WebM/MP4. */
-export function renderPost(post, { backrefs = [], onQuote = null, onReply = null, isYou = () => false, thumb = null, full = null, idPrefix = 'sample-p' } = {}) {
+/** The little flag before a poster's name (its name on hover). */
+function postFlagNode(flag) {
+  const title = decodeEntities(flag.title);
+  if (flag.src) {
+    return h('img', { class: 'post__flag', src: flag.src, alt: title, title, width: '16', height: '11', loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' });
+  }
+  return h('span', { class: 'post__flag post__flag--code', title, 'aria-label': title, text: flag.code });
+}
+
+export function renderPost(post, { backrefs = [], onQuote = null, onReply = null, isYou = () => false, thumb = null, full = null, flag = null, idPrefix = 'sample-p' } = {}) {
   const lines = parseComment(post.com || '');
   const com = h('div', { class: 'post__com' });
   for (const line of lines) {
@@ -88,6 +97,7 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
   const meta = h(
     'div',
     { class: 'post__meta' },
+    flag ? postFlagNode(flag) : null,
     h('span', { class: 'post__name', text: decodeEntities(post.name || 'Anonymous') }),
     post.trip ? h('span', { text: post.trip }) : null,
     isYou(post.no) ? h('span', { class: 'pill pill--you', text: 'You' }) : null,

@@ -629,6 +629,47 @@ const settled = (page) => page.waitForTimeout(300);
   await page.locator('[data-key="thread-reply"]').click();
   await page.waitForSelector('[data-key="compose-com"]');
   check('drafts: the text is back after the app was closed', (await page.locator('[data-key="compose-com"]').inputValue()) === 'A draft that survives closing.');
+  // flags (/int/, /bant/): the preview shows the code, its name on hover
+  const flags = await page.locator('.post__flag').evaluateAll((els) => els.map((e) => e.getAttribute('title')));
+  check('flags: country and board flags show on posts', flags.includes('New Zealand') && flags.includes('Templar'), flags.join(','));
+  // the reply form resizes from its corner grip, and keeps the size
+  await page.waitForSelector('[data-captcha-wait]'); // the form has settled
+  const before = await page.locator('.composer').boundingBox();
+  const g = await page.locator('[data-key="compose-grip"]').boundingBox();
+  await page.mouse.move(g.x + 5, g.y + 5);
+  await page.mouse.down();
+  await page.mouse.move(g.x - 115, g.y - 75, { steps: 5 });
+  await page.mouse.up();
+  const after = await page.locator('.composer').boundingBox();
+  check('reply form: dragging the corner grip resizes it', after.width >= before.width + 100 && after.height >= before.height + 50, `${Math.round(before.width)}x${Math.round(before.height)} → ${Math.round(after.width)}x${Math.round(after.height)}`);
+  check('reply form: the size is kept', await page.evaluate(() => Boolean(JSON.parse(localStorage.getItem('clovereye-composer-size') || 'null')?.w)));
+  await page.locator('[data-key="compose-close"]').click(); await settled(page);
+  // the thread's controls: tucked while scrolling down, back on the way up,
+  // at the end, and when pointed at
+  const body = page.locator('.centre__body').first();
+  const bar = page.locator('[data-thread-tools]').first();
+  const scrollTo = async (y) => {
+    await body.evaluate((el, v) => {
+      el.scrollTop = v === 'end' ? el.scrollHeight : v;
+      el.dispatchEvent(new Event('scroll'));
+    }, y);
+    await page.waitForTimeout(250);
+  };
+  const tuckedNow = () => bar.evaluate((el) => el.classList.contains('is-tucked'));
+  const room = await body.evaluate((el) => el.scrollHeight - el.clientHeight);
+  check('thread tools: the thread is long enough to scroll', room > 250, String(room));
+  await scrollTo(60); await scrollTo(220);
+  check('thread tools: scrolling down tucks them away', await tuckedNow());
+  check('thread tools: they stay at the top of the pane', (await bar.boundingBox()).y < (await body.boundingBox()).y + 10);
+  // a plain pointer move: Playwright's hover() would scroll the pane first
+  const bb = await bar.boundingBox();
+  await page.mouse.move(bb.x + 40, bb.y + bb.height - 3); await page.waitForTimeout(300);
+  check('thread tools: pointing at them brings them back', await bar.evaluate((el) => getComputedStyle(el).opacity === '1'));
+  await page.mouse.move(640, 600);
+  await scrollTo(140);
+  check('thread tools: scrolling up brings them back', !(await tuckedNow()));
+  await scrollTo(200); await scrollTo('end');
+  check('thread tools: reaching the end brings them back', !(await tuckedNow()));
   check('wait/drafts run: no console errors', page._errors.length === 0, page._errors.join(' | '));
   await ctx.close();
 }
