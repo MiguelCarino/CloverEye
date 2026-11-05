@@ -336,8 +336,20 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       task.prompt ? h('p', { class: 'captcha__prompt', text: task.prompt }) : null,
       h(
         'div',
-        { class: 'captcha__stage' },
-        shown ? h('img', { class: 'captcha__img', src: shown, alt: c.current === 0 ? 'The captcha’s question' : `Choice ${c.current} of ${task.items.length}` }) : h('span', { class: 'field__hint', text: 'Slide to see the choices.' }),
+        { class: 'captcha__view' },
+        h(
+          'div',
+          { class: 'captcha__stage' },
+          shown ? h('img', { class: 'captcha__img', src: shown, alt: c.current === 0 ? 'The captcha’s question' : `Choice ${c.current} of ${task.items.length}` }) : h('span', { class: 'field__hint', text: 'Slide to see the choices.' }),
+        ),
+        task.target
+          ? h(
+              'figure',
+              { class: 'captcha__target', 'data-key': 'compose-target' },
+              h('img', { src: task.target, alt: 'The object to find' }),
+              h('figcaption', { text: 'Find this' }),
+            )
+          : null,
       ),
       h('input', {
         type: 'range',

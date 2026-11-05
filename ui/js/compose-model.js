@@ -72,6 +72,9 @@ export function captchaState(data, now = Date.now()) {
   if (!Array.isArray(data.tasks) || !data.tasks.length) return { state: 'none', challenge: String(data.challenge) };
   const tasks = data.tasks.map((t) => ({
     prompt: t && t.str ? text(t.str) : '',
+    // The thing to find: the site puts its picture inside the question's
+    // markup (an <img> floated right). Only an inline picture is taken.
+    target: t && t.str ? targetImg(t.str) : null,
     promptImg: t && t.img ? dataUrl(t.img) : null,
     items: Array.isArray(t?.items) ? t.items.map(dataUrl) : [],
   }));
@@ -92,6 +95,11 @@ export function captchaState(data, now = Date.now()) {
 // the words point at ("the object on the right"), so an empty view would
 // show nothing to compare. Nothing is kept until the person says so.
 const firstView = (task) => (task && !task.promptImg && task.items.length ? 1 : 0);
+
+const targetImg = (html) => {
+  const m = /<img\b[^>]*\bsrc\s*=\s*["'](data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+)["']/i.exec(String(html));
+  return m ? m[1] : null;
+};
 
 const dataUrl = (b64) => (String(b64).startsWith('data:') ? String(b64) : `data:image/png;base64,${b64}`);
 

@@ -245,7 +245,8 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
         challenge: 'mock-challenge',
         ttl: 120,
         tasks: [
-          { str: 'Pick the 3', items: [num(1), num(2), num(3), num(4)] },
+          // like the site: the object to find is a picture inside the question
+          { str: '<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" style="float:right;margin:10px 0 0 10px">Pick the 3', items: [num(1), num(2), num(3), num(4)] },
           { str: 'Pick the 7', items: [num(5), num(7), num(9)] },
         ],
       };

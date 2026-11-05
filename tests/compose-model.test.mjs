@@ -37,6 +37,11 @@ test('captchaState reads the site’s captcha shapes (tcaptcha.js)', () => {
   const ready = C.captchaState({ challenge: 'abc', ttl: 120, tasks: [{ str: 'Pick the &amp; one', items: ['AA', 'BB', 'CC'] }, { img: 'PP', items: ['DD', 'EE'] }] }, now);
   assert.equal(ready.state, 'ready');
   assert.equal(ready.tasks[0].prompt, 'Pick the & one');
+  // the site's real shape: the object to find is an <img> inside the question
+  const real = C.captchaState({ challenge: 'x', ttl: 120, tasks: [{ str: '<img src="data:image/png;base64,QUJD" style="float:right">Find the object on the right', items: ['AA'] }] }, now);
+  assert.equal(real.tasks[0].target, 'data:image/png;base64,QUJD');
+  assert.equal(real.tasks[0].prompt, 'Find the object on the right');
+  assert.equal(C.captchaState({ challenge: 'x', tasks: [{ str: '<img src="https://evil.example/x.png">Pick', items: ['AA'] }] }).tasks[0].target, null, 'only an inline picture');
   assert.equal(ready.tasks[1].promptImg, 'data:image/png;base64,PP');
   assert.equal(ready.tasks[0].items[2], 'data:image/png;base64,CC');
   assert.equal(ready.expires, now + 120000);

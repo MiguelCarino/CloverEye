@@ -292,8 +292,15 @@ fn main() {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    let args = serde_json::json!({ "board": board, "thread": 0 });
+                    // "g" or "g/123" (a reply to thread 123)
+                    let (b, t) = board.split_once('/').map(|(b, t)| (b.to_string(), t.parse::<u64>().unwrap_or(0))).unwrap_or((board.clone(), 0));
+                    let args = serde_json::json!({ "board": b, "thread": t });
                     match extra::post_agent(handle, "captcha".into(), args).await {
+                        Ok(v) if std::env::var_os("CLOVEREYE_TRY_CAPTCHA_FILE").is_some() => {
+                            let path = std::env::var_os("CLOVEREYE_TRY_CAPTCHA_FILE").unwrap_or_default();
+                            let _ = std::fs::write(&path, v.to_string());
+                            eprintln!("clovereye post helper: try-captcha saved to {}", std::path::Path::new(&path).display());
+                        }
                         Ok(v) => eprintln!("clovereye post helper: try-captcha answered: {}", v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default()),
                         Err(e) => eprintln!("clovereye post helper: try-captcha failed: {e}"),
                     }

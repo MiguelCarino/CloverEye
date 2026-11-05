@@ -2711,6 +2711,32 @@ video.post__media {
   background: #eee;
 }
 
+/* the choice, and beside it the object to find (as the site floats it) */
+.captcha__view {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.captcha__target {
+  margin: 0;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.captcha__target img {
+  display: block;
+  width: 80px;
+  height: 80px;
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--accent);
+  background: #eee;
+}
+
 .captcha__img {
   display: block;
   max-width: 100%;

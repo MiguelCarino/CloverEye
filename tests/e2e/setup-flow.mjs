@@ -478,6 +478,7 @@ const settled = (page) => page.waitForTimeout(300);
   await page.locator('[data-key="thread-reply"]').click();
   await page.waitForSelector('.composer .captcha__stage');
   check('post: Reply opens the in-app form with the site’s captcha', (await page.locator('.composer').count()) === 1 && (await page.locator('.captcha__prompt').textContent()) === 'Pick the 3');
+  check('post: the object to find shows beside the choice', (await page.locator('[data-key="compose-target"] img').count()) === 1 && (await page.locator('.captcha__prompt').textContent()) === 'Pick the 3');
   check('post: a question in words opens on the first choice’s picture', (await page.locator('.captcha__stage img.captcha__img').count()) === 1 && (await page.locator('[data-key="compose-slider"]').inputValue()) === '1');
   await page.locator('.thread .post__no--reply').nth(1).click(); await settled(page);
   const quoted = await page.locator('[data-key="compose-com"]').inputValue();
