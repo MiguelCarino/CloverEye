@@ -127,13 +127,19 @@ Notes for the first test builds:
   title-bar window controls, and opening `https://www.4chan.org/rules`.
 - Settings are JSON in the app config folder for now (SQLite comes in C1).
 
-## Packages (Fedora 44 and 45)
+## Packages
 
-Test RPMs for each release are attached to the GitHub releases:
+Test builds are attached to the GitHub releases:
 
 ```sh
-sudo dnf install ./clovereye-0.1.0-1.fc45.x86_64.rpm   # or .fc44
+sudo dnf install ./clovereye-0.1.0-1.fc45.x86_64.rpm   # Fedora 45 (or .fc44)
+chmod +x CloverEye-0.1.0-x86_64.AppImage && ./CloverEye-0.1.0-x86_64.AppImage   # other x86-64 Linux
 ```
+
+The AppImage is built on Ubuntu 22.04 and needs glibc 2.35 or newer. It
+carries its own WebKitGTK and GStreamer (base and good plugins, which
+include the WebM demuxer and VP8/VP9 decoders); WebM playback in it is not
+tested yet.
 
 To build them yourself (results go to `~/.cache/clovereye/packaging`, never
 into the repository):
@@ -141,6 +147,7 @@ into the repository):
 ```sh
 packaging/build-rpm.sh                 # the Fedora release you are on
 packaging/build-in-container.sh 44     # another release, in a podman container
+packaging/build-appimage.sh            # the AppImage, in an Ubuntu 22.04 container
 ```
 
 `build-rpm.sh` makes the same release build as `cargo tauri build` (the UI

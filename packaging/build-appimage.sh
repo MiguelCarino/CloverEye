@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Build the CloverEye AppImage (x86_64) for Linux distributions other than
+# Fedora, inside an Ubuntu 22.04 container so it runs on glibc 2.35 and newer.
+#
+# Usage: packaging/build-appimage.sh [out-dir]
+#   out-dir defaults to $XDG_CACHE_HOME/clovereye/packaging (never the repo).
+#
+# Needs podman. The repository is mounted read-only and copied in (uncommitted
+# edits included); SELinux labelling is off for the container so the host
+# files keep their labels. Inside, rustup installs a stable Rust and cargo
+# installs the Tauri CLI, whose AppImage bundler downloads linuxdeploy and its
+# GTK and GStreamer plugins; all of that is cached in the podman volumes
+# clovereye-appimage-cargo and clovereye-appimage-rustup. The AppImage bundles
+# WebKitGTK and GStreamer (tauri.conf.json bundleMediaFramework), so WebM
+# should play without the host's codecs (not tested yet).
+set -euo pipefail
+
+repo=$(cd "$(dirname "$0")/.." && pwd)
+out=${1:-${XDG_CACHE_HOME:-$HOME/.cache}/clovereye/packaging}
+mkdir -p "$out"
+command -v podman >/dev/null || { echo "podman is not installed" >&2; exit 1; }
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo/src-tauri/Cargo.toml" | head -1)
+
+exec podman run --rm -i --security-opt label=disable \
+    -v "$repo:/src:ro" -v "$out:/out" \
+    -v clovereye-appimage-cargo:/root/.cargo -v clovereye-appimage-rustup:/root/.rustup \
+    -e JOBS -e VERSION="$version" \
+    docker.io/library/ubuntu:22.04 bash -s <<'EOF'
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive PATH=/root/.cargo/bin:$PATH APPIMAGE_EXTRACT_AND_RUN=1
+apt-get update -qq >/dev/null
+apt-get install -y -qq --no-install-recommends \
+    ca-certificates curl file build-essential pkg-config xdg-utils patchelf \
+    libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev \
+    gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+    </dev/null >/tmp/apt.log 2>&1 || { cat /tmp/apt.log >&2; exit 1; }
+if ! command -v cargo >/dev/null; then
+  curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain stable
+fi
+command -v cargo-tauri >/dev/null || cargo install -q tauri-cli --version '^2' --locked
+mkdir /build && cd /src && tar --exclude=./target --exclude=./src-tauri/target -cf - . | tar -C /build -xf -
+cd /build/src-tauri
+CARGO_BUILD_JOBS=${JOBS:-4} cargo tauri build --verbose --bundles appimage -- --locked
+src=$(ls target/release/bundle/appimage/*.AppImage)
+cp "$src" "/out/CloverEye-$VERSION-x86_64.AppImage"
+chmod 0755 "/out/CloverEye-$VERSION-x86_64.AppImage"
+echo "/out/CloverEye-$VERSION-x86_64.AppImage"
+EOF
