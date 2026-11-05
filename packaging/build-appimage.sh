@@ -57,6 +57,9 @@ deb-src http://archive.ubuntu.com/ubuntu/ jammy-updates main restricted universe
 deb-src http://security.ubuntu.com/ubuntu/ jammy-security main restricted universe multiverse
 SRC
 apt-get update -qq >/dev/null
+# Bring the image's own packages to the archive's current versions: the
+# source indexes only list those, and the AppImage should bundle them anyway.
+apt-get upgrade -y -qq </dev/null >/tmp/upgrade.log 2>&1 || { cat /tmp/upgrade.log >&2; exit 1; }
 apt-get install -y -qq --no-install-recommends \
     ca-certificates curl file build-essential pkg-config xdg-utils patchelf python3 \
     libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev \
