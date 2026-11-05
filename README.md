@@ -9,7 +9,7 @@ site's rules apply to everything read and posted through it.
 
 Licence: [AGPL-3.0](LICENSE). Scope and phases: [docs/SCOPE.md](docs/SCOPE.md).
 
-## Status: C0 (gates)
+## Status: C0 done, C1 reading started
 
 | Part | State |
 |---|---|
@@ -18,7 +18,8 @@ Licence: [AGPL-3.0](LICENSE). Scope and phases: [docs/SCOPE.md](docs/SCOPE.md).
 | First-time setup (`ui/`) | Runs in a browser with a mock bridge; 7 steps per SCOPE §3.1b (NSFW is only in Settings) |
 | Design tokens (`ui/css/tokens.css`, `themes.css`) | Dark default, light, follows the system; Classic and Atrium theme variants; density; text size |
 | Settings (`ui/js/settings-view.js`) | Look (theme, density, text size) and Content (NSFW boards, 18+ confirmation); saves as you change it |
-| Desktop shell (`src-tauri/`) | Release-built and packaged as RPMs for Fedora 44 and 45; launched once on Fedora 45 (setup renders in WebKitGTK), not yet exercised further (see below) |
+| Desktop shell (`src-tauri/`) | Release-built and packaged (Fedora 44/45 RPMs, AppImage); runs on Fedora 45 with the live site |
+| Reading (`ui/js/browse.js`, `browse-model.js`) | Board list, catalog (search, sort, refresh) and threads (backlinks, files expand in place, WebM plays inline, updates itself every 10 s or more while open, stops on closed/archived/404) through `fetch_catalog`/`fetch_thread` and the one queue; thumbnails and files load in the webview from the image host. Checked against the live /g/ catalog and a live thread on 4 November 2026 |
 | Live API probe (`crates/fetch/examples/probe.rs`) | Run once on 4 November 2026: no 429s; results in [docs/C0-PROBE.md](docs/C0-PROBE.md) |
 
 Not done yet (C0 gates in SCOPE §7): the week of normal browsing with zero
@@ -76,7 +77,9 @@ python3 -m http.server 7397 --bind 127.0.0.1 --directory ui
 # open http://127.0.0.1:7397/
 ```
 
-In a browser the bridge is a mock: settings live in `localStorage`, the board
+In a browser the bridge is a mock and never contacts the site: every board
+shows the synthetic catalog in `ui/data/catalog.sample.json`, threads are
+built from it, and files show local pictures. Settings live in `localStorage`, the board
 list comes from the recorded `ui/data/boards.sample.json`, and the ffmpeg
 check returns a canned result matching the Fedora 45 machine CloverEye is
 built on. Query parameters exercise the other states:
@@ -84,6 +87,7 @@ built on. Query parameters exercise the other states:
 | Parameter | Effect |
 |---|---|
 | `?mock-boards=fail` / `fail-once` | Board list fails (always / first try only): Retry and Skip |
+| `?mock-catalog=fail` | Every catalog fails: the error and Try again |
 | `?mock-ffmpeg=missing` / `partial` / `no-vp9` | ffmpeg absent, optional extras missing, or VP9 missing |
 | `?mock-delay=0` | No artificial delay |
 | `#setup` | Run setup again after it was finished |
@@ -138,6 +142,11 @@ sudo dnf install ./clovereye-0.1.0-1.fc45.x86_64.rpm   # Fedora 45 (or .fc44)
 chmod +x CloverEye-0.1.0-x86_64.AppImage && ./CloverEye-0.1.0-x86_64.AppImage   # other x86-64 Linux
 ```
 
+`CloverEye-0.1.0-appimage-sources.tar` next to it is the Corresponding Source
+for the AppImage: CloverEye's own source and the Ubuntu 22.04 source package
+of every library it bundles (WebKitGTK, GTK 3, GStreamer and their
+dependencies, LGPL and others), traced file by file (`files.tsv` inside).
+
 The AppImage is built on Ubuntu 22.04 and needs glibc 2.35 or newer. It
 carries its own WebKitGTK and GStreamer (base and good plugins, which
 include the WebM demuxer and VP8/VP9 decoders); WebM playback in it is not
@@ -149,7 +158,7 @@ into the repository):
 ```sh
 packaging/build-rpm.sh                 # the Fedora release you are on
 packaging/build-in-container.sh 44     # another release, in a podman container
-packaging/build-appimage.sh            # the AppImage, in an Ubuntu 22.04 container
+packaging/build-appimage.sh            # the AppImage + its sources tar, in an Ubuntu 22.04 container
 ```
 
 `build-rpm.sh` makes the same release build as `cargo tauri build` (the UI

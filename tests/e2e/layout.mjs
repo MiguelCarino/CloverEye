@@ -147,8 +147,20 @@ for (const width of widths) {
     }
     await page.locator('#nextBtn').click();
     await page.waitForSelector('#shell:not([hidden])');
+    await page.waitForSelector('.catalog-card');
     await page.waitForTimeout(400);
-    await audit(page, tag('8-shell'));
+    await audit(page, tag('8-catalog'));
+    await page.locator('.catalog-card').nth(1).click();
+    await page.waitForSelector('.thread .post');
+    await page.waitForTimeout(300);
+    await audit(page, tag('8b-thread'));
+    if (await page.locator('.thread .post__thumb').count()) {
+      await page.locator('.thread .post__thumb').first().click();
+      await page.waitForTimeout(300);
+      await audit(page, tag('8c-thread-file-open'));
+    }
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('.catalog-card');
     if (await page.locator('[data-key="rail-toggle"]').isVisible()) { await page.locator('[data-key="rail-toggle"]').click(); await page.waitForTimeout(250); }
     await page.locator('[data-key="settings"]').click();
     await page.waitForSelector('.settings');

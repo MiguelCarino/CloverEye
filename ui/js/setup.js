@@ -4,7 +4,7 @@
 import * as M from './setup-model.js';
 import { h, clear, icon, toast, copyText } from './dom.js';
 import { applyLook } from './look.js';
-import { parseComment, formatBytes, backlinks } from './render.js';
+import { parseComment, formatBytes, backlinks, decodeEntities } from './render.js';
 import { themePicker } from './theme-picker.js';
 
 export const RULES_URL = 'https://www.4chan.org/rules';
@@ -40,9 +40,12 @@ export function targetKind(el) {
 
 // ------------------------------------------------------------- post render
 
-/** One post card from API-shaped data. Text only through textContent; the
- *  thumbnail comes from the local `_thumb` field, never from the network. */
-export function renderPost(post, { backrefs = [], onQuote = null } = {}) {
+/** One post card from API-shaped data. Text only through textContent.
+ *  `thumb`/`full` are the file's URLs (the bridge decides: the image host in
+ *  the app, local pictures in the browser mock); without them the local
+ *  `_thumb` field of the setup sample is used. Clicking the file expands it
+ *  in place: the full image, or a player for WebM/MP4. */
+export function renderPost(post, { backrefs = [], onQuote = null, thumb = null, full = null, idPrefix = 'sample-p' } = {}) {
   const lines = parseComment(post.com || '');
   const com = h('div', { class: 'post__com' });
   for (const line of lines) {
@@ -82,26 +85,77 @@ export function renderPost(post, { backrefs = [], onQuote = null } = {}) {
   const meta = h(
     'div',
     { class: 'post__meta' },
-    h('span', { class: 'post__name', text: post.name || 'Anonymous' }),
+    h('span', { class: 'post__name', text: decodeEntities(post.name || 'Anonymous') }),
     post.trip ? h('span', { text: post.trip }) : null,
+    post.capcode ? h('span', { class: 'pill', text: post.capcode }) : null,
     h('span', { text: post.now || '' }),
     h('span', { class: 'post__no', text: `No. ${post.no}` }),
   );
-  const file = post._thumb
-    ? h(
-        'figure',
-        { class: 'post__file', style: { margin: 0 } },
-        h('img', {
-          src: post._thumb,
-          alt: `${post.filename || 'file'}${post.ext || ''}`,
-          width: post.tn_w || 125,
-          height: post.tn_h || 125,
-          loading: 'lazy',
-          decoding: 'async',
-        }),
-        h('span', { text: `${post.filename}${post.ext} · ${formatBytes(post.fsize)}` }),
-      )
-    : null;
+  const thumbSrc = thumb || post._thumb || null;
+  const fileName = `${decodeEntities(post.filename || 'file')}${post.ext || ''}`;
+  let file = null;
+  if (post.filedeleted) {
+    file = h('div', { class: 'post__file post__file--gone', text: 'File deleted' });
+  } else if (thumbSrc) {
+    const img = h('img', {
+      src: thumbSrc,
+      alt: fileName,
+      width: post.tn_w || 125,
+      height: post.tn_h || 125,
+      loading: 'lazy',
+      decoding: 'async',
+    });
+    const isVideo = /^\.(webm|mp4)$/i.test(post.ext || '');
+    const open = h(
+      'button',
+      {
+        type: 'button',
+        class: 'post__thumb',
+        'aria-expanded': 'false',
+        'aria-label': `${isVideo ? 'Play' : 'Expand'} ${fileName}`,
+        onclick: (e) => {
+          const btn = e.currentTarget;
+          const fig = btn.closest('.post__file');
+          const expanded = btn.getAttribute('aria-expanded') === 'true';
+          fig.querySelectorAll('.post__media, .post__close').forEach((el) => el.remove());
+          btn.setAttribute('aria-expanded', String(!expanded));
+          fig.classList.toggle('post__file--open', !expanded);
+          if (expanded || !full) return;
+          const media = isVideo
+            ? h('video', { class: 'post__media', src: full, controls: true, autoplay: true, loop: true, preload: 'metadata' })
+            : h('img', { class: 'post__media', src: full, alt: fileName, decoding: 'async' });
+          media.addEventListener('click', (ev) => {
+            if (!isVideo) {
+              ev.preventDefault();
+              btn.click();
+            }
+          });
+          btn.after(media);
+          if (isVideo) {
+            media.after(
+              h('button', {
+                type: 'button',
+                class: 'btn btn--sm post__close',
+                onclick: () => {
+                  btn.click();
+                  btn.focus();
+                },
+                text: 'Close video',
+              }),
+            );
+          }
+        },
+      },
+      img,
+      isVideo ? h('span', { class: 'post__play', 'aria-hidden': 'true', text: '▶' }) : null,
+    );
+    file = h(
+      'figure',
+      { class: 'post__file', style: { margin: 0 } },
+      open,
+      h('span', { text: `${fileName} · ${post.w && post.h ? `${post.w}×${post.h} · ` : ''}${formatBytes(post.fsize)}` }),
+    );
+  }
   const back = backrefs.length
     ? h(
         'div',
@@ -114,9 +168,9 @@ export function renderPost(post, { backrefs = [], onQuote = null } = {}) {
     : null;
   return h(
     'article',
-    { class: `post${post.resto === 0 ? ' post--op' : ''}`, id: `sample-p${post.no}`, 'data-no': post.no },
+    { class: `post${post.resto === 0 ? ' post--op' : ''}`, id: `${idPrefix}${post.no}`, 'data-no': post.no },
     meta,
-    post.sub ? h('div', { class: 'post__sub', text: post.sub }) : null,
+    post.sub ? h('div', { class: 'post__sub', text: decodeEntities(post.sub) }) : null,
     h('div', { class: 'post__main' }, file, com),
     back,
   );

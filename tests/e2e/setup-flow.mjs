@@ -348,6 +348,84 @@ const settled = (page) => page.waitForTimeout(300);
   await ctx.close();
 }
 
+// ------------------------------------------- browsing: catalog and thread (C1)
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE + '?mock-delay=0');
+  await page.waitForSelector('#setup:not([hidden])');
+  for (let i = 0; i < 2; i++) { await nextBtn(page).click(); await settled(page); }
+  await page.waitForSelector('.board-tile');
+  await page.locator('[data-board="g"]').click();
+  for (let i = 0; i < 6 && !(await stepLabel(page)).includes('Done'); i++) { await nextBtn(page).click(); await settled(page); }
+  await nextBtn(page).click(); await page.waitForSelector('#shell:not([hidden])');
+  await page.waitForSelector('.catalog-card');
+  check('browse: /g/ catalog loads 15 threads', (await page.locator('.catalog-card').count()) === 15);
+  check('browse: catalog cards show reply counts', /R \d+/.test(await page.locator('.catalog-card__counts').first().textContent()));
+  check('browse: no placeholder text left', (await page.locator('text=arrives in the next phase').count()) === 0);
+  await page.fill('[data-key="catalog-search"]', 'keyboard');
+  await settled(page);
+  const hits = await page.locator('.catalog-card').count();
+  check('browse: search narrows the catalog', hits >= 1 && hits < 15, String(hits));
+  check('browse: search box keeps focus while typing', await page.evaluate(() => document.activeElement?.dataset?.key === 'catalog-search'));
+  await page.fill('[data-key="catalog-search"]', '');
+  await settled(page);
+  await page.selectOption('[data-key="catalog-sort"]', 'replies');
+  await settled(page);
+  const counts = await page.locator('.catalog-card__counts').allTextContents();
+  const rs = counts.map((c) => Number((c.match(/R (\d+)/) || [])[1]));
+  check('browse: sort by replies', rs.every((r, i) => i === 0 || rs[i - 1] >= r), rs.join(','));
+  await page.selectOption('[data-key="catalog-sort"]', 'bump');
+  await settled(page);
+  // open the first thread that has replies listed
+  const cards = page.locator('.catalog-card');
+  let opened = false;
+  for (let i = 0; i < 15 && !opened; i++) {
+    await cards.nth(i).click();
+    await page.waitForSelector('.thread .post', { timeout: 3000 }).catch(() => {});
+    if ((await page.locator('.thread .post').count()) > 1 && (await page.locator('.thread .post__backlinks').count()) > 0) opened = true;
+    else { await page.locator('[data-key="back-catalog"]').click(); await page.waitForSelector('.catalog-card'); }
+  }
+  check('browse: thread opens with OP and replies', opened);
+  check('browse: OP is first', (await page.locator('.thread .post').first().getAttribute('class')).includes('post--op'));
+  check('browse: title names the thread', ((await page.title()) || '').startsWith('/g/ · '), await page.title());
+  const thumbs = page.locator('.thread .post__thumb');
+  if (await thumbs.count()) {
+    await thumbs.first().click(); await settled(page);
+    check('browse: a file expands in place', (await page.locator('.thread .post__media').count()) === 1);
+    await page.locator('.thread .post__media').first().click(); await settled(page);
+    check('browse: clicking it again collapses it', (await page.locator('.thread .post__media').count()) === 0);
+  }
+  const quote = page.locator('.thread .post__backlinks .seg-quotelink').first();
+  check('browse: the thread has backlinks', (await quote.count()) === 1);
+  if (await quote.count()) {
+    await quote.click(); await page.waitForTimeout(400);
+    check('browse: a backlink jumps to the replying post', (await page.locator('.post--flash').count()) >= 1);
+  }
+  await page.keyboard.press('Escape'); await page.waitForSelector('.catalog-card');
+  check('browse: Esc goes back to the catalog', (await page.locator('.catalog-card').count()) === 15);
+  await page.locator('[data-key="all-boards"]').click(); await page.waitForSelector('.board-list .rail__item');
+  check('browse: All boards lists the worksafe boards', (await page.locator('.board-list .rail__item').count()) === 53);
+  await page.locator('[data-key="list-diy"]').click(); await page.waitForSelector('.catalog-card');
+  check('browse: another board opens its catalog', (await page.title()).startsWith('/diy/'));
+  check('browse: mock made no outside request', page._outside.length === 0, page._outside.slice(0, 3).join(','));
+  check('browse run: no console errors', page._errors.length === 0, page._errors.join(' | '));
+  await ctx.close();
+}
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE + '?mock-delay=0&mock-catalog=fail');
+  await page.waitForSelector('#setup:not([hidden])');
+  await page.keyboard.press('Escape'); await settled(page);
+  await page.locator('#skipDialog [data-act="confirm"]').click(); await page.waitForSelector('#shell:not([hidden])');
+  await page.locator('[data-key="all-boards"]').click(); await page.waitForSelector('.board-list .rail__item');
+  check('browse: board list loads from the shell when setup was skipped', (await page.locator('.board-list .rail__item').count()) === 53);
+  await page.locator('[data-key="list-g"]').click();
+  await page.waitForSelector('[data-key="retry-load"]');
+  check('browse: a failed catalog says so and offers Try again', (await page.locator('.callout--danger').textContent()).includes('Couldn’t load the catalog'));
+  check('browse fail run: no console errors', page._errors.length === 0, page._errors.join(' | '));
+  await ctx.close();
+}
+
 await browser.close();
 console.log(results.join('\n'));
 console.log(`\n${which}: ${results.length - failures} passed, ${failures} failed`);

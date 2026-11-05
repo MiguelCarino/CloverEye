@@ -357,6 +357,18 @@
           "markdownDescription": "Enables the fetch_boards command without any pre-configured scope."
         },
         {
+          "description": "Enables the fetch_catalog command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-fetch-catalog",
+          "markdownDescription": "Enables the fetch_catalog command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the fetch_thread command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-fetch-thread",
+          "markdownDescription": "Enables the fetch_thread command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_settings command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-settings",
@@ -379,6 +391,18 @@
           "type": "string",
           "const": "deny-fetch-boards",
           "markdownDescription": "Denies the fetch_boards command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the fetch_catalog command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-fetch-catalog",
+          "markdownDescription": "Denies the fetch_catalog command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the fetch_thread command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-fetch-thread",
+          "markdownDescription": "Denies the fetch_thread command without any pre-configured scope."
         },
         {
           "description": "Denies the get_settings command without any pre-configured scope.",

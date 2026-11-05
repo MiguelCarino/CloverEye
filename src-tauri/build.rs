@@ -8,6 +8,8 @@ fn main() {
             "set_settings",
             "check_ffmpeg",
             "fetch_boards",
+            "fetch_catalog",
+            "fetch_thread",
         ])),
     )
     .expect("failed to run tauri-build");

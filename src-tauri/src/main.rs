@@ -1,16 +1,16 @@
 // CloverEye desktop shell (Tauri 2).
 //
-// Written for C0 but not compiled on the machine it was written on (no
-// WebKitGTK development files there); see the README before the first build.
-// Every network request goes through clovereye-fetch's single queue.
+// Every request to the site's JSON API goes through clovereye-fetch's single
+// queue (≤ 1 request/s, threads ≤ every 10 s, If-Modified-Since, back-off).
+// Thumbnails and files are loaded by the webview straight from the image host.
 
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use clovereye_fetch::models::BoardsResponse;
-use clovereye_fetch::{live_client, Endpoint, LiveClient};
+use clovereye_fetch::models::{BoardsResponse, Catalog, Thread};
+use clovereye_fetch::{live_client, Endpoint, Error as FetchError, Freshness, LiveClient};
 use clovereye_ffcheck::FfmpegCheck;
 use serde_json::Value;
 use tauri::Manager;
@@ -90,6 +90,63 @@ async fn fetch_boards(state: tauri::State<'_, AppState>) -> Result<Value, String
     .map_err(|e| e.to_string())?
 }
 
+/// What the UI gets for a catalog or thread: the API's JSON plus how fresh
+/// it is ("new" 200, "not-modified" 304, "throttled" inside the 10 s
+/// thread floor, so no request was made).
+#[derive(serde::Serialize)]
+struct Loaded {
+    freshness: &'static str,
+    data: Value,
+}
+
+fn freshness(f: Freshness) -> &'static str {
+    match f {
+        Freshness::New => "new",
+        Freshness::NotModified => "not-modified",
+        Freshness::Throttled => "throttled",
+    }
+}
+
+/// Errors the UI can act on: "not-found" (a pruned or deleted thread) gets
+/// its own code; anything else is the fetch layer's message.
+fn load_error(e: FetchError) -> String {
+    match e {
+        FetchError::NotFound => "not-found".into(),
+        other => other.to_string(),
+    }
+}
+
+/// A board's catalog (every thread, OP + last replies) through the shared
+/// queue: ≤ 1 request/s for the whole app, If-Modified-Since, back-off.
+#[tauri::command]
+async fn fetch_catalog(state: tauri::State<'_, AppState>, board: String) -> Result<Loaded, String> {
+    let client = state.client.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let fetched = client.get(&Endpoint::Catalog(board)).map_err(load_error)?;
+        let _typed: Catalog = fetched.json().map_err(load_error)?;
+        let data = serde_json::from_slice::<Value>(&fetched.body).map_err(|e| e.to_string())?;
+        Ok(Loaded { freshness: freshness(fetched.freshness), data })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// One thread through the shared queue. The fetch layer never asks for the
+/// same thread more often than every 10 s (the API rule); inside that floor
+/// it hands back the cached copy as "throttled".
+#[tauri::command]
+async fn fetch_thread(state: tauri::State<'_, AppState>, board: String, no: u64) -> Result<Loaded, String> {
+    let client = state.client.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let fetched = client.get(&Endpoint::Thread(board, no)).map_err(load_error)?;
+        let _typed: Thread = fetched.json().map_err(load_error)?;
+        let data = serde_json::from_slice::<Value>(&fetched.body).map_err(|e| e.to_string())?;
+        Ok(Loaded { freshness: freshness(fetched.freshness), data })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -100,7 +157,9 @@ fn main() {
             get_settings,
             set_settings,
             check_ffmpeg,
-            fetch_boards
+            fetch_boards,
+            fetch_catalog,
+            fetch_thread
         ])
         .run(tauri::generate_context!())
         .expect("error while running CloverEye");

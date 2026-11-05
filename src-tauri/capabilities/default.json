@@ -1,13 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window: the four app commands the UI calls, window controls for the custom title bar, and opening the site's rules page in the system browser.",
+  "description": "The main window: the six app commands the UI calls, window controls for the custom title bar, and opening the site's rules page in the system browser.",
   "windows": ["main"],
   "permissions": [
     "allow-get-settings",
     "allow-set-settings",
     "allow-check-ffmpeg",
     "allow-fetch-boards",
+    "allow-fetch-catalog",
+    "allow-fetch-thread",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",

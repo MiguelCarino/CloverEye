@@ -1,9 +1,12 @@
 // The UI's only door to the outside. Inside the desktop app it calls the
 // Rust core through Tauri's `invoke`; in a plain browser it is a mock so the
 // UI can be built and checked without the app (settings in localStorage,
-// boards from the recorded fixture, a canned ffmpeg check).
+// boards from the recorded fixture, a synthetic catalog, a canned ffmpeg
+// check, local pictures instead of the image host).
 
 const STORAGE_KEY = 'clovereye.settings';
+const MEDIA_BASE = 'https://i.4cdn.org';
+const MOCK_THUMBS = Object.freeze(['assets/sample-bench.svg', 'assets/sample-hook.svg']);
 
 /** What `check_ffmpeg` reports on the machine CloverEye was built on
  *  (Fedora 45, ffmpeg 9.0.2 with every encoder and filter present). */
@@ -76,6 +79,19 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       async checkFfmpeg() {
         return invoke('check_ffmpeg');
       },
+      /** { freshness: 'new'|'not-modified'|'throttled', data } or throws
+       *  Error('not-found') / the fetch layer's message. */
+      async fetchCatalog(board) {
+        siteRequests += 1;
+        return invoke('fetch_catalog', { board });
+      },
+      async fetchThread(board, no) {
+        siteRequests += 1;
+        return invoke('fetch_thread', { board, no });
+      },
+      // Media loads in the webview straight from the image host (SCOPE §4.1).
+      thumbUrl: (board, post) => (post.tim ? `${MEDIA_BASE}/${board}/${post.tim}s.jpg` : null),
+      mediaUrl: (board, post) => (post.tim && post.ext ? `${MEDIA_BASE}/${board}/${post.tim}${post.ext}` : null),
       // Native notifications arrive with the tray in C2; until then the
       // switch is stored and the OS is asked when the feature lands.
       async requestNotificationPermission() {
@@ -97,6 +113,16 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
   let memory = null; // used when storage is missing or throws
   const delay = Number.isFinite(mock.delayMs) ? mock.delayMs : 350;
   let boardAttempts = 0;
+  let catalogCache = null;
+  const mockCatalog = async () => {
+    if (!catalogCache) {
+      if (typeof fetchImpl !== 'function') throw new Error('No fixture loader in this environment.');
+      const res = await fetchImpl('data/catalog.sample.json');
+      if (!res.ok) throw new Error(`Catalog fixture: HTTP ${res.status}`);
+      catalogCache = await res.json();
+    }
+    return structuredClone(catalogCache);
+  };
 
   return {
     kind: 'mock',
@@ -137,6 +163,26 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       await sleep(Math.min(delay, 250));
       return structuredClone(MOCK_FFMPEG[mock.ffmpeg] || MOCK_FFMPEG.ok);
     },
+    // The mock serves one synthetic catalog (ui/data/catalog.sample.json)
+    // for every board, and builds threads from its OPs and last replies.
+    async fetchCatalog() {
+      siteRequests += 1;
+      await sleep(delay);
+      if (mock.catalog === 'fail') throw new Error('Could not reach the catalog (mock failure).');
+      return { freshness: 'new', data: await mockCatalog() };
+    },
+    async fetchThread(board, no) {
+      siteRequests += 1;
+      await sleep(delay);
+      const cat = await mockCatalog();
+      const op = cat.flatMap((p) => p.threads).find((t) => t.no === Number(no));
+      if (!op) throw new Error('not-found');
+      const { last_replies: replies = [], omitted_posts: _a, omitted_images: _b, last_modified: _c, ...first } = op;
+      return { freshness: 'new', data: { posts: [first, ...replies] } };
+    },
+    // No outside requests from the mock: every file shows a local picture.
+    thumbUrl: (_board, post) => (post.tim ? MOCK_THUMBS[Number(post.tim) % MOCK_THUMBS.length] : null),
+    mediaUrl: (_board, post) => (post.tim ? MOCK_THUMBS[Number(post.tim) % MOCK_THUMBS.length] : null),
     async requestNotificationPermission() {
       if (mock.notify) return mock.notify;
       const N = globalThis.Notification;
@@ -162,6 +208,7 @@ export function mockOptionsFromSearch(search) {
   if (p.get('mock-boards')) o.boards = p.get('mock-boards');
   if (p.get('mock-ffmpeg')) o.ffmpeg = p.get('mock-ffmpeg');
   if (p.get('mock-notify')) o.notify = p.get('mock-notify');
+  if (p.get('mock-catalog')) o.catalog = p.get('mock-catalog');
   if (p.has('mock-delay')) {
     const n = Number(p.get('mock-delay'));
     if (Number.isFinite(n) && n >= 0) o.delayMs = n;

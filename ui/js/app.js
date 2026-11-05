@@ -43,6 +43,10 @@ function showShell(settings) {
   shell = openShell({
     settings,
     boards: boardsCache,
+    bridge,
+    onBoards: (list) => {
+      boardsCache = list;
+    },
     setTitle,
     onRunSetup: () => runSetup(current, true),
     onSave: async (next) => {
