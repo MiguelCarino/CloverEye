@@ -1862,26 +1862,47 @@ dialog[open] {
   gap: var(--space-3);
 }
 
-.catalog-card {
-  width: 100%;
-  height: 100%;
+.catalog__item {
   display: grid;
-  grid-template-rows: auto auto auto 1fr;
-  gap: 6px;
-  padding: var(--space-2);
-  text-align: left;
-  font: inherit;
-  color: var(--text);
+  grid-template-rows: 1fr auto;
   background: var(--post-bg);
   border: 1px solid var(--post-border);
   border-radius: var(--post-radius);
-  cursor: pointer;
   min-width: 0;
   transition: border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
 }
 
-.catalog-card:hover {
+.catalog__item:hover {
   border-color: var(--accent-line);
+}
+
+.catalog-card {
+  width: 100%;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  align-content: start;
+  gap: 6px;
+  padding: var(--space-2) var(--space-2) 0;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-radius: var(--post-radius);
+  cursor: pointer;
+  min-width: 0;
+}
+
+.catalog-card__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px var(--space-2) var(--space-2);
+  min-width: 0;
+}
+
+.catalog-card__foot .catalog-card__counts {
+  flex: 1;
 }
 
 .catalog-card:focus-visible {
@@ -2040,4 +2061,285 @@ video.post__media {
   .post__file {
     max-width: 100%;
   }
+}
+
+/* startup animation: the clover draws itself, then the splash fades */
+
+.splash {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--space-3);
+  background: var(--bg);
+  pointer-events: none;
+  transition: opacity 260ms var(--ease);
+}
+
+.splash--done {
+  opacity: 0;
+}
+
+.splash__name {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  letter-spacing: -0.01em;
+  color: var(--text);
+  opacity: 0;
+  animation: splash-fade 300ms var(--ease) 520ms forwards;
+}
+
+.splash__stem {
+  stroke-dasharray: 200;
+  stroke-dashoffset: 200;
+  animation: splash-draw 320ms var(--ease) forwards;
+}
+
+.splash__leaf {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  transform: scale(0);
+  animation: splash-pop 300ms cubic-bezier(0.3, 1.6, 0.5, 1) forwards;
+}
+
+.splash__leaf--1 { animation-delay: 120ms; }
+.splash__leaf--2 { animation-delay: 210ms; }
+.splash__leaf--3 { animation-delay: 300ms; }
+.splash__leaf--4 { animation-delay: 390ms; }
+
+.splash__eye {
+  opacity: 0;
+  animation: splash-fade 200ms var(--ease) 470ms forwards;
+}
+
+@keyframes splash-draw {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes splash-pop {
+  to { transform: scale(1); }
+}
+
+@keyframes splash-fade {
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splash {
+    display: none;
+  }
+}
+
+/* hover preview: the full file beside the pointer, fitted to the window */
+
+.hover-preview {
+  position: fixed;
+  z-index: 900;
+  pointer-events: none;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+}
+
+.hover-preview[hidden] {
+  display: none;
+}
+
+.hover-preview img,
+.hover-preview video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* shell: hidden sidebar, rail rows, watcher, stars, split pane */
+
+@media (min-width: 901px) {
+  .shell[data-rail-hidden] {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .shell[data-rail-hidden] .rail {
+    display: none;
+  }
+}
+
+.rail__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rail__row .rail__item {
+  flex: 1;
+}
+
+.rail__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-btn--sm {
+  width: 28px;
+  height: 28px;
+}
+
+.icon-btn--sm .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.badge {
+  flex: none;
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  text-align: center;
+}
+
+.pill--dead {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.btn--on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.board-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.board-list__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.board-list__row .rail__item {
+  flex: 1;
+}
+
+.star .icon {
+  fill: none;
+}
+
+.star--on {
+  color: var(--warn);
+}
+
+.star--on .icon {
+  fill: currentColor;
+}
+
+.catalog-card__beside {
+  color: var(--text-faint);
+}
+
+.post__no--reply {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  font-family: var(--font-mono);
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
+.post__no--reply:hover {
+  color: var(--accent);
+}
+
+.panel--split {
+  position: relative;
+  width: 520px;
+  max-width: 100%;
+  background: var(--bg);
+  min-width: 0;
+}
+
+.panel--split .centre__body {
+  min-height: 0;
+}
+
+.panel__title {
+  flex: 1;
+  font-size: var(--fs-md);
+}
+
+.panel__resize {
+  position: absolute;
+  inset: 0 auto 0 -4px;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+}
+
+.panel__resize:hover,
+.panel__resize:focus-visible {
+  background: var(--accent-line);
+  outline: none;
+}
+
+.panel__title {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.panel__title .centre__title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .panel--split {
+    position: absolute;
+    inset: 0;
+    width: auto;
+    z-index: 25;
+  }
+
+  /* the covered main pane is not reachable while the second pane fills the window */
+  .shell:has(.panel--split) .centre {
+    visibility: hidden;
+  }
+}
+
+.panel--split {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.panel__head .board-tag {
+  flex: none;
+}
+
+.panel__head .centre__title-text {
+  flex: 1;
+}
+
+.post__close {
+  justify-self: start;
+  width: auto;
 }

@@ -53,6 +53,12 @@ const ICONS = {
   arrowLeft: ['M19 12H5', 'M11 6l-6 6l6 6'],
   sparkle: ['M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z'],
   maximize: ['M6 6h12v12H6z'],
+  star: ['M12 3.5l2.6 5.3l5.9.9l-4.3 4.1l1 5.8L12 16.9l-5.2 2.7l1-5.8l-4.3-4.1l5.9-.9z'],
+  sidebar: ['M4 4h16v16H4z', 'M9 4v16'],
+  swap: ['M7 7h12', 'M15 3l4 4l-4 4', 'M17 17H5', 'M9 13l-4 4l4 4'],
+  reply: ['M10 8L5 12l5 4', 'M5 12h9a5 5 0 0 1 5 5v1'],
+  plus: ['M12 5v14', 'M5 12h14'],
+  splitOpen: ['M4 4h16v16H4z', 'M12 4v16', 'M15 10l2 2l-2 2'],
 };
 
 export function icon(name, extraClass = '') {

@@ -89,6 +89,13 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
         siteRequests += 1;
         return invoke('fetch_thread', { board, no });
       },
+      /** Posting happens on the site's own page (SCOPE §3.3): a separate
+       *  window with the thread (or the board, for a new thread) and its
+       *  reply form, where the person solves the site's captcha. */
+      async openPost(board, thread = null, quote = null) {
+        await invoke('open_post_window', { board, thread, quote });
+        return { mock: false };
+      },
       // Media loads in the webview straight from the image host (SCOPE §4.1).
       thumbUrl: (board, post) => (post.tim ? `${MEDIA_BASE}/${board}/${post.tim}s.jpg` : null),
       mediaUrl: (board, post) => (post.tim && post.ext ? `${MEDIA_BASE}/${board}/${post.tim}${post.ext}` : null),
@@ -114,6 +121,7 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
   const delay = Number.isFinite(mock.delayMs) ? mock.delayMs : 350;
   let boardAttempts = 0;
   let catalogCache = null;
+  const threadFetches = new Map();
   const mockCatalog = async () => {
     if (!catalogCache) {
       if (typeof fetchImpl !== 'function') throw new Error('No fixture loader in this environment.');
@@ -178,7 +186,19 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       const op = cat.flatMap((p) => p.threads).find((t) => t.no === Number(no));
       if (!op) throw new Error('not-found');
       const { last_replies: replies = [], omitted_posts: _a, omitted_images: _b, last_modified: _c, ...first } = op;
-      return { freshness: 'new', data: { posts: [first, ...replies] } };
+      // ?mock-grow: every later fetch of the same thread brings one new reply.
+      const n = (threadFetches.get(op.no) || 0) + 1;
+      threadFetches.set(op.no, n);
+      const grown = mock.grow
+        ? Array.from({ length: n - 1 }, (_, i) => ({ no: op.no + 900000 + i, resto: op.no, now: '', time: op.time + i + 1, name: 'Anonymous', com: `New reply ${i + 1}` }))
+        : [];
+      return { freshness: 'new', data: { posts: [first, ...replies, ...grown] } };
+    },
+    // The mock never opens the site: it only records what would open.
+    posts: [],
+    async openPost(board, thread = null, quote = null) {
+      this.posts.push({ board, thread, quote });
+      return { mock: true };
     },
     // No outside requests from the mock: every file shows a local picture.
     thumbUrl: (_board, post) => (post.tim ? MOCK_THUMBS[Number(post.tim) % MOCK_THUMBS.length] : null),
@@ -209,6 +229,7 @@ export function mockOptionsFromSearch(search) {
   if (p.get('mock-ffmpeg')) o.ffmpeg = p.get('mock-ffmpeg');
   if (p.get('mock-notify')) o.notify = p.get('mock-notify');
   if (p.get('mock-catalog')) o.catalog = p.get('mock-catalog');
+  if (p.has('mock-grow')) o.grow = true;
   if (p.has('mock-delay')) {
     const n = Number(p.get('mock-delay'));
     if (Number.isFinite(n) && n >= 0) o.delayMs = n;

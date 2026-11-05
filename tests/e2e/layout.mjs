@@ -106,9 +106,14 @@ for (const width of widths) {
     page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') page._errors.push(`${m.type()}: ${m.text()}`); });
     page.on('pageerror', (e) => page._errors.push(`pageerror: ${e.message}`));
     await page.goto(BASE + '?mock-delay=50&mock-ffmpeg=partial');
+    await page.waitForSelector('#splash', { state: 'detached' });
     await page.waitForSelector('#setup:not([hidden]) .step__title');
     await page.waitForTimeout(400);
     const tag = (s) => `${which}-${width}-${scheme}-${s}`;
+    const narrow = width <= 900;
+    const openRail = async () => {
+      if (narrow) { await page.locator('[data-key="rail-toggle"]').click(); await page.waitForTimeout(250); }
+    };
     const steps = ['1-welcome', '2-look', '3-boards', '4-video', '5-watching', '6-files', '7-done'];
     for (let i = 0; i < steps.length; i++) {
       if (i === 1) await page.waitForSelector('.preview .post');
@@ -154,14 +159,50 @@ for (const width of widths) {
     await page.waitForSelector('.thread .post');
     await page.waitForTimeout(300);
     await audit(page, tag('8b-thread'));
+    await page.locator('[data-key="thread-watch"]').click();
+    await page.waitForTimeout(200);
     if (await page.locator('.thread .post__thumb').count()) {
+      if (!narrow) {
+        await page.locator('.thread .post__thumb').first().hover();
+        await page.waitForSelector('.hover-preview:not([hidden])');
+        await page.waitForTimeout(200);
+        await audit(page, tag('8c-hover-preview'));
+        await page.mouse.move(2, 2);
+      }
       await page.locator('.thread .post__thumb').first().click();
       await page.waitForTimeout(300);
-      await audit(page, tag('8c-thread-file-open'));
+      await audit(page, tag('8d-thread-file-open'));
     }
     await page.keyboard.press('Escape');
     await page.waitForSelector('.catalog-card');
-    if (await page.locator('[data-key="rail-toggle"]').isVisible()) { await page.locator('[data-key="rail-toggle"]').click(); await page.waitForTimeout(250); }
+    // split view: a second thread beside the catalog
+    await page.locator('[data-key="panel-toggle"]').click();
+    await page.waitForSelector('.panel--split .catalog-card');
+    await page.locator('.panel--split .catalog-card').nth(2).click();
+    await page.waitForSelector('.panel--split .thread .post');
+    await page.waitForTimeout(300);
+    await audit(page, tag('8e-split'));
+    await page.locator('[data-key="panel-close"]').click();
+    await page.waitForTimeout(150);
+    if (!narrow) {
+      await page.locator('[data-key="rail-toggle"]').click();
+      await page.waitForTimeout(200);
+      await audit(page, tag('8f-sidebar-hidden'));
+      await page.locator('[data-key="rail-toggle"]').click();
+      await page.waitForTimeout(200);
+    } else {
+      await openRail();
+      // the rail is an overlay over a scrim here: picture only, no overlap audit
+      await page.screenshot({ path: `${OUT}/${tag('8f-rail-watched')}.png` });
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(200);
+    }
+    await openRail();
+    await page.locator('[data-key="all-boards"]').click();
+    await page.waitForSelector('.board-list .star');
+    await page.waitForTimeout(250);
+    await audit(page, tag('8g-all-boards'));
+    await openRail();
     await page.locator('[data-key="settings"]').click();
     await page.waitForSelector('.settings');
     await page.waitForTimeout(300);

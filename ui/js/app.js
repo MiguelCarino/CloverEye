@@ -7,6 +7,7 @@ import { applyLook } from './look.js';
 import { startSetup } from './setup.js';
 import { openShell } from './shell.js';
 import { toast } from './dom.js';
+import { installHoverPreview } from './hover.js';
 
 const bridge = createBridge({
   tauri: window.__TAURI__ ?? null,
@@ -48,7 +49,12 @@ function showShell(settings) {
       boardsCache = list;
     },
     setTitle,
-    onRunSetup: () => runSetup(current, true),
+    // Closing the shell first stores its pending changes (watched, seen).
+    onRunSetup: () => {
+      shell?.close();
+      shell = null;
+      runSetup(current, true);
+    },
     onSave: async (next) => {
       current = next;
       try {
@@ -101,4 +107,22 @@ window.addEventListener('hashchange', () => {
   if (location.hash === '#setup' && current && document.getElementById('setup').hidden) runSetup(current, true);
 });
 
-boot();
+/** The startup animation runs about 0.8 s, then fades; it never blocks
+ *  input (pointer-events: none) and is skipped with reduced motion. */
+function endSplash(started) {
+  const splash = document.getElementById('splash');
+  if (!splash) return;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    splash.remove();
+    return;
+  }
+  const wait = Math.max(0, 820 - (performance.now() - started));
+  setTimeout(() => {
+    splash.classList.add('splash--done');
+    setTimeout(() => splash.remove(), 320);
+  }, wait);
+}
+
+installHoverPreview();
+const bootStarted = performance.now();
+boot().finally(() => endSplash(bootStarted));

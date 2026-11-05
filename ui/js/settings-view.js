@@ -73,6 +73,35 @@ export function renderSettings({ settings, boards, onChange, onRunSetup }) {
         (v) => look((n) => (n.density = v)),
       ),
       segmented('text', 'Text size', M.TEXT_SCALES, s.textScale, (v) => look((n) => (n.textScale = v))),
+      h(
+        'div',
+        { class: 'switch-row' },
+        h(
+          'div',
+          { class: 'switch-row__text' },
+          h('div', { class: 'switch-row__title', id: 'sw-hover-t', text: 'Preview files on hover' }),
+          h('div', {
+            class: 'switch-row__desc',
+            id: 'sw-hover-d',
+            text: 'Resting the mouse on a thumbnail shows the full image, or plays the video muted, as large as the window allows.',
+          }),
+        ),
+        h('button', {
+          type: 'button',
+          class: 'switch',
+          role: 'switch',
+          'aria-checked': String(s.ui?.hoverPreview !== false),
+          'aria-labelledby': 'sw-hover-t',
+          'aria-describedby': 'sw-hover-d',
+          'data-key': 'switch-hover',
+          onclick: () => {
+            const next = structuredClone(s);
+            next.ui = { ...next.ui, hoverPreview: s.ui?.hoverPreview === false };
+            applyLook(next);
+            onChange(next, { focus: 'switch-hover' });
+          },
+        }),
+      ),
     ),
     h(
       'section',

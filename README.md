@@ -9,7 +9,7 @@ site's rules apply to everything read and posted through it.
 
 Licence: [AGPL-3.0](LICENSE). Scope and phases: [docs/SCOPE.md](docs/SCOPE.md).
 
-## Status: C0 done, C1 reading started
+## Status: reading, watching and the post window
 
 | Part | State |
 |---|---|
@@ -20,6 +20,14 @@ Licence: [AGPL-3.0](LICENSE). Scope and phases: [docs/SCOPE.md](docs/SCOPE.md).
 | Settings (`ui/js/settings-view.js`) | Look (theme, density, text size) and Content (NSFW boards, 18+ confirmation); saves as you change it |
 | Desktop shell (`src-tauri/`) | Release-built and packaged (Fedora 44/45 RPMs, AppImage); runs on Fedora 45 with the live site |
 | Reading (`ui/js/browse.js`, `browse-model.js`) | Board list, catalog (search, sort, refresh) and threads (backlinks, files expand in place, WebM plays inline, updates itself every 10 s or more while open, stops on closed/archived/404) through `fetch_catalog`/`fetch_thread` and the one queue; thumbnails and files load in the webview from the image host. Checked against the live /g/ catalog and a live thread on 4 November 2026 |
+| Video | WebM and MP4 play inline (one at a time, volume remembered for the session) and keep playing through thread updates; checked live on /wsg/ in WebKitGTK on 5 November 2026 |
+| Hover preview (`ui/js/hover.js`) | Resting the mouse on a thumbnail shows the full image, or plays the video muted, fitted inside the window; Settings → Look turns it off |
+| Split view | Open a thread beside the catalog (the side-by-side button on a card, Ctrl+click or middle-click), swap panes, drag or arrow-key the divider; on a narrow window the second pane fills it |
+| Sidebar | Hide or show it from the button left of the title; remembered |
+| Favourites | Star boards in All boards |
+| Thread watcher | Watch from a thread; the rail lists watched threads with unread counts, 404 and archived marks; polled at the watch interval through the same queue (open threads update themselves). (You)s and notifications are not built yet |
+| Posting (`open_post_window`) | Reply, quoting a post (its No.), and New thread open the site's own page in a separate window, where the person posts and solves the site's own captcha (SCOPE §3.3). That window can only browse the site and gets no app commands. Not yet tested with a real post |
+| Logo and start-up | An oekaki-style golden clover; a short start-up animation (skipped with reduced motion) |
 | Live API probe (`crates/fetch/examples/probe.rs`) | Run once on 4 November 2026: no 429s; results in [docs/C0-PROBE.md](docs/C0-PROBE.md) |
 
 Not done yet (C0 gates in SCOPE §7): the week of normal browsing with zero
@@ -88,6 +96,7 @@ built on. Query parameters exercise the other states:
 |---|---|
 | `?mock-boards=fail` / `fail-once` | Board list fails (always / first try only): Retry and Skip |
 | `?mock-catalog=fail` | Every catalog fails: the error and Try again |
+| `?mock-grow` | Every later fetch of a thread adds one reply (for the watcher) |
 | `?mock-ffmpeg=missing` / `partial` / `no-vp9` | ffmpeg absent, optional extras missing, or VP9 missing |
 | `?mock-delay=0` | No artificial delay |
 | `#setup` | Run setup again after it was finished |

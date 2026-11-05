@@ -142,12 +142,12 @@ test('tauri config: neutral id, custom title bar, UI from ../ui, CSP set', () =>
   assert.ok(conf.app.security.csp);
   const cap = JSON.parse(readFileSync(join(ROOT, 'src-tauri/capabilities/default.json'), 'utf8'));
   const perms = cap.permissions.map((p) => (typeof p === 'string' ? p : p.identifier));
-  for (const c of ['allow-get-settings', 'allow-set-settings', 'allow-check-ffmpeg', 'allow-fetch-boards', 'allow-fetch-catalog', 'allow-fetch-thread']) {
+  for (const c of ['allow-get-settings', 'allow-set-settings', 'allow-check-ffmpeg', 'allow-fetch-boards', 'allow-fetch-catalog', 'allow-fetch-thread', 'allow-open-post-window']) {
     assert.ok(perms.includes(c), c);
   }
   const build = readFileSync(join(ROOT, 'src-tauri/build.rs'), 'utf8');
-  for (const c of ['get_settings', 'set_settings', 'check_ffmpeg', 'fetch_boards', 'fetch_catalog', 'fetch_thread']) assert.ok(build.includes(`"${c}"`), c);
+  for (const c of ['get_settings', 'set_settings', 'check_ffmpeg', 'fetch_boards', 'fetch_catalog', 'fetch_thread', 'open_post_window']) assert.ok(build.includes(`"${c}"`), c);
   const main = readFileSync(join(ROOT, 'src-tauri/src/main.rs'), 'utf8');
-  for (const c of ['get_settings', 'set_settings', 'check_ffmpeg', 'fetch_boards', 'fetch_catalog', 'fetch_thread']) assert.match(main, new RegExp(`fn ${c}\\(`), c);
+  for (const c of ['get_settings', 'set_settings', 'check_ffmpeg', 'fetch_boards', 'fetch_catalog', 'fetch_thread', 'open_post_window']) assert.match(main, new RegExp(`fn ${c}\\(`), c);
   assert.ok(!/Command::new\("(sudo|pkexec|dnf|apt|apt-get|brew|winget|pacman|zypper)"/.test(main), 'never runs a package manager');
 });

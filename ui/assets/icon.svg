@@ -1,37 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="CloverEye">
   <defs>
-    <linearGradient id="ce-bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#2a2414"/>
-      <stop offset="1" stop-color="#0d0b07"/>
-    </linearGradient>
-    <linearGradient id="ce-gold" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fff0b0"/>
-      <stop offset="0.45" stop-color="#f2c14e"/>
-      <stop offset="1" stop-color="#b07a12"/>
-    </linearGradient>
-    <linearGradient id="ce-stem" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#e9b43c"/>
-      <stop offset="1" stop-color="#9a6a0e"/>
-    </linearGradient>
-    <!-- one heart-shaped leaf, tip at the origin, lobes pointing up -->
-    <path id="ce-leaf" d="M0 0C-34 -26 -106 -62 -104 -122C-102 -168 -48 -186 0 -140C48 -186 102 -168 104 -122C106 -62 34 -26 0 0Z"/>
+    <!-- one leaf, drawn like a quick oekaki doodle: tip at the origin, lobes up -->
+    <path id="ce-leaf" d="M2 6C-30 -18 -98 -52 -100 -112C-101 -160 -46 -178 -2 -136C44 -180 100 -158 98 -110C96 -50 34 -20 2 6Z"/>
   </defs>
-  <rect width="512" height="512" rx="116" fill="url(#ce-bg)"/>
-  <path d="M262 262C286 330 330 382 392 414" fill="none" stroke="url(#ce-stem)" stroke-width="22" stroke-linecap="round"/>
-  <g transform="translate(256 248)">
-    <g fill="url(#ce-gold)" stroke="#7a5208" stroke-width="5" stroke-linejoin="round">
-      <use href="#ce-leaf" transform="rotate(-45) scale(0.98)"/>
-      <use href="#ce-leaf" transform="rotate(45) scale(0.98)"/>
-      <use href="#ce-leaf" transform="rotate(135) scale(0.98)"/>
-      <use href="#ce-leaf" transform="rotate(225) scale(0.98)"/>
-    </g>
-    <g stroke="#fff4c8" stroke-opacity="0.4" stroke-width="4" stroke-linecap="round">
-      <path d="M0 0L-56 -56" />
-      <path d="M0 0L56 -56" />
-      <path d="M0 0L56 56" />
-      <path d="M0 0L-56 56" />
-    </g>
-    <circle r="26" fill="#0d0b07" stroke="#f2c14e" stroke-width="6"/>
-    <circle cx="8" cy="-8" r="7" fill="#fff4c8"/>
+  <rect x="10" y="10" width="492" height="492" rx="112" fill="#fbf1d6" stroke="#4a2f0c" stroke-width="12"/>
+  <path d="M264 270C282 330 318 372 380 404" fill="none" stroke="#4a2f0c" stroke-width="34" stroke-linecap="round"/>
+  <path d="M264 270C282 330 318 372 380 404" fill="none" stroke="#e0a526" stroke-width="14" stroke-linecap="round"/>
+  <g id="ce-gold" transform="translate(256 252)" fill="#f4c542" stroke="#4a2f0c" stroke-width="16" stroke-linejoin="round">
+    <use href="#ce-leaf" transform="rotate(-47) scale(0.97)"/>
+    <use href="#ce-leaf" transform="rotate(44) scale(1.01)"/>
+    <use href="#ce-leaf" transform="rotate(137) scale(0.95)"/>
+    <use href="#ce-leaf" transform="rotate(224) scale(1)"/>
   </g>
+  <g transform="translate(256 252)" fill="none" stroke="#fffbe9" stroke-width="12" stroke-linecap="round">
+    <path d="M-96 -44C-104 -64 -98 -82 -84 -90"/>
+    <path d="M46 -94C66 -100 84 -92 90 -76"/>
+    <path d="M90 50C96 68 88 84 74 90"/>
+    <path d="M-46 92C-66 96 -82 86 -88 70"/>
+  </g>
+  <circle cx="256" cy="252" r="24" fill="#4a2f0c"/>
+  <circle cx="263" cy="245" r="7" fill="#fffbe9"/>
 </svg>

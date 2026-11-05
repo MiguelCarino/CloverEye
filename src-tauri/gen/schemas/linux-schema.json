@@ -375,6 +375,12 @@
           "markdownDescription": "Enables the get_settings command without any pre-configured scope."
         },
         {
+          "description": "Enables the open_post_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-post-window",
+          "markdownDescription": "Enables the open_post_window command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_settings command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-settings",
@@ -409,6 +415,12 @@
           "type": "string",
           "const": "deny-get-settings",
           "markdownDescription": "Denies the get_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_post_window command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-post-window",
+          "markdownDescription": "Denies the open_post_window command without any pre-configured scope."
         },
         {
           "description": "Denies the set_settings command without any pre-configured scope.",

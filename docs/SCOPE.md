@@ -76,8 +76,13 @@ The owner's requirement is that the UI is modern. Concretely:
   (Yotsuba, Yotsuba B, Futaba, Burichan, Tomorrow, Photon), and **Atrium**,
   the desktop themes of the owner's Atrium setup (Cyberpunk, Matrix, Aero
   Glass, Windows 95, Lo-fi, Luna, Moe, Orbit, Orchard, Orchard Dark).
-- **Logo**: a golden four-leaf clover with a dark centre (owner decision,
-  4 November 2026). Gold, never green.
+- **Logo**: a golden four-leaf clover with a dark centre, drawn in a
+  simple oekaki (hand-drawn) style, with a short start-up animation (owner
+  decisions, 4 and 5 November 2026). Gold, never green.
+- **Split view** (owner decision, 5 November 2026): the right panel can hold
+  a second catalog or thread beside the main one, resizable; the sidebar can
+  be hidden. **Hover preview**: resting the mouse on a thumbnail shows the
+  file at full quality, never larger than the window.
 - **Three-pane layout** on a wide window: left rail (favourite boards,
   watcher with unread badges), centre (catalog or thread), right panel
   (media viewer / Clip / reply form) that slides in when needed. Collapses to

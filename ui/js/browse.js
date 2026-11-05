@@ -1,10 +1,12 @@
-// The catalog grid and the thread view (C1). The shell owns the state and
-// the loading; these only draw it. Text only through textContent.
+// The catalog grid and the thread view. The shell owns the state and the
+// loading; these only draw it. Text only through textContent.
 
 import * as B from './browse-model.js';
 import { h, icon } from './dom.js';
 import { renderPost } from './setup.js';
 import { backlinks } from './render.js';
+
+const VIDEO = /^\.(webm|mp4)$/i;
 
 function statusLine(entry, what) {
   if (!entry || entry.status === 'loading') {
@@ -15,10 +17,11 @@ function statusLine(entry, what) {
   if (entry.at) parts.push(`Updated ${new Date(entry.at).toLocaleTimeString()}`);
   if (entry.freshness === 'not-modified') parts.push('no changes');
   if (entry.freshness === 'throttled') parts.push('too soon to ask again, showing the last copy');
+  if (entry.fresh?.size) parts.push(`${entry.fresh.size} new`);
   return parts.length ? h('p', { class: 'state-line browse__status', role: 'status', text: parts.join(' · ') }) : null;
 }
 
-function errorBox(entry, what, onRetry) {
+function errorBox(entry, what, onRetry, keyPrefix) {
   return h(
     'div',
     { class: 'callout callout--danger', role: 'alert' },
@@ -29,7 +32,7 @@ function errorBox(entry, what, onRetry) {
       h('strong', { text: `Couldn’t load the ${what}. ` }),
       B.loadErrorText(entry.error, what),
       ' ',
-      entry.gone ? null : h('button', { type: 'button', class: 'link-btn', 'data-key': 'retry-load', onclick: onRetry, text: 'Try again' }),
+      entry.gone ? null : h('button', { type: 'button', class: 'link-btn', 'data-key': `${keyPrefix}retry-load`, onclick: onRetry, text: 'Try again' }),
     ),
   );
 }
@@ -40,11 +43,14 @@ function errorBox(entry, what, onRetry) {
  * @param {object|undefined} o.entry   { status, threads, error, at, freshness }
  * @param {{query: string, sort: string}} o.view
  * @param {object} o.bridge
- * @param {(no: number) => void} o.onOpen
+ * @param {string} [o.keyPrefix]       data-key prefix for the second pane
+ * @param {boolean} [o.canSplit]       offer "open beside" on each card
+ * @param {(no: number, pane?: string) => void} o.onOpen
  * @param {() => void} o.onRefresh
+ * @param {() => void} [o.onNewThread]
  * @param {(patch: object) => void} o.onView
  */
-export function catalogView({ board, entry, view, bridge, onOpen, onRefresh, onView }) {
+export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSplit = false, onOpen, onRefresh, onNewThread = null, onView }) {
   const out = h('div', { class: 'browse' });
   const tools = h(
     'div',
@@ -55,20 +61,21 @@ export function catalogView({ board, entry, view, bridge, onOpen, onRefresh, onV
       placeholder: 'Search this catalog',
       'aria-label': 'Search this catalog',
       value: view.query,
-      'data-key': 'catalog-search',
+      'data-key': `${keyPrefix}catalog-search`,
       oninput: (e) => onView({ query: e.target.value }),
     }),
     h(
       'select',
-      { class: 'input browse__sort', 'aria-label': 'Sort threads', 'data-key': 'catalog-sort', onchange: (e) => onView({ sort: e.target.value }) },
+      { class: 'input browse__sort', 'aria-label': 'Sort threads', 'data-key': `${keyPrefix}catalog-sort`, onchange: (e) => onView({ sort: e.target.value }) },
       B.CATALOG_SORTS.map((s) => h('option', { value: s.value, selected: s.value === view.sort, text: s.label })),
     ),
-    h('button', { type: 'button', class: 'btn', 'data-key': 'catalog-refresh', onclick: onRefresh, disabled: entry?.status === 'loading' }, icon('refresh'), 'Refresh'),
+    h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}catalog-refresh`, onclick: onRefresh, disabled: entry?.status === 'loading' }, icon('refresh'), 'Refresh'),
+    onNewThread ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}new-thread`, onclick: onNewThread }, icon('plus'), 'New thread') : null,
   );
   out.append(tools);
   const status = statusLine(entry, 'catalog');
   if (status) out.append(status);
-  if (entry?.status === 'error') out.append(errorBox(entry, 'catalog', onRefresh));
+  if (entry?.status === 'error') out.append(errorBox(entry, 'catalog', onRefresh, keyPrefix));
 
   if (!entry?.threads) {
     if (entry?.status !== 'error') {
@@ -96,17 +103,42 @@ export function catalogView({ board, entry, view, bridge, onOpen, onRefresh, onV
       { class: 'catalog', 'aria-label': `/${board}/ catalog` },
       list.map((t) => {
         const thumb = t.filedeleted ? null : bridge.thumbUrl(board, t);
+        const full = thumb ? bridge.mediaUrl(board, t) : null;
+        const title = B.threadTitle(t);
         return h(
           'li',
-          {},
+          { class: 'catalog__item' },
           h(
             'button',
-            { type: 'button', class: 'catalog-card', 'data-key': `thread-${t.no}`, onclick: () => onOpen(t.no) },
+            {
+              type: 'button',
+              class: 'catalog-card',
+              'data-key': `${keyPrefix}thread-${t.no}`,
+              onclick: (e) => onOpen(t.no, canSplit && (e.ctrlKey || e.metaKey) ? 'split' : undefined),
+              onauxclick: (e) => {
+                if (canSplit && e.button === 1) {
+                  e.preventDefault();
+                  onOpen(t.no, 'split');
+                }
+              },
+            },
             h(
               'span',
-              { class: 'catalog-card__thumb' },
+              {
+                class: 'catalog-card__thumb',
+                'data-preview': full,
+                'data-preview-w': t.w || null,
+                'data-preview-h': t.h || null,
+                'data-preview-video': full && VIDEO.test(t.ext || '') ? 'true' : null,
+              },
               thumb ? h('img', { src: thumb, alt: '', loading: 'lazy', decoding: 'async', width: t.tn_w || 150, height: t.tn_h || 150 }) : h('span', { class: 'catalog-card__nofile', text: 'No file' }),
             ),
+            h('span', { class: 'catalog-card__title', text: title }),
+            t.sub ? h('span', { class: 'catalog-card__text', text: B.excerpt(t) }) : null,
+          ),
+          h(
+            'div',
+            { class: 'catalog-card__foot' },
             h(
               'span',
               { class: 'catalog-card__counts' },
@@ -115,8 +147,20 @@ export function catalogView({ board, entry, view, bridge, onOpen, onRefresh, onV
               h('span', { text: `R ${t.replies ?? 0}` }),
               h('span', { text: `I ${t.images ?? 0}` }),
             ),
-            h('span', { class: 'catalog-card__title', text: B.threadTitle(t) }),
-            t.sub ? h('span', { class: 'catalog-card__text', text: B.excerpt(t) }) : null,
+            canSplit
+              ? h(
+                  'button',
+                  {
+                    type: 'button',
+                    class: 'icon-btn icon-btn--sm catalog-card__beside',
+                    title: 'Open beside',
+                    'aria-label': `Open “${title}” beside this one`,
+                    'data-key': `${keyPrefix}beside-${t.no}`,
+                    onclick: () => onOpen(t.no, 'split'),
+                  },
+                  icon('splitOpen'),
+                )
+              : null,
           ),
         );
       }),
@@ -131,10 +175,14 @@ export function catalogView({ board, entry, view, bridge, onOpen, onRefresh, onV
  * @param {number} o.no
  * @param {object|undefined} o.entry   { status, posts, error, at, freshness, gone, fresh: Set<no> }
  * @param {object} o.bridge
+ * @param {string} [o.keyPrefix]
+ * @param {boolean} [o.watched]
  * @param {number} o.intervalSec
  * @param {() => void} o.onRefresh
+ * @param {() => void} [o.onWatch]
+ * @param {(quote?: number) => void} [o.onReply]
  */
-export function threadView({ board, no, entry, bridge, intervalSec, onRefresh }) {
+export function threadView({ board, no, entry, bridge, keyPrefix = '', watched = false, intervalSec, onRefresh, onWatch = null, onReply = null }) {
   const out = h('div', { class: 'browse' });
   const first = entry?.posts?.[0];
   const frozen = entry?.gone || first?.closed || first?.archived;
@@ -142,13 +190,22 @@ export function threadView({ board, no, entry, bridge, intervalSec, onRefresh })
     h(
       'div',
       { class: 'browse__tools' },
-      h('button', { type: 'button', class: 'btn', 'data-key': 'thread-refresh', onclick: onRefresh, disabled: entry?.status === 'loading' || entry?.gone }, icon('refresh'), 'Update'),
+      h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-refresh`, onclick: onRefresh, disabled: entry?.status === 'loading' || entry?.gone }, icon('refresh'), 'Update'),
+      onWatch
+        ? h(
+            'button',
+            { type: 'button', class: `btn${watched ? ' btn--on' : ''}`, 'aria-pressed': String(watched), 'data-key': `${keyPrefix}thread-watch`, onclick: onWatch },
+            icon('bell'),
+            watched ? 'Watching' : 'Watch',
+          )
+        : null,
+      onReply && !frozen ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-reply`, onclick: () => onReply() }, icon('reply'), 'Reply') : null,
       frozen ? null : h('span', { class: 'field__hint', text: `Updates by itself every ${intervalSec} s while open.` }),
     ),
   );
   const status = statusLine(entry, 'thread');
   if (status) out.append(status);
-  if (entry?.status === 'error') out.append(errorBox(entry, 'thread', onRefresh));
+  if (entry?.status === 'error') out.append(errorBox(entry, 'thread', onRefresh, keyPrefix));
   if (!entry?.posts) {
     if (entry?.status !== 'error') for (let i = 0; i < 4; i++) out.append(h('div', { class: 'skeleton', style: { height: '96px' } }));
     return out;
@@ -156,7 +213,7 @@ export function threadView({ board, no, entry, bridge, intervalSec, onRefresh })
   const refs = backlinks(entry.posts);
   const list = h('div', { class: 'thread', 'aria-label': `Thread ${no}` });
   const jump = (target) => {
-    const el = list.querySelector(`#p${target}`);
+    const el = list.querySelector(`[data-no="${target}"]`);
     if (!el) return;
     el.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
     el.classList.remove('post--flash');
@@ -167,17 +224,17 @@ export function threadView({ board, no, entry, bridge, intervalSec, onRefresh })
     const card = renderPost(p, {
       backrefs: refs.get(p.no) || [],
       onQuote: jump,
+      onReply: onReply && !frozen ? () => onReply(p.no) : null,
       thumb: bridge.thumbUrl(board, p),
       full: bridge.mediaUrl(board, p),
-      idPrefix: 'p',
+      idPrefix: `${keyPrefix}p`,
     });
     if (entry.fresh?.has(p.no)) card.classList.add('post--new');
     list.append(card);
   }
   out.append(list);
-  const op = entry.posts[0];
-  if (op?.closed || op?.archived) {
-    out.append(h('p', { class: 'state-line', text: op.archived ? 'This thread is archived: no new replies.' : 'This thread is closed: no new replies.' }));
+  if (first?.closed || first?.archived) {
+    out.append(h('p', { class: 'state-line', text: first.archived ? 'This thread is archived: no new replies.' : 'This thread is closed: no new replies.' }));
   }
   return out;
 }

@@ -147,6 +147,87 @@ async fn fetch_thread(state: tauri::State<'_, AppState>, board: String, no: u64)
     .map_err(|e| e.to_string())?
 }
 
+/// The page that holds the site's own post form: the thread (with `#q<no>`
+/// to open the quick reply quoting a post) or the board index for a new
+/// thread. The person posts there, solving the site's own captcha.
+fn post_url(board: &str, thread: Option<u64>, quote: Option<u64>) -> Result<String, String> {
+    if !clovereye_fetch::valid_board(board) {
+        return Err(format!("not a board code: {board:?}"));
+    }
+    Ok(match (thread, quote) {
+        (Some(t), Some(q)) if t > 0 && q > 0 => format!("https://boards.4chan.org/{board}/thread/{t}#q{q}"),
+        (Some(t), _) if t > 0 => format!("https://boards.4chan.org/{board}/thread/{t}#bottom"),
+        (Some(_), _) => return Err("not a thread number".into()),
+        (None, _) => format!("https://boards.4chan.org/{board}/"),
+    })
+}
+
+/// The post window may only move around the site itself (pages, the post
+/// endpoint, its captcha, its static files) and Cloudflare's challenge
+/// page. Anything else is refused there.
+fn post_window_allows(url: &tauri::Url) -> bool {
+    if url.scheme() == "about" {
+        return true;
+    }
+    if url.scheme() != "https" {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default();
+    ["4chan.org", "4cdn.org", "4channel.org"]
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")))
+        || host == "challenges.cloudflare.com"
+}
+
+/// Opens (or reuses) the post window on the site's own page. That window
+/// has no access to the app's commands (capabilities list only "main").
+#[tauri::command]
+async fn open_post_window(app: tauri::AppHandle, board: String, thread: Option<u64>, quote: Option<u64>) -> Result<(), String> {
+    let url: tauri::Url = post_url(&board, thread, quote)?.parse().map_err(|e| format!("{e}"))?;
+    if let Some(win) = app.get_webview_window("post") {
+        win.navigate(url).map_err(|e| e.to_string())?;
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(&app, "post", tauri::WebviewUrl::External(url))
+        .title("Post · CloverEye")
+        .inner_size(1000.0, 860.0)
+        .min_inner_size(480.0, 480.0)
+        .on_navigation(post_window_allows)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn post_urls() {
+        assert_eq!(post_url("g", Some(123), Some(456)).unwrap(), "https://boards.4chan.org/g/thread/123#q456");
+        assert_eq!(post_url("g", Some(123), None).unwrap(), "https://boards.4chan.org/g/thread/123#bottom");
+        assert_eq!(post_url("wsg", None, None).unwrap(), "https://boards.4chan.org/wsg/");
+        assert!(post_url("../x", None, None).is_err());
+        assert!(post_url("G", None, None).is_err());
+        assert!(post_url("g", Some(0), None).is_err());
+    }
+
+    #[test]
+    fn post_window_stays_on_the_site() {
+        let ok = |u: &str| post_window_allows(&u.parse().unwrap());
+        assert!(ok("https://boards.4chan.org/g/thread/1"));
+        assert!(ok("https://sys.4chan.org/g/post"));
+        assert!(ok("https://i.4cdn.org/g/1.jpg"));
+        assert!(ok("https://challenges.cloudflare.com/x"));
+        assert!(!ok("http://boards.4chan.org/g/"));
+        assert!(!ok("https://evil4chan.org/"));
+        assert!(!ok("https://4chan.org.evil.com/"));
+        assert!(!ok("https://example.com/"));
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -159,7 +240,8 @@ fn main() {
             check_ffmpeg,
             fetch_boards,
             fetch_catalog,
-            fetch_thread
+            fetch_thread,
+            open_post_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running CloverEye");

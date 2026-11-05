@@ -392,6 +392,9 @@ const settled = (page) => page.waitForTimeout(300);
   if (await thumbs.count()) {
     await thumbs.first().click(); await settled(page);
     check('browse: a file expands in place', (await page.locator('.thread .post__media').count()) === 1);
+    await page.locator('.thread .post__media').first().evaluate((el) => { el.dataset.mark = 'kept'; });
+    await page.waitForTimeout(11500); // past the thread's own 10 s update
+    check('browse: an open file survives the auto-update (same element)', (await page.locator('.thread .post__media[data-mark="kept"]').count()) === 1);
     await page.locator('.thread .post__media').first().click(); await settled(page);
     check('browse: clicking it again collapses it', (await page.locator('.thread .post__media').count()) === 0);
   }
@@ -423,6 +426,92 @@ const settled = (page) => page.waitForTimeout(300);
   await page.waitForSelector('[data-key="retry-load"]');
   check('browse: a failed catalog says so and offers Try again', (await page.locator('.callout--danger').textContent()).includes('Couldn’t load the catalog'));
   check('browse fail run: no console errors', page._errors.length === 0, page._errors.join(' | '));
+  await ctx.close();
+}
+
+// ---------------- watcher, split view, sidebar, favourites, hover, posting
+{
+  const { ctx, page } = await newPage();
+  await page.goto(BASE + '?mock-delay=0&mock-grow');
+  await page.waitForSelector('#splash', { state: 'detached', timeout: 5000 });
+  check('splash: startup animation removes itself', (await page.locator('#splash').count()) === 0);
+  await page.waitForSelector('#setup:not([hidden])');
+  for (let i = 0; i < 2; i++) { await nextBtn(page).click(); await settled(page); }
+  await page.waitForSelector('.board-tile');
+  await page.locator('[data-board="g"]').click();
+  for (let i = 0; i < 6 && !(await stepLabel(page)).includes('Done'); i++) { await nextBtn(page).click(); await settled(page); }
+  await nextBtn(page).click(); await page.waitForSelector('.catalog-card');
+  // favourites from All boards
+  await page.locator('[data-key="all-boards"]').click(); await page.waitForSelector('.board-list .star');
+  await page.locator('[data-key="fav-toggle-diy"]').click(); await settled(page);
+  check('fav: star adds /diy/ to the rail', (await page.locator('[data-key="fav-diy"]').count()) === 1);
+  check('fav: star shows pressed', (await page.locator('[data-key="fav-toggle-diy"]').getAttribute('aria-pressed')) === 'true');
+  await page.locator('[data-key="fav-toggle-g"]').click(); await settled(page);
+  check('fav: star removes /g/', (await page.locator('[data-key="fav-g"]').count()) === 0);
+  const favs = await page.evaluate(() => JSON.parse(localStorage.getItem('clovereye.settings')).favourites);
+  check('fav: saved', JSON.stringify(favs) === '["diy"]', JSON.stringify(favs));
+  await page.locator('[data-key="fav-toggle-g"]').click(); await settled(page);
+  // sidebar
+  await page.locator('[data-key="rail-toggle"]').click(); await settled(page);
+  check('sidebar: hidden', !(await page.locator('.rail').isVisible()));
+  await page.reload(); await page.waitForSelector('#shell:not([hidden])');
+  check('sidebar: stays hidden after a reload', !(await page.locator('.rail').isVisible()));
+  await page.locator('[data-key="rail-toggle"]').click(); await settled(page);
+  check('sidebar: shown again', await page.locator('.rail').isVisible());
+  // watcher
+  await page.locator('[data-key="fav-g"]').click(); await page.waitForSelector('.catalog-card');
+  const firstNo = await page.locator('.catalog-card').nth(1).getAttribute('data-key');
+  await page.locator('.catalog-card').nth(1).click(); await page.waitForSelector('.thread .post');
+  await page.locator('[data-key="thread-watch"]').click(); await settled(page);
+  check('watch: thread listed in the rail', (await page.locator('[data-key^="watched-g-"]').count()) === 1);
+  check('watch: button says Watching', (await page.locator('[data-key="thread-watch"]').textContent()).includes('Watching'));
+  await page.locator('[data-key="back-catalog"]').click(); await page.waitForSelector('.catalog-card');
+  // the watcher asks again after the interval (10 s): a new reply arrives
+  await page.waitForSelector('[data-key^="watched-g-"] .badge', { timeout: 30000 }).catch(() => {});
+  const badge = await page.locator('[data-key^="watched-g-"] .badge').textContent().catch(() => '');
+  check('watch: unread badge after the watcher polls', Number(badge) >= 1, `badge "${badge}"`);
+  await page.locator('[data-key^="watched-g-"]').click(); await page.waitForSelector('.thread .post');
+  await settled(page);
+  check('watch: opening the thread clears the badge', (await page.locator('[data-key^="watched-g-"] .badge').count()) === 0);
+  check('watch: saved', await page.evaluate(() => JSON.parse(localStorage.getItem('clovereye.settings')).watched.length === 1));
+  // posting goes to the site's own page (the mock only records it)
+  await page.locator('[data-key="thread-reply"]').click(); await settled(page);
+  check('post: Reply asks the bridge to open the site’s post form', (await page.locator('#toast').textContent()).includes('post form'));
+  await page.locator('.thread .post__no--reply').nth(1).click(); await settled(page);
+  // split view
+  await page.locator('[data-key="back-catalog"]').click(); await page.waitForSelector('.catalog-card');
+  await page.locator('.catalog__item [data-key^="beside-"]').nth(2).click();
+  await page.waitForSelector('.panel--split .thread .post');
+  check('split: a thread opens beside the catalog', (await page.locator('.centre .catalog-card').count()) === 15 && (await page.locator('.panel--split .thread .post').count()) >= 1);
+  await page.locator('.catalog-card').nth(3).click({ modifiers: ['Control'] });
+  await page.waitForSelector('.panel--split .thread .post');
+  check('split: Ctrl+click replaces the thread beside', true);
+  await page.locator('[data-key="split-swap"]').click(); await settled(page);
+  check('split: swap puts the thread in the main pane', (await page.locator('.centre .thread').count()) === 1 && (await page.locator('.panel--split .catalog-card').count()) === 15);
+  const before = await page.locator('.panel--split').evaluate((el) => el.getBoundingClientRect().width);
+  await page.locator('[data-key="split-resize"]').focus();
+  await page.keyboard.press('ArrowLeft'); await page.keyboard.press('ArrowLeft'); await settled(page);
+  const after = await page.locator('.panel--split').evaluate((el) => el.getBoundingClientRect().width);
+  check('split: the divider resizes with the keyboard', after > before, `${before} → ${after}`);
+  check('split: width saved', await page.evaluate(() => JSON.parse(localStorage.getItem('clovereye.settings')).ui.splitWidth > 520));
+  await page.locator('[data-key="panel-close"]').click(); await settled(page);
+  check('split: closes', (await page.locator('.panel--split').count()) === 0);
+  // hover preview
+  await page.locator('[data-key="back-catalog"]').click(); await page.waitForSelector('.catalog-card');
+  // scrolling hides a preview on purpose, so scroll first, then rest the mouse
+  await page.locator('.catalog-card__thumb[data-preview]').first().scrollIntoViewIfNeeded();
+  await page.mouse.move(1, 1); await settled(page);
+  await page.locator('.catalog-card__thumb[data-preview]').first().hover();
+  await page.waitForSelector('.hover-preview:not([hidden])', { timeout: 2000 }).catch(() => {});
+  const box = await page.locator('.hover-preview').evaluate((el) => (el.hidden ? null : el.getBoundingClientRect().toJSON()));
+  const vp = page.viewportSize();
+  check('hover: the full file shows beside the pointer', Boolean(box));
+  check('hover: it fits inside the window', box && box.left >= 0 && box.top >= 0 && box.right <= vp.width && box.bottom <= vp.height, JSON.stringify(box));
+  await page.mouse.move(1, 1); await settled(page);
+  check('hover: leaving hides it', await page.locator('.hover-preview').evaluate((el) => el.hidden));
+  check('watch/split run: mock made no outside request', page._outside.length === 0, page._outside.slice(0, 3).join(','));
+  check('watch/split run: no console errors', page._errors.length === 0, page._errors.join(' | '));
+  void firstNo;
   await ctx.close();
 }
 

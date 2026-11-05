@@ -40,12 +40,15 @@ export function targetKind(el) {
 
 // ------------------------------------------------------------- post render
 
+/** Volume and mute carry over from one video to the next this session. */
+const videoPrefs = { volume: 0.6, muted: false };
+
 /** One post card from API-shaped data. Text only through textContent.
  *  `thumb`/`full` are the file's URLs (the bridge decides: the image host in
  *  the app, local pictures in the browser mock); without them the local
  *  `_thumb` field of the setup sample is used. Clicking the file expands it
  *  in place: the full image, or a player for WebM/MP4. */
-export function renderPost(post, { backrefs = [], onQuote = null, thumb = null, full = null, idPrefix = 'sample-p' } = {}) {
+export function renderPost(post, { backrefs = [], onQuote = null, onReply = null, thumb = null, full = null, idPrefix = 'sample-p' } = {}) {
   const lines = parseComment(post.com || '');
   const com = h('div', { class: 'post__com' });
   for (const line of lines) {
@@ -89,7 +92,9 @@ export function renderPost(post, { backrefs = [], onQuote = null, thumb = null, 
     post.trip ? h('span', { text: post.trip }) : null,
     post.capcode ? h('span', { class: 'pill', text: post.capcode }) : null,
     h('span', { text: post.now || '' }),
-    h('span', { class: 'post__no', text: `No. ${post.no}` }),
+    onReply
+      ? h('button', { type: 'button', class: 'post__no post__no--reply', title: 'Reply quoting this post', 'aria-label': `Reply quoting No. ${post.no}`, onclick: onReply, text: `No. ${post.no}` })
+      : h('span', { class: 'post__no', text: `No. ${post.no}` }),
   );
   const thumbSrc = thumb || post._thumb || null;
   const fileName = `${decodeEntities(post.filename || 'file')}${post.ext || ''}`;
@@ -112,6 +117,10 @@ export function renderPost(post, { backrefs = [], onQuote = null, thumb = null, 
         type: 'button',
         class: 'post__thumb',
         'aria-expanded': 'false',
+        'data-preview': full || null,
+        'data-preview-w': post.w || null,
+        'data-preview-h': post.h || null,
+        'data-preview-video': isVideo ? 'true' : null,
         'aria-label': `${isVideo ? 'Play' : 'Expand'} ${fileName}`,
         onclick: (e) => {
           const btn = e.currentTarget;
@@ -124,6 +133,18 @@ export function renderPost(post, { backrefs = [], onQuote = null, thumb = null, 
           const media = isVideo
             ? h('video', { class: 'post__media', src: full, controls: true, autoplay: true, loop: true, preload: 'metadata' })
             : h('img', { class: 'post__media', src: full, alt: fileName, decoding: 'async' });
+          if (isVideo) {
+            // One video at a time, at the volume the person last chose.
+            media.volume = videoPrefs.volume;
+            media.muted = videoPrefs.muted;
+            media.addEventListener('volumechange', () => {
+              videoPrefs.volume = media.volume;
+              videoPrefs.muted = media.muted;
+            });
+            media.addEventListener('play', () => {
+              for (const v of document.querySelectorAll('video.post__media')) if (v !== media && !v.paused) v.pause();
+            });
+          }
           media.addEventListener('click', (ev) => {
             if (!isVideo) {
               ev.preventDefault();

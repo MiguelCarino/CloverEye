@@ -10,6 +10,7 @@ fn main() {
             "fetch_boards",
             "fetch_catalog",
             "fetch_thread",
+            "open_post_window",
         ])),
     )
     .expect("failed to run tauri-build");

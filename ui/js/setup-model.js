@@ -101,6 +101,29 @@ export function defaults() {
     nsfwBoards: [],
     watch: { notifyReplies: false, keepInTray: false, intervalSec: MIN_WATCH_INTERVAL },
     files: { downloadDir: '', stripMetadata: true, cache: 'memory', cacheCapMB: 256 },
+    /** Layout choices made in the shell. */
+    ui: { railHidden: false, splitWidth: 520, hoverPreview: true },
+    /** Watched threads: { board, no, title, seen (last post no read),
+     *  dead (404), archived }. */
+    watched: [],
+  };
+}
+
+export const MAX_WATCHED = 100;
+export const SPLIT_MIN = 320;
+export const SPLIT_MAX = 1400;
+
+/** One watched-thread record, or null if it is not one. */
+export function normalizeWatched(w) {
+  if (!isObj(w) || !isBoardCode(w.board) || !Number.isSafeInteger(w.no) || w.no <= 0) return null;
+  const seen = Number.isSafeInteger(w.seen) && w.seen >= 0 ? w.seen : 0;
+  return {
+    board: w.board,
+    no: w.no,
+    title: typeof w.title === 'string' ? w.title.slice(0, 200) : '',
+    seen,
+    dead: w.dead === true,
+    archived: w.archived === true,
   };
 }
 
@@ -164,8 +187,66 @@ export function normalizeSettings(raw) {
       cacheCapMB: pick(raw.files.cacheCapMB, CACHE_CAPS_MB, d.files.cacheCapMB),
     };
   }
+  if (isObj(raw.ui)) {
+    const w = Math.round(Number(raw.ui.splitWidth));
+    out.ui = {
+      railHidden: bool(raw.ui.railHidden, d.ui.railHidden),
+      splitWidth: Number.isFinite(w) ? Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, w)) : d.ui.splitWidth,
+      hoverPreview: bool(raw.ui.hoverPreview, d.ui.hoverPreview),
+    };
+  }
+  if (Array.isArray(raw.watched)) {
+    const seenKeys = new Set();
+    out.watched = [];
+    for (const item of raw.watched) {
+      const w = normalizeWatched(item);
+      if (!w) continue;
+      const key = `${w.board}/${w.no}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      out.watched.push(w);
+      if (out.watched.length >= MAX_WATCHED) break;
+    }
+  }
+  // NSFW off: watched threads on NSFW boards are dropped too.
+  if (!nsfwVisible(out) && out.nsfwBoards.length) {
+    const nsfw = new Set(out.nsfwBoards);
+    out.watched = out.watched.filter((w) => !nsfw.has(w.board));
+  }
   return out;
 }
+
+const keyOf = (board, no) => `${board}/${no}`;
+
+export const isWatched = (s, board, no) => (s?.watched || []).some((w) => w.board === board && w.no === no);
+
+/** Watches or unwatches a thread. `seen` = the last post number read. */
+export function toggleWatch(s, { board, no, title = '', seen = 0 }) {
+  const list = Array.isArray(s?.watched) ? s.watched : [];
+  if (isWatched(s, board, no)) return { ...s, watched: list.filter((w) => keyOf(w.board, w.no) !== keyOf(board, no)) };
+  const w = normalizeWatched({ board, no, title, seen });
+  if (!w || list.length >= MAX_WATCHED) return s;
+  return { ...s, watched: [...list, w] };
+}
+
+/** Applies a patch to one watched thread (seen, dead, archived, title).
+ *  Returns `s` itself when nothing changes. */
+export function updateWatched(s, board, no, patch) {
+  let changed = false;
+  const watched = (s?.watched || []).map((w) => {
+    if (w.board !== board || w.no !== no) return w;
+    const next = normalizeWatched({ ...w, ...patch });
+    if (next && JSON.stringify(next) !== JSON.stringify(w)) {
+      changed = true;
+      return next;
+    }
+    return w;
+  });
+  return changed ? { ...s, watched } : s;
+}
+
+/** Unread posts in a thread for a watch record: posts newer than `seen`. */
+export const unreadCount = (posts, seen) => (Array.isArray(posts) ? posts.filter((p) => p.no > (seen || 0)).length : 0);
 
 const clone = (s) => JSON.parse(JSON.stringify(s));
 
@@ -251,7 +332,14 @@ export function setNsfw(s, enabled, { confirmedAdult = false, now = new Date(), 
     if (!confirmedAdult) return s;
     return { ...s, nsfw: { enabled: true, confirmedAdultAt: now.toISOString() } };
   }
-  return pruneFavourites({ ...s, nsfw: { enabled: false, confirmedAdultAt: null } }, boards);
+  const off = pruneFavourites({ ...s, nsfw: { enabled: false, confirmedAdultAt: null } }, boards);
+  const nsfw = new Set([
+    ...(Array.isArray(off.nsfwBoards) ? off.nsfwBoards : []),
+    ...(Array.isArray(boards) ? boards.filter((b) => !isWorksafe(b)).map((b) => b.board) : []),
+  ]);
+  return Array.isArray(off.watched) && off.watched.some((w) => nsfw.has(w.board))
+    ? { ...off, watched: off.watched.filter((w) => !nsfw.has(w.board)) }
+    : off;
 }
 
 export function toggleFavourite(s, code) {
