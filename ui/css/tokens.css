@@ -1,0 +1,190 @@
+/* CloverEye design system: tokens only (SCOPE §3.1a).
+ * Dark by default; light; "system" follows the OS. Set on <html>:
+ *   data-theme="system|dark|light"   data-density="comfortable|compact"
+ *   style="--text-scale: 1"
+ */
+
+@font-face {
+  font-family: 'CE Sans';
+  src: url('../fonts/InterVariable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'CE Sans';
+  src: url('../fonts/InterVariable-Italic.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'CE Mono';
+  src: url('../fonts/NotoSansMono-Variable.woff2') format('woff2');
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: dark;
+
+  /* type */
+  --font-sans: 'CE Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'CE Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  --text-scale: 1;
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.8125rem;
+  --fs-base: 0.9375rem;
+  --fs-md: 1.0625rem;
+  --fs-lg: 1.25rem;
+  --fs-xl: 1.625rem;
+  --fs-2xl: 2.125rem;
+  --lh-tight: 1.2;
+  --lh-base: 1.55;
+  --fw-regular: 420;
+  --fw-medium: 520;
+  --fw-semibold: 620;
+  --fw-bold: 720;
+  --measure: 72ch;
+
+  /* space: a 4 px grid, scaled by density */
+  --density: 1;
+  --space-1: calc(4px * var(--density));
+  --space-2: calc(8px * var(--density));
+  --space-3: calc(12px * var(--density));
+  --space-4: calc(16px * var(--density));
+  --space-5: calc(24px * var(--density));
+  --space-6: calc(32px * var(--density));
+  --space-7: calc(48px * var(--density));
+  --space-8: calc(64px * var(--density));
+  --control-h: calc(36px + 4px * var(--density));
+
+  /* shape */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-pill: 999px;
+
+  /* motion */
+  --dur-fast: 150ms;
+  --dur: 180ms;
+  --dur-slow: 200ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* layout */
+  --titlebar-h: 38px;
+  --rail-w: 248px;
+  --panel-w: 380px;
+
+  /* colour: dark (default) */
+  --bg: #0e0f14;
+  --bg-sunken: #0a0b0f;
+  --surface: #15171e;
+  --surface-2: #1c1f28;
+  --surface-3: #252935;
+  --border: #2a2e3a;
+  --border-strong: #3a3f4e;
+  --text: #e9eaf0;
+  --text-muted: #a6aabb;
+  --text-faint: #868ba3; /* ≥ 4.5:1 on bg, surface, surface-2 */
+  --accent: #8f7dff;
+  --accent-hover: #a596ff;
+  --accent-soft: rgb(143 125 255 / 0.16);
+  --accent-line: rgb(143 125 255 / 0.45);
+  --on-accent: #120d2b;
+  --focus: #b9adff;
+  --ok: #4fc68f;
+  --ok-soft: rgb(79 198 143 / 0.14);
+  --danger: #ff7a7a;
+  --danger-soft: rgb(255 122 122 / 0.14);
+  --warn: #f2bb55;
+  --warn-soft: rgb(242 187 85 / 0.14);
+  --greentext: #a9c76a;
+  --spoiler: #3a3f4e;
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.35);
+  --shadow-2: 0 8px 28px rgb(0 0 0 / 0.45);
+  --scrim: rgb(5 6 10 / 0.62);
+}
+
+/* Light, chosen explicitly. */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f6f6f9;
+  --bg-sunken: #eceef3;
+  --surface: #ffffff;
+  --surface-2: #f2f3f7;
+  --surface-3: #e7e9f0;
+  --border: #dfe2ea;
+  --border-strong: #c8ccd8;
+  --text: #171923;
+  --text-muted: #555b70;
+  --text-faint: #62677c; /* ≥ 4.5:1 on bg and every surface */
+  --accent: #5b45e0;
+  --accent-hover: #4a35cf;
+  --accent-soft: rgb(91 69 224 / 0.1);
+  --accent-line: rgb(91 69 224 / 0.38);
+  --on-accent: #ffffff;
+  --focus: #5b45e0;
+  --ok: #17895a;
+  --ok-soft: rgb(23 137 90 / 0.1);
+  --danger: #c93838;
+  --danger-soft: rgb(201 56 56 / 0.09);
+  --warn: #a86c00;
+  --warn-soft: rgb(168 108 0 / 0.1);
+  --greentext: #557a16;
+  --spoiler: #c8ccd8;
+  --shadow-1: 0 1px 2px rgb(20 22 40 / 0.08);
+  --shadow-2: 0 10px 30px rgb(20 22 40 / 0.14);
+  --scrim: rgb(20 22 40 / 0.4);
+}
+
+/* Light, following the OS. Same values as above. */
+@media (prefers-color-scheme: light) {
+  :root[data-theme='system'] {
+    color-scheme: light;
+    --bg: #f6f6f9;
+    --bg-sunken: #eceef3;
+    --surface: #ffffff;
+    --surface-2: #f2f3f7;
+    --surface-3: #e7e9f0;
+    --border: #dfe2ea;
+    --border-strong: #c8ccd8;
+    --text: #171923;
+    --text-muted: #555b70;
+    --text-faint: #62677c; /* ≥ 4.5:1 on bg and every surface */
+    --accent: #5b45e0;
+    --accent-hover: #4a35cf;
+    --accent-soft: rgb(91 69 224 / 0.1);
+    --accent-line: rgb(91 69 224 / 0.38);
+    --on-accent: #ffffff;
+    --focus: #5b45e0;
+    --ok: #17895a;
+    --ok-soft: rgb(23 137 90 / 0.1);
+    --danger: #c93838;
+    --danger-soft: rgb(201 56 56 / 0.09);
+    --warn: #a86c00;
+    --warn-soft: rgb(168 108 0 / 0.1);
+    --greentext: #557a16;
+    --spoiler: #c8ccd8;
+    --shadow-1: 0 1px 2px rgb(20 22 40 / 0.08);
+    --shadow-2: 0 10px 30px rgb(20 22 40 / 0.14);
+    --scrim: rgb(20 22 40 / 0.4);
+  }
+}
+
+:root[data-density='compact'] {
+  --density: 0.75;
+  --fs-base: 0.875rem;
+  --lh-base: 1.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur: 0ms;
+    --dur-slow: 0ms;
+  }
+}

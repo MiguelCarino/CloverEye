@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The main window: the four app commands the UI calls, window controls for the custom title bar, and opening the site's rules page in the system browser.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-get-settings",
+    "allow-set-settings",
+    "allow-check-ffmpeg",
+    "allow-fetch-boards",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://www.4chan.org/rules" }]
+    }
+  ]
+}

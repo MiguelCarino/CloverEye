@@ -1,0 +1,141 @@
+// Static checks on ui/ and src-tauri/: no outside requests, no fleet
+// branding, every referenced file exists, fixtures stay in sync.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { join, dirname, resolve, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { STEPS } from '../ui/js/setup-model.js';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const UI = join(ROOT, 'ui');
+
+function walk(dir, out = []) {
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    if (name === 'target' || name === 'node_modules') continue;
+    if (statSync(p).isDirectory()) walk(p, out);
+    else out.push(p);
+  }
+  return out;
+}
+
+const textFiles = (dir) => walk(dir).filter((p) => /\.(html|css|js|mjs|json|svg|rs|toml)$/.test(p));
+
+test('the board fixture shipped with the UI mock equals the recorded one', () => {
+  const a = readFileSync(join(UI, 'data/boards.sample.json'), 'utf8');
+  const b = readFileSync(join(ROOT, 'crates/fetch/tests/fixtures/boards.json'), 'utf8');
+  assert.equal(a, b);
+});
+
+test('the UI makes no outside requests: only allowed hosts appear', () => {
+  const allowed = [
+    'https://www.4chan.org/rules', // opened in the system browser, never fetched
+    'https://i.4cdn.org', // CSP: media for C1
+    'https://s.4cdn.org',
+    'http://ipc.localhost', // Tauri IPC
+    'http://www.w3.org/2000/svg', // SVG namespace
+  ];
+  for (const f of textFiles(UI)) {
+    if (f.endsWith('boards.sample.json')) continue; // recorded data, not loaded from anywhere
+    const src = readFileSync(f, 'utf8');
+    for (const m of src.matchAll(/(?:https?:)?\/\/[a-z0-9.-]+\.[a-z]{2,}[^\s"'`)<>]*/gi)) {
+      const url = m[0];
+      if (url.startsWith('//') && !/^\/\/[a-z0-9-]+\.[a-z0-9.-]+\//i.test(url)) continue; // comment text
+      assert.ok(
+        allowed.some((a) => url.startsWith(a)),
+        `${relative(ROOT, f)}: unexpected URL ${url}`,
+      );
+    }
+    assert.ok(!/fonts\.googleapis|cdnjs|jsdelivr|unpkg/.test(src), `${relative(ROOT, f)} loads from a CDN`);
+  }
+});
+
+test('no fleet branding in the app', () => {
+  for (const f of [...textFiles(UI), ...textFiles(join(ROOT, 'src-tauri'))]) {
+    const src = readFileSync(f, 'utf8');
+    assert.ok(!/carino/i.test(src), `${relative(ROOT, f)} mentions the fleet`);
+  }
+});
+
+test('every file index.html references exists', () => {
+  const html = readFileSync(join(UI, 'index.html'), 'utf8');
+  const refs = [...html.matchAll(/(?:src|href)="([^"#:]+)"/g)].map((m) => m[1]);
+  assert.ok(refs.length >= 5);
+  for (const r of refs) assert.ok(existsSync(join(UI, r)), `missing ${r}`);
+});
+
+test('every ES module import resolves', () => {
+  for (const f of walk(join(UI, 'js'))) {
+    const src = readFileSync(f, 'utf8');
+    for (const m of src.matchAll(/^import[^'"]*['"](\.[^'"]+)['"]/gm)) {
+      assert.ok(existsSync(resolve(dirname(f), m[1])), `${relative(ROOT, f)} imports missing ${m[1]}`);
+    }
+  }
+});
+
+test('fonts are self-hosted with their licences', () => {
+  const css = readFileSync(join(UI, 'css/tokens.css'), 'utf8');
+  const urls = [...css.matchAll(/url\('([^']+)'\)/g)].map((m) => m[1]);
+  assert.equal(urls.length, 3);
+  for (const u of urls) {
+    const p = resolve(join(UI, 'css'), u);
+    assert.ok(existsSync(p), u);
+    assert.ok(statSync(p).size > 50_000, `${u} looks truncated`);
+  }
+  for (const lic of ['Inter-OFL.txt', 'NotoSansMono-OFL.txt']) {
+    assert.match(readFileSync(join(UI, 'fonts', lic), 'utf8'), /SIL OPEN FONT LICENSE Version 1\.1/);
+  }
+});
+
+test('every setup step has a renderer', () => {
+  const src = readFileSync(join(UI, 'js/setup.js'), 'utf8');
+  const block = src.slice(src.indexOf('const RENDER = {'));
+  for (const s of STEPS) assert.match(block, new RegExp(`\\n    ${s.id}\\(\\) \\{`), s.id);
+});
+
+test('tokens: dark default, light theme, system follow, density, reduced motion', () => {
+  const css = readFileSync(join(UI, 'css/tokens.css'), 'utf8');
+  assert.match(css, /:root \{[\s\S]*color-scheme: dark;/);
+  assert.match(css, /:root\[data-theme='light'\]/);
+  assert.match(css, /@media \(prefers-color-scheme: light\)[\s\S]*:root\[data-theme='system'\]/);
+  assert.match(css, /:root\[data-density='compact'\]/);
+  assert.match(css, /prefers-reduced-motion: reduce/);
+  for (const t of ['--radius-md', '--space-4', '--fs-base', '--accent', '--text-scale']) assert.ok(css.includes(t), t);
+  assert.match(css, /--dur-fast: 150ms;/);
+  assert.match(css, /--dur-slow: 200ms;/);
+});
+
+test('the icon is an original eye mark, not a clover, not green', () => {
+  const svg = readFileSync(join(UI, 'assets/icon.svg'), 'utf8');
+  assert.ok(!/four-?leaf|shamrock|\bleaf\b|\bclover\b(?!eye)/i.test(svg.replace(/CloverEye/g, '')));
+  for (const [, hex] of svg.matchAll(/#([0-9a-f]{6})\b/gi)) {
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
+    assert.ok(!(g > r + 20 && g > b + 20), `green-dominant colour #${hex}`);
+  }
+  for (const name of ['32x32.png', '128x128.png', '128x128@2x.png', 'icon.png', 'icon.ico', 'icon.icns']) {
+    assert.ok(existsSync(join(ROOT, 'src-tauri/icons', name)), name);
+  }
+});
+
+test('tauri config: neutral id, custom title bar, UI from ../ui, CSP set', () => {
+  const conf = JSON.parse(readFileSync(join(ROOT, 'src-tauri/tauri.conf.json'), 'utf8'));
+  assert.equal(conf.productName, 'CloverEye');
+  assert.equal(conf.build.frontendDist, '../ui');
+  assert.equal(conf.app.windows[0].decorations, false);
+  assert.equal(conf.app.withGlobalTauri, true);
+  assert.match(conf.identifier, /^[a-z]+(\.[a-z]+)+$/);
+  assert.ok(conf.app.security.csp);
+  const cap = JSON.parse(readFileSync(join(ROOT, 'src-tauri/capabilities/default.json'), 'utf8'));
+  const perms = cap.permissions.map((p) => (typeof p === 'string' ? p : p.identifier));
+  for (const c of ['allow-get-settings', 'allow-set-settings', 'allow-check-ffmpeg', 'allow-fetch-boards']) {
+    assert.ok(perms.includes(c), c);
+  }
+  const build = readFileSync(join(ROOT, 'src-tauri/build.rs'), 'utf8');
+  for (const c of ['get_settings', 'set_settings', 'check_ffmpeg', 'fetch_boards']) assert.ok(build.includes(`"${c}"`), c);
+  const main = readFileSync(join(ROOT, 'src-tauri/src/main.rs'), 'utf8');
+  for (const c of ['get_settings', 'set_settings', 'check_ffmpeg', 'fetch_boards']) assert.match(main, new RegExp(`fn ${c}\\(`), c);
+  assert.ok(!/Command::new\("(sudo|pkexec|dnf|apt|apt-get|brew|winget|pacman|zypper)"/.test(main), 'never runs a package manager');
+});

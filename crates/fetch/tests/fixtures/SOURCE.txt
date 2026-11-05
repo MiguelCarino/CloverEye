@@ -1,0 +1,17 @@
+Recorded 2026-11-04T12:04:09Z with two live GETs, 3 s apart,
+User-Agent "CloverEye/0.1.0", Accept: application/json. No other live requests.
+
+boards.json           <- https://a.4cdn.org/boards.json (unchanged)
+  {"date": "Wed, 04 Nov 2026 12:04:06 GMT", "content-type": "application/json", "last-modified": "Thu, 19 Mar 2026 16:38:15 GMT", "cache-control": "max-age=5, stale-while-revalidate=10", "access-control-allow-origin": "http://boards.4chan.org"}
+g-catalog-page1.json  <- https://a.4cdn.org/g/catalog.json (trimmed to page 1, then made synthetic)
+  {"date": "Wed, 04 Nov 2026 12:04:09 GMT", "content-type": "application/json", "last-modified": "Wed, 04 Nov 2026 12:03:57 GMT", "cache-control": "max-age=5, stale-while-revalidate=10", "access-control-allow-origin": "http://boards.4chan.org"}
+g-thread-derived.json <- built from g-catalog-page1.json, no request: OP of thread 500073
+                         plus the 5 replies the catalog lists (last_replies).
+
+No real posts are kept. The two /g/ files keep the recorded shape (which fields
+each post has, image sizes, reply counts, sticky/closed/capcode/filedeleted/trip,
+greentext, <wbr> and quote-link structure) but every post number, comment,
+subject, file name, md5 and tim was replaced with generated text and values on
+2026-11-04. The response headers above are as recorded.
+synthetic-thread.json <- hand-written; covers fields /g/ does not use (country, board_flag,
+                         id, capcode, archived, spoiler, filedeleted).

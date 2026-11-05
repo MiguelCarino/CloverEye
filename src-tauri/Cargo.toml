@@ -1,0 +1,26 @@
+# The desktop shell. Not part of the root workspace (it needs WebKitGTK and
+# GTK 3 development files to build on Linux); see the README.
+[package]
+name = "clovereye"
+description = "CloverEye: an unofficial desktop client for 4chan."
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+rust-version = "1.77"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clovereye-fetch = { path = "../crates/fetch" }
+clovereye-ffcheck = { path = "../crates/ffcheck" }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

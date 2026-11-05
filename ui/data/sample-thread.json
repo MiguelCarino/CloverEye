@@ -1,0 +1,11 @@
+{
+  "_note": "Local sample for the setup preview. Written by hand; no request is made to show it.",
+  "board": "diy",
+  "posts": [
+    {"no": 1201, "resto": 0, "now": "11/04/26(Wed)09:12:41", "time": 1793783561, "name": "Anonymous", "sub": "Rate my workbench rebuild", "com": "Finally rebuilt the bench after the old top warped.<br><span class=\"quote\">&gt;birch ply, two coats of oil</span><br><span class=\"quote\">&gt;pegboard for the hand tools</span><br>What would you change before I add the vise?", "filename": "bench_after", "ext": ".jpg", "w": 1600, "h": 1200, "tn_w": 250, "tn_h": 188, "fsize": 412000, "tim": 1793783561001, "_thumb": "assets/sample-bench.svg", "replies": 4, "images": 1},
+    {"no": 1204, "resto": 1201, "now": "11/04/26(Wed)09:15:02", "time": 1793783702, "name": "Anonymous", "com": "<a href=\"#p1201\" class=\"quotelink\">&gt;&gt;1201</a><br>Clean. Put the vise on the left corner if you're right-handed, you'll thank yourself."},
+    {"no": 1207, "resto": 1201, "now": "11/04/26(Wed)09:18:30", "time": 1793783910, "name": "Anonymous", "com": "Dog holes before the vise. Measure twice:<br><pre class=\"prettyprint\">spacing = 4in<br>rows    = 2</pre>"},
+    {"no": 1209, "resto": 1201, "now": "11/04/26(Wed)09:21:12", "time": 1793784072, "name": "Anonymous", "com": "<a href=\"#p1204\" class=\"quotelink\">&gt;&gt;1204</a><br><span class=\"quote\">&gt;left corner</span><br>This. Also leave room for a bench hook.", "filename": "hook", "ext": ".png", "w": 900, "h": 900, "tn_w": 125, "tn_h": 125, "fsize": 98000, "tim": 1793784072002, "_thumb": "assets/sample-hook.svg"},
+    {"no": 1212, "resto": 1201, "now": "11/04/26(Wed)09:26:47", "time": 1793784407, "name": "Anonymous", "com": "<a href=\"#p1207\" class=\"quotelink\">&gt;&gt;1207</a><br>Good call, doing that tonight. Thanks all."}
+  ]
+}
