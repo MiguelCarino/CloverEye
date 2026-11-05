@@ -1,13 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "post-agent",
-  "description": "The hidden post helper window on the site's own board pages: it may only hand results back (post-agent-reply). Nothing else.",
+  "description": "The hidden post helper window on the site's own board and captcha pages: it may only hand results back (post-agent-reply). Nothing else.",
   "windows": [
     "post-agent"
   ],
   "remote": {
     "urls": [
-      "https://boards.4chan.org/*"
+      "https://boards.4chan.org/*",
+      "https://sys.4chan.org/*"
     ]
   },
   "permissions": [

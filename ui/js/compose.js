@@ -87,6 +87,8 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   async function loadCaptcha() {
     if (!st) return;
     const mine = st;
+    const seq = (mine.captchaSeq = (mine.captchaSeq || 0) + 1);
+    const stale = () => st !== mine || mine.captchaSeq !== seq; // a newer request took over
     st.captcha = { state: 'loading' };
     draw('keep');
     let data;
@@ -95,7 +97,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     } catch (e) {
       const msg = String(e?.message || e);
       data = null;
-      if (st !== mine) return;
+      if (stale()) return;
       st.captcha =
         msg === 'check-needed'
           ? { state: 'error', message: 'The site wants a quick browser check. A CloverEye window with the site opened: complete it there, then press New captcha.' }
@@ -103,7 +105,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       draw('keep');
       return;
     }
-    if (st !== mine) return;
+    if (stale()) return;
     st.captcha = C.captchaState(data);
     draw('keep');
     if (st.captcha.state === 'ready') el?.querySelector('[data-key="compose-slider"]')?.focus({ preventScroll: true });

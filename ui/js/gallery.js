@@ -28,6 +28,16 @@ export function openGallery({ items, start = 0, title = '', onSave, onClose = ()
   const stage = h('div', { class: 'gallery__stage' });
   const counter = h('span', { class: 'gallery__count' });
   const name = h('span', { class: 'gallery__name' });
+  const saveLabel = h('span', { class: 'gallery__save-label', text: 'Save (D)' });
+  const saveBtn = h(
+    'button',
+    { type: 'button', class: 'btn btn--sm gallery__save', 'data-key': 'gallery-save', onclick: () => save() },
+    h('span', { class: 'gallery__save-icon', 'aria-hidden': 'true' }, icon('download'), icon('check')),
+    saveLabel,
+    h('span', { class: 'gallery__save-bar', 'aria-hidden': 'true' }),
+  );
+  let saving = false;
+  let saveReset = 0;
   const root = h(
     'div',
     { class: 'gallery', role: 'dialog', 'aria-modal': 'true', 'aria-label': `Gallery: ${title}`, 'data-key': 'gallery', tabindex: '-1' },
@@ -39,7 +49,7 @@ export function openGallery({ items, start = 0, title = '', onSave, onClose = ()
       h('span', { class: 'gallery__spacer' }),
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Previous file (←)', 'data-key': 'gallery-prev', onclick: () => go(-1) }, icon('arrowLeft')),
       h('button', { type: 'button', class: 'icon-btn gallery__next', 'aria-label': 'Next file (→)', 'data-key': 'gallery-next', onclick: () => go(1) }, icon('arrowLeft')),
-      h('button', { type: 'button', class: 'btn btn--sm', 'data-key': 'gallery-save', onclick: () => save() }, icon('copy'), 'Save (D)'),
+      saveBtn,
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close the gallery (Esc)', 'data-key': 'gallery-close', onclick: () => close() }, icon('x')),
     ),
     stage,
@@ -85,13 +95,72 @@ export function openGallery({ items, start = 0, title = '', onSave, onClose = ()
     show(step(index, delta, items.length));
   }
 
-  async function save() {
+  // The save button shows the download: an arrow dropping into the tray and
+  // a sweeping bar while it runs, the file flying down to the button and a
+  // check when it lands, a shake when it fails. Saved files get a mark in
+  // the strip.
+  function saveState(state, label) {
+    clearTimeout(saveReset);
+    saveBtn.dataset.state = state;
+    saveLabel.textContent = label;
+    saveBtn.setAttribute('aria-busy', String(state === 'saving'));
+    if (state === 'saved' || state === 'failed') {
+      saveReset = setTimeout(() => saveState('idle', 'Save (D)'), 1800);
+    }
+  }
+
+  function flyToSave() {
+    const media = stage.querySelector('.gallery__media');
+    if (!media || !media.animate || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const from = media.getBoundingClientRect();
+    const to = saveBtn.getBoundingClientRect();
+    if (!from.width || !to.width) return;
     const it = items[index];
+    const size = Math.min(from.width, from.height, 160);
+    const ghost = h('img', { class: 'gallery__fly', src: it.thumb || it.full, alt: '', 'aria-hidden': 'true' });
+    ghost.style.left = `${from.left + from.width / 2 - size / 2}px`;
+    ghost.style.top = `${from.top + from.height / 2 - size / 2}px`;
+    ghost.style.width = `${size}px`;
+    ghost.style.height = `${size}px`;
+    root.append(ghost);
+    const dx = to.left + to.width / 2 - (from.left + from.width / 2);
+    const dy = to.top + to.height / 2 - (from.top + from.height / 2);
+    const anim = ghost.animate(
+      [
+        { transform: 'translate(0, 0) scale(1)', opacity: 0.95 },
+        { transform: `translate(${dx * 0.5}px, ${dy * 0.5 - 40}px) scale(0.55)`, opacity: 0.9, offset: 0.5 },
+        { transform: `translate(${dx}px, ${dy}px) scale(0.12)`, opacity: 0.15 },
+      ],
+      { duration: 650, easing: 'cubic-bezier(.45,0,.7,.45)' },
+    );
+    anim.onfinish = anim.oncancel = () => ghost.remove();
+  }
+
+  function markSaved(i) {
+    const t = strip.querySelector(`[data-index="${i}"]`);
+    if (t && !t.querySelector('.gallery__saved')) {
+      t.append(h('span', { class: 'gallery__saved', 'aria-hidden': 'true' }, icon('check')));
+      t.setAttribute('aria-label', `${items[i].name} (saved)`);
+    }
+  }
+
+  async function save() {
+    if (saving) return;
+    const at = index;
+    const it = items[at];
+    saving = true;
+    saveState('saving', 'Saving…');
+    flyToSave();
     try {
       const where = await onSave({ ...it, name: saveName(it) });
+      saveState('saved', 'Saved');
+      markSaved(at);
       toast(`Saved: ${where}`);
     } catch (e) {
+      saveState('failed', 'Not saved');
       toast(`Couldn’t save: ${e?.message || e}`);
+    } finally {
+      saving = false;
     }
   }
 
@@ -119,6 +188,7 @@ export function openGallery({ items, start = 0, title = '', onSave, onClose = ()
   }
 
   function close() {
+    clearTimeout(saveReset);
     document.removeEventListener('keydown', onKey, true);
     for (const v of root.querySelectorAll('video')) v.pause();
     root.remove();
@@ -133,6 +203,7 @@ export function openGallery({ items, start = 0, title = '', onSave, onClose = ()
   const behind = [...document.body.children].filter((el) => !el.inert && el.id !== 'toast');
   for (const el of behind) el.inert = true;
   document.body.append(root);
+  saveState('idle', 'Save (D)');
   show(index);
   root.focus();
   return { close, show, index: () => index };

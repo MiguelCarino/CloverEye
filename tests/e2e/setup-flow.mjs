@@ -532,6 +532,11 @@ const settled = (page) => page.waitForTimeout(300);
   check('gallery: the mouse wheel moves too', total < 3 || c3 !== c2, `${c2} → ${c3}`);
   const [download] = await Promise.all([page.waitForEvent('download', { timeout: 3000 }).catch(() => null), page.keyboard.press('d')]);
   check('gallery: D saves the file', Boolean(download));
+  await page.waitForSelector('.gallery__save[data-state="saved"]', { timeout: 3000 }).catch(() => {});
+  check('gallery: the save button shows the download landed', (await page.locator('.gallery__save').getAttribute('data-state')) === 'saved');
+  check('gallery: the saved file is marked in the strip', (await page.locator('.gallery__thumb[aria-selected="true"] .gallery__saved').count()) === 1);
+  await page.waitForSelector('.gallery__save[data-state="idle"]', { timeout: 4000 }).catch(() => {});
+  check('gallery: the save button settles back', (await page.locator('.gallery__save').getAttribute('data-state')) === 'idle');
   await page.keyboard.press('Escape'); await settled(page);
   check('gallery: Esc closes it', (await page.locator('.gallery').count()) === 0);
   // panes: up to five, in one to three rows

@@ -166,7 +166,8 @@ that adds a step shows only the new steps, not the whole flow.
   Cloudflare check that answers 403 to a plain client, so a hidden helper
   window on the site's own page loads the captcha frame and sends the post
   the way the site's form does (`src-tauri/src/post_agent.js`). When the
-  site shows its human check, that window comes forward and the person
+  site shows its human check, that window opens the captcha page as its
+  own page (a check nested in a frame stalls in WebKit), comes forward, and the person
   passes it. The client never solves, bypasses or outsources a captcha or a
   check. When the site asks for hCaptcha, the person posts on the site's own
   page (the post window).

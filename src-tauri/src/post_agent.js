@@ -1,79 +1,198 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // The post helper: runs inside CloverEye's hidden helper window, on the
-// site's own board pages only. It does what the site's own reply form does,
-// from the site's own origin with the browser's own cookies: loads the
-// site's captcha frame, and sends a post to the site's post endpoint. It
-// never solves a captcha: the person does, in CloverEye's reply form.
+// site's own pages only. It does what the site's own reply form does, from
+// the site's own origin with the browser's own cookies: loads the site's
+// captcha, and sends a post to the site's post endpoint. It never solves a
+// captcha or a check: the person does, in CloverEye's reply form (the
+// captcha) or in this window (the site's human check).
 // Results go back through the one command this window may call.
 (function () {
   'use strict';
-  if (location.protocol !== 'https:' || location.hostname !== 'boards.4chan.org') return;
+  if (location.protocol !== 'https:' || window.top !== window) return;
+  const HOST = location.hostname;
+  if (HOST !== 'boards.4chan.org' && HOST !== 'sys.4chan.org') return;
   if (window.__ceAgent) return;
   const internals = window.__TAURI_INTERNALS__;
   if (!internals || typeof internals.invoke !== 'function') return;
   const reply = (id, ok, data) => internals.invoke('post_agent_reply', { id: String(id), ok, data });
+  const log = (text) => reply('log', true, String(text));
   const BOARD = /^[a-z0-9]{1,10}$/;
+  const TICKET = '4chan-tc-ticket';
+  const SYS = 'https://sys.4chan.org';
+  // How long the captcha frame may stay silent before the captcha page is
+  // opened as the window's own page instead (where the site's human check
+  // works the way it is meant to).
+  const FRAME_WAIT_MS = 3500;
+
+  const getTicket = () => {
+    try {
+      return localStorage.getItem(TICKET);
+    } catch (_) {
+      return null;
+    }
+  };
+  const putTicket = (t) => {
+    try {
+      if (t) localStorage.setItem(TICKET, t);
+      else if (t === false) localStorage.removeItem(TICKET);
+    } catch (_) {
+      /* no storage: the next request goes without a ticket */
+    }
+  };
+  const captchaUrl = (board, thread) => {
+    const q = [`board=${board}`];
+    if (thread > 0) q.push(`thread_id=${thread}`);
+    const ticket = getTicket();
+    if (ticket) q.push(`ticket=${encodeURIComponent(ticket)}`);
+    return `${SYS}/captcha?${q.join('&')}`;
+  };
+
+  // ---------------------------------------------------------- sys.4chan.org
+  // The captcha page as the window's own page. It may first be the site's
+  // human check; the window is shown for the person to pass it. The captcha
+  // page hands its challenge to its parent (itself, here) with postMessage,
+  // which is caught, sent to CloverEye, and the window goes back to the
+  // board page with the new ticket.
+  if (HOST === 'sys.4chan.org') {
+    if (!location.pathname.startsWith('/captcha')) return;
+    const hash = new URLSearchParams(location.hash.slice(1));
+    let req = null;
+    try {
+      if (hash.get('ce')) sessionStorage.setItem('ce-req', JSON.stringify({ id: hash.get('ce'), board: hash.get('b') || '' }));
+      req = JSON.parse(sessionStorage.getItem('ce-req') || 'null');
+    } catch (_) {
+      req = hash.get('ce') ? { id: hash.get('ce'), board: hash.get('b') || '' } : null;
+    }
+    if (!req || !req.id || !BOARD.test(req.board)) return;
+    let sent = false;
+    // A newer request while this page waits on the check (the person pressed
+    // New captcha, say): this page answers that one instead. A post has to
+    // wait for the captcha.
+    window.__ceAgent = {
+      run(r) {
+        if (r && r.op === 'captcha' && !sent) {
+          if (req.id !== String(r.id)) reply(req.id, false, 'replaced by a newer captcha request');
+          req = { id: String(r.id), board: req.board };
+          try {
+            sessionStorage.setItem('ce-req', JSON.stringify(req));
+          } catch (_) {
+            /* the hash still carries the first one */
+          }
+          reply('show', true, '');
+        } else {
+          reply(r && r.id, false, 'Complete the site’s check in the CloverEye window first, then post.');
+        }
+      },
+    };
+    const back = (ticket) => {
+      const t = ticket ? encodeURIComponent(ticket) : ticket === false ? '-' : '';
+      location.replace(`https://boards.4chan.org/${req.board}/${t ? `#ce-ticket=${t}` : ''}`);
+    };
+    const take = (data) => {
+      const d = data && typeof data === 'object' ? data.twister : null;
+      if (!d || sent) return;
+      sent = true;
+      try {
+        sessionStorage.removeItem('ce-req');
+      } catch (_) {
+        /* gone with the tab anyway */
+      }
+      log('captcha arrived (own page): ' + Object.keys(d).join(','));
+      // Leave only once CloverEye has the answer: navigating away cuts off
+      // a message still on its way.
+      const leave = () => back(d.ticket);
+      Promise.resolve(reply(req.id, true, d)).then(leave, leave);
+    };
+    // Top-level, the page's parent is itself: catch the hand-over directly.
+    const post = window.postMessage;
+    window.postMessage = function (msg, ...rest) {
+      take(msg);
+      return post.call(this, msg, ...rest);
+    };
+    addEventListener('message', (e) => take(e.data));
+    const check = () => {
+      if (sent) return;
+      // Some answers come as plain JSON rather than a page.
+      const text = (document.body && document.body.innerText) || '';
+      if (/^\s*\{/.test(text)) {
+        try {
+          const d = JSON.parse(text);
+          if (d && typeof d === 'object' && ('challenge' in d || 'tasks' in d || 'pcd' in d || 'error' in d)) return take({ twister: d });
+        } catch (_) {
+          /* not JSON after all */
+        }
+      }
+      log('captcha page is waiting (the site check?): ' + document.title);
+      reply('show', true, '');
+      const bar = document.createElement('div');
+      bar.style.cssText =
+        'position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:#1d1d24;color:#f3f3f6;font:14px/1.45 system-ui,sans-serif;padding:10px 16px;text-align:center';
+      bar.textContent = 'CloverEye: complete the site’s check above. The captcha then appears in CloverEye’s reply form and this window closes by itself.';
+      (document.body || document.documentElement).appendChild(bar);
+    };
+    const later = () => setTimeout(check, 1500);
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', later, { once: true });
+    else later();
+    log('captcha page opened: ' + location.pathname);
+    reply('waiting', true, '');
+    return;
+  }
+
+  // ------------------------------------------------------- boards.4chan.org
+  // A ticket brought back from the captcha page.
+  if (location.hash.startsWith('#ce-ticket=')) {
+    const t = decodeURIComponent(location.hash.slice('#ce-ticket='.length));
+    putTicket(t === '-' ? false : t);
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+
+  let current = null; // ends the captcha request in flight, if any
 
   const OPS = {
     // The site's captcha frame posts its challenge to the page that holds
     // it, as { twister: {...} }. Like the site's own script (tcaptcha.js),
-    // the request carries the saved ticket, and the answer's ticket is
-    // saved for next time (localStorage "4chan-tc-ticket" on this origin).
-    captcha(args) {
+    // the request carries the saved ticket, and the answer's ticket is saved
+    // for next time. A silent frame is almost always the site's human
+    // check: the captcha page is then opened as this window's own page.
+    captcha(args, id) {
       const board = String(args.board || '');
       const thread = Number(args.thread) || 0;
       if (!BOARD.test(board)) return Promise.reject(new Error('not a board code'));
-      const TICKET = '4chan-tc-ticket';
+      // One captcha at a time: a newer request replaces an older one.
+      if (current) current('replaced by a newer captcha request');
       return new Promise((resolve, reject) => {
-        // The frame sits on top of the page, with a line saying why: when
-        // the site puts its human check in front of the captcha, this window
-        // is shown and the person passes the check right here.
-        const box = document.createElement('div');
-        box.style.cssText =
-          'position:fixed;inset:0;z-index:2147483647;background:#fff;color:#111;font:16px/1.5 system-ui,sans-serif;padding:16px;display:flex;flex-direction:column;gap:12px;align-items:center';
-        const note = document.createElement('p');
-        note.style.cssText = 'margin:0;max-width:560px;text-align:center';
-        note.textContent =
-          'CloverEye is loading the site’s captcha. If the site shows a check below, complete it here; CloverEye continues by itself and this window closes.';
+        current = (why) => {
+          clearTimeout(silent);
+          removeEventListener('message', onMessage);
+          frame.remove();
+          current = null;
+          reject(new Error(why));
+        };
         const frame = document.createElement('iframe');
-        frame.style.cssText = 'width:min(560px,100%);height:420px;border:1px solid #ccc;border-radius:8px;background:#fff';
-        box.append(note, frame);
-        const q = [`board=${board}`];
-        if (thread > 0) q.push(`thread_id=${thread}`);
-        let ticket = null;
-        try {
-          ticket = localStorage.getItem(TICKET);
-        } catch (_) {
-          ticket = null;
-        }
-        if (ticket) q.push(`ticket=${encodeURIComponent(ticket)}`);
-        frame.src = `https://sys.4chan.org/captcha?${q.join('&')}`;
-        // No answer after a few seconds: almost always the site's human check.
-        // Show this window so the person can pass it; give them time.
-        const shown = setTimeout(() => reply('show', true, ''), 4000);
-        const timer = setTimeout(() => done(new Error('The captcha did not load. If the site showed a check, it was not completed in time.')), 180000);
+        frame.style.cssText = 'position:fixed;width:1px;height:1px;left:-10px;top:-10px;border:0;opacity:0';
+        frame.addEventListener('load', () => log('captcha frame loaded'));
+        frame.src = captchaUrl(board, thread);
+        const silent = setTimeout(() => {
+          removeEventListener('message', onMessage);
+          current = null;
+          const go = () => location.assign(`${frame.src}#ce=${encodeURIComponent(id)}&b=${board}`);
+          Promise.resolve(log('captcha frame silent: opening the captcha page itself')).then(go, go);
+          // No answer from here: the captcha page answers this request.
+        }, FRAME_WAIT_MS);
         function onMessage(e) {
-          if (e.origin !== 'https://sys.4chan.org') return;
+          if (e.origin !== SYS) return;
           const d = e.data && typeof e.data === 'object' ? e.data.twister : null;
           if (!d) return;
-          try {
-            if (d.ticket) localStorage.setItem(TICKET, d.ticket);
-            else if (d.ticket === false) localStorage.removeItem(TICKET);
-          } catch (_) {
-            /* no storage: the next request goes without a ticket */
-          }
-          done(null, d);
-        }
-        function done(err, data) {
-          clearTimeout(timer);
-          clearTimeout(shown);
+          clearTimeout(silent);
           removeEventListener('message', onMessage);
-          box.remove();
-          if (err) reject(err);
-          else resolve(data);
+          frame.remove();
+          current = null;
+          putTicket(d.ticket);
+          log('captcha arrived (frame): ' + Object.keys(d).join(','));
+          resolve(d);
         }
         addEventListener('message', onMessage);
-        (document.body || document.documentElement).appendChild(box);
+        (document.body || document.documentElement).appendChild(frame);
       });
     },
 
@@ -89,8 +208,13 @@
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         form.append('upfile', new File([bytes], String(args.file.name || 'file'), { type: String(args.file.type || 'application/octet-stream') }));
       }
-      const res = await fetch(`https://sys.4chan.org/${board}/post`, { method: 'POST', body: form, credentials: 'include' });
-      return { status: res.status, text: await res.text() };
+      const res = await fetch(`${SYS}/${board}/post`, { method: 'POST', body: form, credentials: 'include' });
+      const text = await res.text();
+      log(`post answered ${res.status}`);
+      if (res.status === 403 && /challenge-platform|cf-turnstile|Just a moment/i.test(text)) {
+        throw new Error('The site wants its human check again. Get a new captcha (the check comes up), then post.');
+      }
+      return { status: res.status, text };
     },
   };
 
@@ -99,13 +223,16 @@
       try {
         const op = OPS[req && req.op];
         if (!op) throw new Error('unknown request');
-        reply(req.id, true, await op(req.args || {}));
+        reply(req.id, true, await op(req.args || {}, req.id));
       } catch (e) {
         reply(req && req.id, false, String((e && e.message) || e));
       }
     },
   };
-  const ready = () => reply('ready', true, location.href);
+  const ready = () => {
+    log('page ready: ' + location.pathname);
+    reply('ready', true, location.href);
+  };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready, { once: true });
   else ready();
 })();

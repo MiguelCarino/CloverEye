@@ -98,6 +98,7 @@ pub async fn post_agent(app: tauri::AppHandle, op: String, args: Value) -> Resul
     let id = state.counter.fetch_add(1, Ordering::SeqCst).to_string();
     let (tx, rx) = oneshot::channel();
     state.pending.lock().unwrap().insert(id.clone(), tx);
+    eprintln!("clovereye post helper: request {id}: {op}");
     let req = json!({ "id": id, "op": op, "args": args });
     if let Err(e) = win.eval(&format!("window.__ceAgent && window.__ceAgent.run({req})")) {
         state.pending.lock().unwrap().remove(&id);
@@ -109,13 +110,29 @@ pub async fn post_agent(app: tauri::AppHandle, op: String, args: Value) -> Resul
         Ok(Ok(result)) => result,
         _ => {
             state.pending.lock().unwrap().remove(&id);
-            Err("The site did not answer in time.".into())
+            Err(if op == "captcha" {
+                "The captcha did not arrive in time (was the site's check left open?). Press New captcha to try again.".into()
+            } else {
+                "The site did not answer in time.".into()
+            })
         }
     }
 }
 
+/// The helper window was closed (by the person, say, instead of passing the
+/// site's check): whatever it was doing ends now, with a reason.
+pub fn agent_closed(app: &tauri::AppHandle) {
+    let state = app.state::<AgentState>();
+    state.ready.store(false, Ordering::SeqCst);
+    let waiting: Vec<_> = state.pending.lock().unwrap().drain().map(|(_, tx)| tx).collect();
+    for tx in waiting {
+        let _ = tx.send(Err("The site check window was closed before the site answered.".into()));
+    }
+}
+
 /// The one command the helper page may call (capabilities/post-agent.json):
-/// "ready" when a board page has loaded, or the answer to a request.
+/// "ready" when a board page has loaded, "show" when the site wants its human
+/// check, "log" for the terminal, or the answer to a request.
 #[tauri::command]
 pub fn post_agent_reply(webview: tauri::Webview, id: String, ok: bool, data: Value) -> Result<(), String> {
     if webview.label() != AGENT_LABEL {
@@ -128,6 +145,18 @@ pub fn post_agent_reply(webview: tauri::Webview, id: String, ok: bool, data: Val
         if let Some(w) = webview.app_handle().get_webview_window(AGENT_LABEL) {
             let _ = w.hide(); // a passed check: back out of sight
         }
+        return Ok(());
+    }
+    if id == "waiting" {
+        // The captcha page, waiting on the site's check: it takes requests
+        // (a newer captcha request) but stays in view.
+        state.ready.store(true, Ordering::SeqCst);
+        state.ready_notify.notify_waiters();
+        return Ok(());
+    }
+    if id == "log" {
+        // What the helper saw, for the terminal (no page content).
+        eprintln!("clovereye post helper: {}", data.as_str().unwrap_or_default());
         return Ok(());
     }
     let window = webview.app_handle().get_webview_window(AGENT_LABEL);
