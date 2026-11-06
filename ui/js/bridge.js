@@ -272,7 +272,8 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
         ttl: 120,
         tasks: [
           // like the site: the object to find is a picture inside the question
-          { str: '<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" style="float:right;margin:10px 0 0 10px">Pick the 3', items: [num(1), num(2), num(3), num(4)] },
+          // (a drawn "3", made up for the preview)
+          { str: '<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADwAAAA8CAIAAAC1nk4lAAADVklEQVR42mN88eQWw1ADTAxDEIw6etTRo44edfSoo0cdPepoBgYGBhbKjfj46dP585cuX7n+4OGjJ0+effr0+eu3b4yMjJycHJwcHGJionJyMirKipbmpnJyMlRxNCPZDaYPHz7u2Xdw5+59167d/P//PzFaFBXlE2IjnZ3smZgYB8bR5VWNh48cJ0OjsZFBW3MNLy/PUErTZ89dyC0o//37zxDLiLdu3124ePnQKz02bt7+79//gSk9GBkZNTXULC1M1dVUlBTl+fj5uDg5v3//8fzFy/PnL61dv+nR46dYNb59++7evfsqKkp0dbSoiHBKUqy/r6ewsBCaFDc3l4qyooqyYoC/V21D+6HDx7Ca8Or1G3o7uqQoh6AaVlbW0uLcw0eOYy0Tf/78OUjTtLCQIDc3N3YpjCgaLI5++/bd169fMcXZ2dnU1VQHo6N///7T2z8Va9rwdHdhZ2cbsLYHGvjz58/Xb9+eP3tx/uKVjZu2Yi09JCTEMtISB7LBxMDAMGHSjFVrNhCpWFVVuaO1jo+Pd4AdTSRQUVEKDvDx9nJjYWEZGu1pAX4+U2NDAwNdCl1MV0d/+Php+cq10XFp7Z393759H0o9l3///m/eujM9q/Djp09DrMF0996Duob2AegE4AK/fv36+vXb8xcvr1y9vmfvwStXr+NS2dlWb2tjOSgcjQZ27dnf3Nrz9+9fTClrK/PujsbBmDzcXByjIkKwSl28dHXwpmk7HGngy5cv5BUjdMmIuLvev37/HqSOPnL0BPbamIWFn6zKnBxHf/n6NTktb936LcSUtXv2HVy6fA1WKUkJcUZGRnq1Pf7/v37j1vUbt/omTtVQVzM1MVRWVlRUkBcSFODh4WZiYvr+/fvz5y+vXLuxe8+BCxcv4zLG3s5qABpM//79v3b95rXrN8nQy8zM7OXpOsSGEBLjoxTk5YaSo709XeNjI4ZGe5qBgYGTkzM5MRpXdUPbavzGjVs7du3bd+DwmzdvidQiIiLs6uwQExUqKCgwYEO9EPDg4aNz5y/dun338eMnz56//Pr12/fv35mYmLg4OTm5OISFhBTkZRUU5A30dbQ01ckr4AagwcQwOn0x6uhRR486etTRo44edfSoo0cdPepoogAArds9e7W1jWEAAAAASUVORK5CYII=" style="float:right;margin:10px 0 0 10px">Pick the 3', items: [num(1), num(2), num(3), num(4)] },
           { str: 'Pick the 7', items: [num(5), num(7), num(9)] },
         ],
       };

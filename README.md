@@ -9,7 +9,18 @@ site's rules apply to everything read and posted through it.
 
 Licence: [AGPL-3.0](LICENSE). Scope and phases: [docs/SCOPE.md](docs/SCOPE.md).
 
-## Status: reading, watching and the post window
+**Download:** [CloverEye 0.1.0](https://github.com/MiguelCarino/CloverEye/releases/tag/v0.1.0): Fedora 44/45 RPMs, an AppImage for other Linux, Windows installer and MSI, macOS (Apple silicon). Website: <https://clover.carino.systems>.
+
+![Three panes: a board's catalog and two threads side by side](web/screens/split.webp)
+
+| | |
+|---|---|
+| ![A board's catalog: thumbnails, titles, reply counts, search and sort](web/screens/catalog.webp) | ![A thread in the classic Yotsuba colours, with posters' flags](web/screens/classic.webp) |
+| ![The reply form with the site's captcha: a choice and the object to find](web/screens/reply.webp) | ![The gallery: one file as large as the window allows, the thread's files below](web/screens/gallery.webp) |
+
+<sub>Screenshots of the app showing sample posts made up for testing.</sub>
+
+## Status: 0.1.0 (reading, watching, panes, gallery, replying)
 
 | Part | State |
 |---|---|

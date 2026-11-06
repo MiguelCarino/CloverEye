@@ -69,17 +69,22 @@
         <li>Want to post? Reply opens the site’s own form in its own window, with the site’s own captcha. CloverEye never touches it.</li>
       </ul>
 
-      <p class="version">Version <strong>0.1.0</strong> · test build · Linux · AGPL-3.0</p>
+      <p class="version">Version <strong>0.1.0</strong> · Linux · Windows · macOS · AGPL-3.0</p>
 
-      <!-- The hrefs are the no-JS path: the release page. A click opens the
-           choice between Fedora's RPMs and the AppImage. -->
+      <!-- Linux: the href is the no-JS path (the release page); a click opens
+           the choice between Fedora's RPMs and the AppImage. Windows and
+           macOS link straight to their files. -->
       <div class="downloads">
         <a class="dl-btn recommended" href="https://github.com/MiguelCarino/CloverEye/releases/latest" data-dialog="linuxDialog" aria-haspopup="dialog" aria-controls="linuxDialog">
-          <span class="rec">test build</span><b>🐧 Linux</b><span class="fmt">Fedora .rpm · AppImage</span></a>
+          <b>🐧 Linux</b><span class="fmt">Fedora .rpm · AppImage</span></a>
+        <a class="dl-btn" href="https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.0/CloverEye-0.1.0-x64-setup.exe">
+          <b>⊞ Windows</b><span class="fmt">10 · 11 · x64 installer</span></a>
+        <a class="dl-btn" href="https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.0/CloverEye-0.1.0-aarch64.dmg">
+          <b>⌘ macOS</b><span class="fmt">Apple silicon · .dmg</span></a>
         <a class="dl-btn" href="ui/">
           <b>▶ Try it here</b><span class="fmt">in your browser · sample data</span></a>
       </div>
-      <p class="dl-note">Fedora 44 and 45 get RPMs; any other x86-64 Linux gets one AppImage. Windows and macOS come later. The in-browser version runs on made-up sample posts and never contacts the site.</p>
+      <p class="dl-note">Fedora 44 and 45 get RPMs; any other x86-64 Linux gets one AppImage. Windows also has an <a href="https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.0/CloverEye-0.1.0-x64.msi">MSI</a>; both Windows installers add WebView2 if it is missing. Posting from the AppImage does not work yet: use the RPM, or the site's own page. The in-browser version runs on made-up sample posts and never contacts the site.</p>
       <p class="dl-all"><a href="https://github.com/MiguelCarino/CloverEye/releases">All versions and changelogs →</a></p>
 
       <p class="info-chips">
@@ -96,8 +101,8 @@
   <section class="shots" aria-labelledby="shotsTitle">
     <h2 id="shotsTitle" class="section-title">What it looks like</h2>
     <figure class="shot shot--wide">
-      <img src="web/screens/split.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="CloverEye with two threads side by side: the sidebar with favourite boards on the left, a thread in the middle and a second thread on the right.">
-      <figcaption>Two threads side by side. Drag the divider, or swap them.</figcaption>
+      <img src="web/screens/split.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="CloverEye with three panes: the sidebar with favourite boards on the left, then a board's catalog, then two threads side by side, each with Update, Watch, Reply and Gallery at the top.">
+      <figcaption>Up to five panes per window, in one to three rows; any pane can get a window of its own.</figcaption>
     </figure>
     <div class="shot-row">
       <figure class="shot">
@@ -106,7 +111,17 @@
       </figure>
       <figure class="shot">
         <img src="web/screens/classic.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="A thread in CloverEye with the classic Yotsuba colours: cream page, salmon replies, green names.">
-        <figcaption>19 themes, the classic board styles among them.</figcaption>
+        <figcaption>19 themes, the classic board styles among them; posters' flags where a board has them.</figcaption>
+      </figure>
+    </div>
+    <div class="shot-row">
+      <figure class="shot">
+        <img src="web/screens/reply.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="The reply form over a thread: name, comment, attach file, and the site's captcha with a choice on the left and the object to find on the right.">
+        <figcaption>Reply from inside the app: the site's own captcha, solved in the form.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="web/screens/gallery.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="The gallery: one picture from a thread as large as the window allows, a strip of the thread's other files below, and a Save button above.">
+        <figcaption>G opens a thread's gallery: arrows or the wheel move, D saves.</figcaption>
       </figure>
     </div>
     <p class="shots-note">Screenshots of CloverEye showing sample posts made up for testing.</p>
@@ -182,7 +197,7 @@
         <li><a href="https://github.com/MiguelCarino/CloverEye/blob/main/README.md">README</a>: status, building, packages and tests.</li>
         <li><a href="https://github.com/MiguelCarino/CloverEye/blob/main/docs/SCOPE.md">Scope</a>: the design, the decisions and the phases.</li>
         <li><a href="https://github.com/MiguelCarino/CloverEye/blob/main/docs/C0-PROBE.md">API probe</a>: how the client was checked against the site’s limits.</li>
-        <li><a href="https://github.com/MiguelCarino/CloverEye/releases">Releases</a>: RPMs, the AppImage, checksums and the AppImage’s sources.</li>
+        <li><a href="https://github.com/MiguelCarino/CloverEye/releases">Releases</a>: RPMs, the AppImage and its sources, the Windows installers, the macOS disk image and checksums.</li>
         <li><a href="https://github.com/MiguelCarino/CloverEye">Source code</a> on GitHub.</li>
       </ul>
     </div>
