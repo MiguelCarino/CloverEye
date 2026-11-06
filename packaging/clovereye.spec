@@ -53,5 +53,8 @@ install -Dm0644 %{_sourcedir}/README.md %{buildroot}%{_docdir}/%{name}/README.md
 %{_datadir}/icons/hicolor/*/apps/clovereye.png
 
 %changelog
+* Fri Nov 06 2026 MiguelCarino <miguel.carino1994@outlook.com> - 0.1.1-1
+- Test build: captcha retries on the captcha page when the frame's abuse check fails.
+
 * Wed Nov 04 2026 MiguelCarino <miguel.carino1994@outlook.com> - 0.1.0-1
 - First test build: C0 setup wizard and shell, Fedora 44 and 45.
