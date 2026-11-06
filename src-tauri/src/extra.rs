@@ -34,6 +34,31 @@ pub struct AgentState {
     windows: AtomicU64,
 }
 
+/// The helper's script, with two switches for finding out why a captcha
+/// does not come, from a terminal: CLOVEREYE_HELPER_DEBUG=1 logs every
+/// resource the captcha page loads or fails to load, and its console
+/// errors; CLOVEREYE_CAPTCHA_PAGE=1 skips the frame and opens the captcha
+/// page itself straight away.
+fn env_on(k: &str) -> bool {
+    std::env::var_os(k).is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+fn debug_on() -> bool {
+    env_on("CLOVEREYE_HELPER_DEBUG")
+}
+
+const FRAME_DEBUG_JS: &str = include_str!("frame_debug.js");
+
+fn agent_script() -> String {
+    let on = env_on;
+    format!(
+        "window.__ceDebug = {};\nwindow.__ceCaptchaPage = {};\n{}",
+        on("CLOVEREYE_HELPER_DEBUG"),
+        on("CLOVEREYE_CAPTCHA_PAGE"),
+        AGENT_JS
+    )
+}
+
 fn board_of(args: &Value) -> Result<String, String> {
     let b = args.get("board").and_then(Value::as_str).unwrap_or_default();
     if clovereye_fetch::valid_board(b) {
@@ -49,12 +74,23 @@ fn ensure_agent(app: &tauri::AppHandle, board: &str) -> Result<tauri::WebviewWin
     }
     let state = app.state::<AgentState>();
     state.ready.store(false, Ordering::SeqCst);
-    let url: tauri::Url = format!("https://boards.4chan.org/{board}/").parse().map_err(|e| format!("{e}"))?;
+    let mut url: tauri::Url = format!("https://boards.4chan.org/{board}/").parse().map_err(|e| format!("{e}"))?;
+    // Debug only (CLOVEREYE_HELPER_DEBUG=1 and CLOVEREYE_HELPER_START=<url>):
+    // the helper opens on another page the site's captcha needs, shown, to
+    // see whether this window can load it at all.
+    if debug_on() {
+        if let Some(start) = std::env::var("CLOVEREYE_HELPER_START").ok().and_then(|u| u.parse::<tauri::Url>().ok()) {
+            if crate::post_window_allows(&start) {
+                url = start;
+            }
+        }
+    }
     WebviewWindowBuilder::new(app, AGENT_LABEL, WebviewUrl::External(url))
         .title("Site check · CloverEye")
         .inner_size(900.0, 760.0)
         .visible(false)
-        .initialization_script(AGENT_JS)
+        .initialization_script(&agent_script())
+        .initialization_script_for_all_frames(if debug_on() { FRAME_DEBUG_JS } else { "" })
         .on_navigation(crate::post_window_allows)
         .on_page_load(|webview, payload| {
             if payload.event() == PageLoadEvent::Started {

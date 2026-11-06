@@ -22,7 +22,7 @@
   // How long the captcha frame may stay silent before the captcha page is
   // opened as the window's own page instead (where the site's human check
   // works the way it is meant to).
-  const FRAME_WAIT_MS = 3500;
+  const FRAME_WAIT_MS = window.__ceCaptchaPage ? 0 : 3500;
 
   const getTicket = () => {
     try {
@@ -134,11 +134,48 @@
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', later, { once: true });
     else later();
     log('captcha page opened: ' + location.pathname);
+    if (window.__ceDebug) {
+      // what the page loads, what fails, and what it complains about
+      addEventListener(
+        'error',
+        (e) => {
+          const t = e.target;
+          if (t && t !== window && (t.src || t.href)) log('debug: failed to load ' + (t.src || t.href));
+          else if (e.message) log('debug: page error: ' + e.message);
+        },
+        true,
+      );
+      addEventListener('unhandledrejection', (e) => log('debug: unhandled rejection: ' + String(e.reason && (e.reason.message || e.reason))));
+      const ce = console.error.bind(console);
+      console.error = (...a) => {
+        log('debug: console.error: ' + a.map(String).join(' ').slice(0, 300));
+        ce(...a);
+      };
+      const cw = console.warn.bind(console);
+      console.warn = (...a) => {
+        log('debug: console.warn: ' + a.map(String).join(' ').slice(0, 300));
+        cw(...a);
+      };
+      try {
+        new PerformanceObserver((list) => {
+          for (const r of list.getEntries()) {
+            log(`debug: resource ${r.initiatorType} ${r.name.slice(0, 160)} status=${r.responseStatus ?? '?'} bytes=${r.transferSize} ms=${Math.round(r.duration)}`);
+          }
+        }).observe({ type: 'resource', buffered: true });
+      } catch (e) {
+        log('debug: no PerformanceObserver: ' + e);
+      }
+      log('debug: ua=' + navigator.userAgent + ' webdriver=' + navigator.webdriver + ' wasm=' + (typeof WebAssembly) + ' subtle=' + Boolean(crypto && crypto.subtle));
+      setTimeout(() => log('debug: page text: ' + ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').slice(0, 400)), 6000);
+    }
     reply('waiting', true, '');
     return;
   }
 
   // ------------------------------------------------------- boards.4chan.org
+  // Debug only: the frames' reports (frame_debug.js) go to the terminal.
+  if (window.__ceDebug) addEventListener('message', (e) => e.data && typeof e.data.ceLog === 'string' && log('frame: ' + e.data.ceLog));
+
   // A ticket brought back from the captcha page.
   if (location.hash.startsWith('#ce-ticket=')) {
     const t = decodeURIComponent(location.hash.slice('#ce-ticket='.length));
@@ -231,6 +268,25 @@
   };
   const ready = () => {
     log('page ready: ' + location.pathname);
+    if (window.__ceDebug) {
+      const has = (name) => {
+        try {
+          return typeof window[name] !== 'undefined';
+        } catch (_) {
+          return false;
+        }
+      };
+      const feats = ['RTCPeerConnection', 'webkitRTCPeerConnection', 'RTCDataChannel', 'WebAssembly', 'Worker', 'SharedArrayBuffer', 'OffscreenCanvas', 'WebGLRenderingContext', 'WebGL2RenderingContext', 'AudioContext', 'OfflineAudioContext', 'MediaSource', 'IntersectionObserver', 'BroadcastChannel', 'PublicKeyCredential', 'Notification', 'indexedDB', 'caches'];
+      log('debug: features: ' + feats.map((f) => f + '=' + (has(f) ? 'yes' : 'NO')).join(' '));
+      let gl = 'none';
+      try {
+        const c = document.createElement('canvas').getContext('webgl');
+        gl = c ? String(c.getParameter(c.VERSION)) : 'none';
+      } catch (e) {
+        gl = 'error ' + e;
+      }
+      log('debug: webgl=' + gl + ' cores=' + navigator.hardwareConcurrency + ' mem=' + navigator.deviceMemory + ' langs=' + navigator.languages + ' platform=' + navigator.platform + ' cookies=' + navigator.cookieEnabled + ' dnt=' + navigator.doNotTrack);
+    }
     reply('ready', true, location.href);
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready, { once: true });

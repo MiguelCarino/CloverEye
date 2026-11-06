@@ -9,7 +9,7 @@ site's rules apply to everything read and posted through it.
 
 Licence: [AGPL-3.0](LICENSE). Scope and phases: [docs/SCOPE.md](docs/SCOPE.md).
 
-**Download:** [CloverEye 0.1.0](https://github.com/MiguelCarino/CloverEye/releases/tag/v0.1.0): Fedora 44/45 RPMs, an AppImage for other Linux, Windows installer and MSI, macOS (Apple silicon). Website: <https://clover.carino.systems>.
+**Download:** [CloverEye 0.1.0](https://github.com/MiguelCarino/CloverEye/releases/tag/v0.1.0): Fedora 44/45 RPMs, a .deb for Ubuntu 22.04+ and Debian 12+, an AppImage for other Linux, Windows installer and MSI, macOS (Apple silicon). Website: <https://clover.carino.systems>.
 
 ![Three panes: a board's catalog and two threads side by side](web/screens/split.webp)
 
@@ -36,6 +36,7 @@ Licence: [AGPL-3.0](LICENSE). Scope and phases: [docs/SCOPE.md](docs/SCOPE.md).
 | Panes and windows | Up to five panes per window, in one to three rows (the 1/2/3 switch); open a thread beside (the card's button, Ctrl+click, middle-click); each pane can move to a window of its own, which has its own five panes. Windows share one request queue and one settings file (a change in one reaches the others). On a narrow window, tabs switch panes |
 | Thread controls and flags | A thread's Update, Watch, Reply and Gallery stay at the top of the pane: scrolling down tucks them away, scrolling up, reaching the end, pointing at the top of the pane or tabbing to them brings them back. Posts show the poster's flag (country flags on /int/, /bant/, /sp/ …; board flags where a board has its own), with its name on hover |
 | Languages and version | English, Spanish, Portuguese (Brazil), Japanese and Russian (Settings → Language; “Same as the system” by default). The English text is the key (`ui/i18n/<code>.json`); `ui/js/i18n.js` translates what is drawn and never what comes from the site (posts, names, titles, file names carry `translate="no"`). `node tools/i18n-strings.mjs --missing` lists strings a language lacks; `tests/i18n.test.mjs` fails on any. Settings → About shows the version (`ui/js/version.js`, kept equal to Cargo.toml) |
+| Debugging the posting helper | Run from a terminal with `CLOVEREYE_HELPER_DEBUG=1`: the helper window and every frame in it (the captcha frame, Cloudflare's, the site's abuse-check services) report what they load, what fails, their console errors and the engine's features. `CLOVEREYE_CAPTCHA_PAGE=1` opens the captcha page itself at once; `CLOVEREYE_TRY_CAPTCHA=g/123` asks for one captcha at start and `CLOVEREYE_TRY_CAPTCHA_FILE=path` saves the answer. Packaging: `packaging/build-rpm.sh`, `build-in-container.sh 44`, `build-appimage.sh`, `build-deb.sh` (Ubuntu 22.04 container, depends on the system's WebKitGTK 4.1) |
 | Gallery | **G** in a thread: every file, one at a time, as large as the window allows; ←/→, J/K, Home/End or the mouse wheel move, **D** saves (Settings → Files folder, else Downloads/CloverEye; the button shows the download running and landing, and saved files get a check in the strip), Esc or G closes |
 | Sidebar | Hide or show it from the button left of the title; remembered |
 | Favourites | Star boards in All boards |
