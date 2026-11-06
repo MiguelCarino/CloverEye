@@ -64,6 +64,10 @@ test('captchaState reads the site’s captcha shapes (tcaptcha.js)', () => {
   assert.deepEqual([wait.state, wait.message, wait.until], ['wait', 'Please wait a & while.', now + 30000]);
   assert.equal(C.captchaState({ error: 'You have to wait', cd: 5 }, now).until, now + 5000);
   assert.equal(C.captchaState({ error: 'Something broke' }).state, 'error');
+  const spur = C.captchaState({ error: 'Please unblock spur.us and mcl.io to proceed.' });
+  assert.equal(spur.state, 'error');
+  assert.match(spur.message, /New captcha/);
+  assert.match(spur.message, /spur\.us/);
   assert.equal(C.captchaState({ mpcd: 1, sitekey: 'x' }).state, 'blocked');
   assert.equal(C.captchaState(null).state, 'error');
   assert.equal(C.captchaState({ weird: 1 }).state, 'error');

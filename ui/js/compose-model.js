@@ -66,7 +66,13 @@ export function captchaState(data, now = Date.now()) {
   }
   if (data.error) {
     const cd = Number(data.cd || 0);
-    return { state: cd ? 'wait' : 'error', message: text(data.error) || 'The captcha did not load.', until: cd ? now + cd * 1000 : 0 };
+    const said = text(data.error);
+    // The site's abuse check (spur.us, mcl.io) did not finish: rarely a real
+    // block. Say what to do rather than echo the site's wording alone.
+    const message = /spur\.us|mcl\.io/i.test(said)
+      ? `The site’s abuse check did not finish (it says: “${said}”). Press New captcha; if the CloverEye “Site check” window comes up, complete it there.`
+      : said || 'The captcha did not load.';
+    return { state: cd ? 'wait' : 'error', message, until: cd ? now + cd * 1000 : 0 };
   }
   if (!data.challenge) return { state: 'error', message: 'The captcha came back in a shape CloverEye does not know.' };
   if (!Array.isArray(data.tasks) || !data.tasks.length) return { state: 'none', challenge: String(data.challenge) };

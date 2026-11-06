@@ -133,6 +133,7 @@
  "Loading captcha…": "Загружаем капчу…",
  "Loading the board list…": "Загружаем список досок…",
  "Loading the site’s captcha… If the site wants its human check, a CloverEye “Site check” window comes forward: complete it there; this form continues by itself.": "Загружаем капчу сайта… Если сайт запросит проверку на человека, выйдет окно CloverEye «Site check»: пройдите её там, а эта форма продолжит сама.",
+ "The site’s abuse check did not finish (it says: “{0}”). Press New captcha; if the CloverEye “Site check” window comes up, complete it there.": "Проверка сайта на злоупотребления не завершилась (сайт пишет: «{0}»). Нажмите «Новая капча»; если появится окно CloverEye «Site check», пройдите её там.",
  "Loading the {0}…": "Загружаем: {0}…",
  "Look": "Внешний вид",
  "Luna": "Luna",

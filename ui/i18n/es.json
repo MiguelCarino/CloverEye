@@ -133,6 +133,7 @@
  "Loading captcha…": "Cargando captcha…",
  "Loading the board list…": "Cargando la lista de tableros…",
  "Loading the site’s captcha… If the site wants its human check, a CloverEye “Site check” window comes forward: complete it there; this form continues by itself.": "Cargando el captcha del sitio… Si el sitio pide su verificación humana, aparece una ventana “Site check” de CloverEye: complétala ahí; este formulario continúa solo.",
+ "The site’s abuse check did not finish (it says: “{0}”). Press New captcha; if the CloverEye “Site check” window comes up, complete it there.": "La verificación antiabuso del sitio no terminó (dice: “{0}”). Pulsa Captcha nuevo; si aparece la ventana “Site check” de CloverEye, complétala ahí.",
  "Loading the {0}…": "Cargando {0}…",
  "Look": "Apariencia",
  "Luna": "Luna",

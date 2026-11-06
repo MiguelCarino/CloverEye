@@ -209,17 +209,28 @@
         frame.style.cssText = 'position:fixed;width:1px;height:1px;left:-10px;top:-10px;border:0;opacity:0';
         frame.addEventListener('load', () => log('captcha frame loaded'));
         frame.src = captchaUrl(board, thread);
-        const silent = setTimeout(() => {
+        // Opens the captcha page as this window's own page; it answers this
+        // request from there.
+        const ownPage = (why) => {
+          clearTimeout(silent);
           removeEventListener('message', onMessage);
           current = null;
           const go = () => location.assign(`${frame.src}#ce=${encodeURIComponent(id)}&b=${board}`);
-          Promise.resolve(log('captcha frame silent: opening the captcha page itself')).then(go, go);
-          // No answer from here: the captcha page answers this request.
-        }, FRAME_WAIT_MS);
+          Promise.resolve(log(why)).then(go, go);
+        };
+        const silent = setTimeout(() => ownPage('captcha frame silent: opening the captcha page itself'), FRAME_WAIT_MS);
         function onMessage(e) {
           if (e.origin !== SYS) return;
           const d = e.data && typeof e.data === 'object' ? e.data.twister : null;
           if (!d) return;
+          // An error with no wait attached ("Please unblock spur.us and
+          // mcl.io", say) is the site's abuse check failing inside the hidden
+          // frame, not a real block: the captcha page as the window's own
+          // page passes it, as the first captcha did.
+          if (d.error && !d.cd && !d.pcd) {
+            log('captcha frame answered an error: ' + String(d.error).slice(0, 120));
+            return ownPage('opening the captcha page itself');
+          }
           clearTimeout(silent);
           removeEventListener('message', onMessage);
           frame.remove();

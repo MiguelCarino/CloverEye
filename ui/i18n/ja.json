@@ -133,6 +133,7 @@
  "Loading captcha…": "キャプチャを読み込んでいます…",
  "Loading the board list…": "板の一覧を読み込んでいます…",
  "Loading the site’s captcha… If the site wants its human check, a CloverEye “Site check” window comes forward: complete it there; this form continues by itself.": "サイトのキャプチャを読み込んでいます…サイトが人間確認を求める場合は、CloverEye の「Site check」ウィンドウが前面に表示されます。そこで完了すると、このフォームは自動的に続行します。",
+ "The site’s abuse check did not finish (it says: “{0}”). Press New captcha; if the CloverEye “Site check” window comes up, complete it there.": "サイトの不正利用チェックが完了しませんでした（サイトの表示：「{0}」）。新しいキャプチャを押してください。CloverEye の「Site check」ウィンドウが表示された場合は、そこで完了してください。",
  "Loading the {0}…": "{0} を読み込んでいます…",
  "Look": "外観",
  "Luna": "Luna",
