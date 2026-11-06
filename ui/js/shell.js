@@ -397,7 +397,7 @@ export function openShell({
             : unread
               ? h('span', { class: 'badge', 'aria-label': `${unread} unread`, text: String(unread) })
               : null;
-        return railItem([tag(w.board), h('span', { class: 'rail__label', text: w.title || `No. ${w.no}` }), state], {
+        return railItem([tag(w.board), h('span', { class: 'rail__label', translate: w.title ? 'no' : null, text: w.title || `No. ${w.no}` }), state], {
           current: views().some((x) => x?.kind === 'thread' && x.board === w.board && x.no === w.no),
           key: `watched-${w.board}-${w.no}`,
           onclick: () => goto({ kind: 'thread', board: w.board, no: w.no }),
@@ -447,7 +447,7 @@ export function openShell({
         }),
       );
     } else if (v.kind === 'board') {
-      title = [tag(v.board), h('span', { class: 'centre__title-text', text: titleOf(v.board) || 'Catalog' })];
+      title = [tag(v.board), h('span', { class: 'centre__title-text', translate: titleOf(v.board) ? 'no' : null, text: titleOf(v.board) || 'Catalog' })];
       windowTitle = `/${v.board}/${titleOf(v.board) ? ` · ${titleOf(v.board)}` : ''}`;
       body.append(
         catalogView({
@@ -480,7 +480,7 @@ export function openShell({
           icon('arrowLeft'),
         ),
         tag(v.board),
-        h('span', { class: 'centre__title-text', text: threadName() }),
+        h('span', { class: 'centre__title-text', translate: 'no', text: threadName() }),
       ];
       windowTitle = `/${v.board}/ · ${threadName()}`;
       body.append(
@@ -523,7 +523,7 @@ export function openShell({
               'button',
               { type: 'button', class: 'rail__item', 'data-key': `${prefix}list-${b.board}`, onclick: () => goto({ kind: 'board', board: b.board }, i) },
               tag(b.board),
-              h('span', { class: 'rail__label', text: b.title }),
+              h('span', { class: 'rail__label', translate: 'no', text: b.title }),
             ),
             h(
               'button',
@@ -663,7 +663,7 @@ export function openShell({
                 'ul',
                 { class: 'rail__list' },
                 favs.map((code) =>
-                  railItem([tag(code), h('span', { class: 'rail__label', text: titleOf(code) })], {
+                  railItem([tag(code), h('span', { class: 'rail__label', translate: 'no', text: titleOf(code) })], {
                     current: shown((x) => (x.kind === 'board' || x.kind === 'thread') && x.board === code),
                     key: `fav-${code}`,
                     onclick: () => goto({ kind: 'board', board: code }),

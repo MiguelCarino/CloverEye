@@ -1,8 +1,18 @@
-// Applies theme, density, text size and hover preview to the document.
+// Applies theme, density, text size, hover preview and language to the
+// document.
+
+import { setLanguage } from './i18n.js';
+
+let langSetting = null;
 
 export function applyLook(s, root = document.documentElement) {
   root.dataset.theme = s.theme || 'system';
   root.dataset.density = s.density || 'comfortable';
   root.dataset.hoverPreview = s.ui?.hoverPreview === false ? 'off' : 'on';
   root.style.setProperty('--text-scale', String(s.textScale || 1));
+  if (root === document.documentElement && (s.lang || 'system') !== langSetting) {
+    langSetting = s.lang || 'system';
+    return setLanguage(langSetting);
+  }
+  return Promise.resolve();
 }

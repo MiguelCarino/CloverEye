@@ -27,7 +27,7 @@ export function openGallery({ items, start = 0, title = '', onSave, onClose = ()
   const strip = h('div', { class: 'gallery__strip', role: 'listbox', 'aria-label': 'Files in this thread' });
   const stage = h('div', { class: 'gallery__stage' });
   const counter = h('span', { class: 'gallery__count' });
-  const name = h('span', { class: 'gallery__name' });
+  const name = h('span', { class: 'gallery__name', translate: 'no' });
   const saveLabel = h('span', { class: 'gallery__save-label', text: 'Save (D)' });
   const saveBtn = h(
     'button',

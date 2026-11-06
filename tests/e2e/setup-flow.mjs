@@ -674,6 +674,48 @@ const settled = (page) => page.waitForTimeout(300);
   await ctx.close();
 }
 
+// ------------------------------------------------- languages and version
+{
+  const { ctx, page } = await newPage({ width: 360, height: 760 });
+  const panes = encodeURIComponent(JSON.stringify([{ kind: 'thread', board: 'g', no: 500073 }]));
+  await page.goto(`${BASE}?mock-delay=0#panes=${panes}`);
+  await page.waitForSelector('[data-key="thread-reply"]');
+  const comBefore = await page.locator('.post__com').first().textContent();
+  if (await page.locator('[data-key="rail-toggle"]').isVisible()) await page.locator('[data-key="rail-toggle"]').click();
+  await page.locator('[data-key="settings"]').click();
+  await page.waitForSelector('[data-key="set-lang"]');
+  check('version: Settings shows it', (await page.locator('[data-key="version"]').textContent()).trim() === 'CloverEye 0.1.0');
+  const es = JSON.parse(await (await page.request.get(`${BASE}i18n/es.json`)).text());
+  await page.locator('[data-key="set-lang"]').selectOption('es');
+  await page.waitForFunction(() => document.documentElement.lang === 'es');
+  await settled(page);
+  check('languages: Settings turns Spanish', (await page.locator('#set-look').textContent()) === es.Look && (await page.locator('#set-about').textContent()) === es.About);
+  check('languages: the setting is saved', await page.evaluate(() => JSON.parse(localStorage.getItem('clovereye.settings')).lang === 'es'));
+  for (const code of ['ja', 'ru', 'pt-BR']) {
+    await page.locator('[data-key="set-lang"]').selectOption(code);
+    await page.waitForFunction((c) => document.documentElement.lang === c, code);
+    await settled(page);
+    const table = JSON.parse(await (await page.request.get(`${BASE}i18n/${code}.json`)).text());
+    const wide = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
+    check(`languages: ${code} at 360 px, translated and no sideways scroll`, (await page.locator('#set-look').textContent()) === table.Look && !wide);
+  }
+  // back to the thread: the app's words change, the posts never do
+  await page.goto(`${BASE}?mock-delay=0&again=1#panes=${panes}`);
+  await page.waitForSelector('[data-key="thread-reply"]');
+  const pt = JSON.parse(await (await page.request.get(`${BASE}i18n/pt-BR.json`)).text());
+  check('languages: the thread’s buttons follow the language', (await page.locator('[data-key="thread-reply"]').textContent()).trim() === pt.Reply);
+  check('languages: posts keep their own words', (await page.locator('.post__com').first().textContent()) === comBefore);
+  if (!(await page.locator('[data-key="settings"]').isVisible())) await page.locator('[data-key="rail-toggle"]').click();
+  await page.locator('[data-key="settings"]').click();
+  await page.waitForSelector('[data-key="set-lang"]');
+  await page.locator('[data-key="set-lang"]').selectOption('en');
+  await page.waitForFunction(() => document.documentElement.lang === 'en');
+  await settled(page);
+  check('languages: back to English', (await page.locator('#set-look').textContent()) === 'Look');
+  check('languages run: no console errors', page._errors.length === 0, page._errors.join(' | '));
+  await ctx.close();
+}
+
 await browser.close();
 console.log(results.join('\n'));
 console.log(`\n${which}: ${results.length - failures} passed, ${failures} failed`);

@@ -59,7 +59,7 @@ function postFlagNode(flag) {
 
 export function renderPost(post, { backrefs = [], onQuote = null, onReply = null, isYou = () => false, thumb = null, full = null, flag = null, idPrefix = 'sample-p' } = {}) {
   const lines = parseComment(post.com || '');
-  const com = h('div', { class: 'post__com' });
+  const com = h('div', { class: 'post__com', translate: 'no' });
   for (const line of lines) {
     const row = h('div', { class: 'post__line' });
     for (const seg of line) {
@@ -98,11 +98,11 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
     'div',
     { class: 'post__meta' },
     flag ? postFlagNode(flag) : null,
-    h('span', { class: 'post__name', text: decodeEntities(post.name || 'Anonymous') }),
-    post.trip ? h('span', { text: post.trip }) : null,
+    h('span', { class: 'post__name', translate: 'no', text: decodeEntities(post.name || 'Anonymous') }),
+    post.trip ? h('span', { translate: 'no', text: post.trip }) : null,
     isYou(post.no) ? h('span', { class: 'pill pill--you', text: 'You' }) : null,
     post.capcode ? h('span', { class: 'pill', text: post.capcode }) : null,
-    h('span', { text: post.now || '' }),
+    h('span', { translate: 'no', text: post.now || '' }),
     onReply
       ? h('button', { type: 'button', class: 'post__no post__no--reply', title: 'Reply quoting this post', 'aria-label': `Reply quoting No. ${post.no}`, onclick: onReply, text: `No. ${post.no}` })
       : h('span', { class: 'post__no', text: `No. ${post.no}` }),
@@ -185,7 +185,7 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
       'figure',
       { class: 'post__file', style: { margin: 0 } },
       open,
-      h('span', { text: `${fileName} · ${post.w && post.h ? `${post.w}×${post.h} · ` : ''}${formatBytes(post.fsize)}` }),
+      h('span', { translate: 'no', text: `${fileName} · ${post.w && post.h ? `${post.w}×${post.h} · ` : ''}${formatBytes(post.fsize)}` }),
     );
   }
   const back = backrefs.length
@@ -202,7 +202,7 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
     'article',
     { class: `post${post.resto === 0 ? ' post--op' : ''}${isYou(post.no) ? ' post--you' : ''}`, id: `${idPrefix}${post.no}`, 'data-no': post.no },
     meta,
-    post.sub ? h('div', { class: 'post__sub', text: decodeEntities(post.sub) }) : null,
+    post.sub ? h('div', { class: 'post__sub', translate: 'no', text: decodeEntities(post.sub) }) : null,
     h('div', { class: 'post__main' }, file, com),
     back,
   );
@@ -599,7 +599,9 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
             h('div', { class: 'fact__title' }, icon('wifiOff'), 'Nothing sent yet'),
             requests === 0
               ? `No request to the site has been made. The first one is the board list, in step ${indexOf('boards') + 1}.`
-              : `${requests} request${requests === 1 ? '' : 's'} to the site so far this session.`,
+              : requests === 1
+                ? `${requests} request to the site so far this session.`
+                : `${requests} requests to the site so far this session.`,
           ),
           h(
             'div',

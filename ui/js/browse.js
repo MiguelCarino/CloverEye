@@ -133,8 +133,8 @@ export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSpl
               },
               thumb ? h('img', { src: thumb, alt: '', loading: 'lazy', decoding: 'async', width: t.tn_w || 150, height: t.tn_h || 150 }) : h('span', { class: 'catalog-card__nofile', text: 'No file' }),
             ),
-            h('span', { class: 'catalog-card__title', text: title }),
-            t.sub ? h('span', { class: 'catalog-card__text', text: B.excerpt(t) }) : null,
+            h('span', { class: 'catalog-card__title', translate: 'no', text: title }),
+            t.sub ? h('span', { class: 'catalog-card__text', translate: 'no', text: B.excerpt(t) }) : null,
           ),
           h(
             'div',

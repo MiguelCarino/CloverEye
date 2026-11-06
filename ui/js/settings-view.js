@@ -6,6 +6,8 @@ import { h, icon, toast } from './dom.js';
 import { applyLook } from './look.js';
 import { askAdult } from './setup.js';
 import { themePicker } from './theme-picker.js';
+import { LANGS } from './i18n.js';
+import { VERSION } from './version.js';
 
 function segmented(key, label, options, value, onChange) {
   const id = `set-seg-${key}`;
@@ -61,6 +63,23 @@ export function renderSettings({ settings, boards, onChange, onRunSetup }) {
       'section',
       { class: 'settings__section', 'aria-labelledby': 'set-look' },
       h('h2', { class: 'settings__heading', id: 'set-look', text: 'Look' }),
+      h(
+        'div',
+        { class: 'field' },
+        h('label', { class: 'field__label', for: 'set-lang', text: 'Language' }),
+        h(
+          'select',
+          {
+            id: 'set-lang',
+            class: 'input input--short',
+            'data-key': 'set-lang',
+            onchange: (e) => look((n) => (n.lang = e.target.value)),
+          },
+          h('option', { value: 'system', selected: s.lang === 'system', text: 'Same as the system' }),
+          // each language in its own name: never translated
+          LANGS.map((l) => h('option', { value: l.code, selected: s.lang === l.code, translate: 'no', text: l.name })),
+        ),
+      ),
       themePicker({ value: s.theme, onChange: (v) => look((n) => (n.theme = v)) }),
       segmented(
         'density',
@@ -156,6 +175,13 @@ export function renderSettings({ settings, boards, onChange, onRunSetup }) {
       h('h2', { class: 'settings__heading', id: 'set-setup', text: 'Setup' }),
       h('p', { class: 'field__hint', text: 'Walk through the first-time steps again: look, favourites, video, watching, files.' }),
       h('div', { class: 'inline' }, h('button', { type: 'button', class: 'btn', 'data-key': 'rerun', onclick: () => onRunSetup() }, icon('refresh'), 'Run setup again')),
+    ),
+    h(
+      'section',
+      { class: 'settings__section', 'aria-labelledby': 'set-about' },
+      h('h2', { class: 'settings__heading', id: 'set-about', text: 'About' }),
+      h('p', { class: 'settings__version', 'data-key': 'version' }, h('strong', { translate: 'no', text: `CloverEye ${VERSION}` })),
+      h('p', { class: 'field__hint', text: 'Free software under the AGPL-3.0. Not affiliated with or endorsed by 4chan.' }),
     ),
   );
 }

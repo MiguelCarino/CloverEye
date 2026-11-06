@@ -9,6 +9,7 @@ import { openShell } from './shell.js';
 import { toast } from './dom.js';
 import { installHoverPreview } from './hover.js';
 import { panesFromHash } from './browse-model.js';
+import { tr } from './i18n.js';
 
 const bridge = createBridge({
   tauri: window.__TAURI__ ?? null,
@@ -18,9 +19,13 @@ const bridge = createBridge({
 });
 
 const titleEl = document.getElementById('titlebarTitle');
+// The title is often a thread's name: only the app's own titles ("Settings",
+// "Setup · Look"...) are translated, here, and the page translator keeps out.
+titleEl.setAttribute('translate', 'no');
 const setTitle = (t) => {
-  titleEl.textContent = t;
-  document.title = t ? `${t} · CloverEye` : 'CloverEye';
+  const shown = t ? tr(t) : t;
+  titleEl.textContent = shown;
+  document.title = shown ? `${shown} · CloverEye` : 'CloverEye';
 };
 
 function wireWindowControls() {
@@ -101,7 +106,8 @@ async function boot() {
     stored = null;
   }
   const settings = stored ? normalizeSettings(stored) : defaults();
-  applyLook(settings);
+  // the language's table loads before anything is drawn
+  await applyLook(settings);
   // Settings saved in another window: this one follows.
   bridge.onSettingsChanged?.((raw) => {
     const next = normalizeSettings(raw);

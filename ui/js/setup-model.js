@@ -85,6 +85,9 @@ export const MAX_NSFW_BOARDS = 200;
 const BOARD_RE = /^[a-z0-9]{1,10}$/;
 export const isBoardCode = (b) => typeof b === 'string' && BOARD_RE.test(b);
 
+/** The language setting's values (ui/js/i18n.js has the names). */
+export const LANG_SETTINGS = ['system', 'en', 'es', 'pt-BR', 'ja', 'ru'];
+
 export function defaults() {
   return {
     schema: 1,
@@ -92,6 +95,8 @@ export function defaults() {
     completedAt: null,
     skipped: false,
     theme: 'system',
+    /** "system" (the desktop's language) or en, es, pt-BR, ja, ru. */
+    lang: 'system',
     density: 'comfortable',
     textScale: 1,
     nsfw: { enabled: false, confirmedAdultAt: null },
@@ -159,6 +164,7 @@ export function normalizeSettings(raw) {
   out.completedAt = typeof raw.completedAt === 'string' ? raw.completedAt : null;
   out.skipped = bool(raw.skipped, false);
   out.theme = pick(raw.theme, THEMES, d.theme);
+  out.lang = pick(raw.lang, LANG_SETTINGS, d.lang);
   out.density = pick(raw.density, DENSITIES, d.density);
   out.textScale = nearestScale(raw.textScale);
   if (isObj(raw.nsfw)) {
