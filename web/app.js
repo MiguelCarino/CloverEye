@@ -22,7 +22,7 @@
   }
 
   // Fedora 44 / 45: the same command with the matching package.
-  const VERSION = '0.1.0';
+  const VERSION = '0.1.1';
   const cmd = document.getElementById('dnfCmd');
   const radios = [...document.querySelectorAll('[data-fedora]')];
   function pick(btn) {
