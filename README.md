@@ -177,19 +177,133 @@ carries its own WebKitGTK and GStreamer (base and good plugins, which
 include the WebM demuxer and VP8/VP9 decoders); WebM playback in it is not
 tested yet.
 
-To build them yourself (results go to `~/.cache/clovereye/packaging`, never
-into the repository):
+To build them yourself, see [Building releases](#building-releases).
+
+## Building releases
+
+Every platform builds the same thing: the Tauri shell in `src-tauri/` with the
+UI in `ui/` embedded (no dev server). Release files follow one naming scheme,
+and each GitHub release carries a `SHA256SUMS` covering all of them.
+
+| Platform | Where it is built | Command | Release file |
+|---|---|---|---|
+| Fedora (host release) | a Fedora machine | `packaging/build-rpm.sh` | `clovereye-<v>-1.fc<N>.<arch>.rpm` |
+| Fedora (other release or arch) | Linux or a Mac with podman | `packaging/build-in-container.sh <N>` | `clovereye-<v>-1.fc<N>.<arch>.rpm` (x86_64, aarch64) |
+| Ubuntu 22.04+ / Debian 12+ | any Linux with podman | `packaging/build-deb.sh` | `clovereye_<v>_amd64.deb` |
+| Other Linux | Linux or a Mac with podman | `packaging/build-appimage.sh` | `CloverEye-<v>-x86_64.AppImage` + `CloverEye-<v>-appimage-sources.tar` |
+| Windows | GitHub Actions (`windows.yml`) | push a `v*` tag, or run it by hand | `CloverEye-<v>-x64-setup.exe`, `CloverEye-<v>-x64.msi` |
+| macOS (Apple silicon) | a Mac | `cargo tauri build --bundles app,dmg` | `CloverEye-<v>-aarch64.dmg` |
+
+The Linux scripts write to `~/.cache/clovereye/packaging` (or the folder given
+as their last argument), never into the repository.
+
+### 1. Set the version
+
+A version lives in five places; change them together and commit before
+building, so every platform builds the same commit:
+
+- `src-tauri/Cargo.toml` (`version = "…"`), then `cargo update -p clovereye --manifest-path src-tauri/Cargo.toml` to refresh `src-tauri/Cargo.lock`
+- `src-tauri/tauri.conf.json` (`"version"`)
+- `ui/js/version.js` (`VERSION`, shown in Settings)
+- `tests/e2e/setup-flow.mjs` (the Settings version check)
+- `packaging/clovereye.spec`: a new `%changelog` entry, `<v>-1`
+
+The package scripts read the version from `src-tauri/Cargo.toml`. Run the
+tests (see [Tests](#tests)) before building.
+
+### 2. Linux
+
+Needs podman for everything except the host's own RPM, which needs the
+[build dependencies](#build-dependencies-linux-fedora-44-and-45) and
+`rpm-build`.
 
 ```sh
-packaging/build-rpm.sh                 # the Fedora release you are on
-packaging/build-in-container.sh 44     # another release, in a podman container
-packaging/build-appimage.sh            # the AppImage + its sources tar, in an Ubuntu 22.04 container
+packaging/build-rpm.sh                 # RPM for the Fedora release you are on
+packaging/build-in-container.sh 44     # RPM for another release (here Fedora 44), in a container
+packaging/build-deb.sh                 # .deb, in an Ubuntu 22.04 container
+packaging/build-appimage.sh            # AppImage + its sources tar, in an Ubuntu 22.04 container
 ```
 
-`build-rpm.sh` makes the same release build as `cargo tauri build` (the UI
-embedded, no dev server) and packages it with `packaging/clovereye.spec`. The
-RPM recommends `/usr/bin/ffmpeg`, so Fedora's `ffmpeg-free` and RPM Fusion's
-`ffmpeg` both satisfy it.
+`PLATFORM` picks the container's architecture, and so the RPM's. On an Apple
+silicon Mac (podman machine with Rosetta enabled):
+
+```sh
+PLATFORM=linux/arm64 packaging/build-in-container.sh 44   # aarch64 RPM, native, ~3 min
+PLATFORM=linux/amd64 packaging/build-in-container.sh 44   # x86_64 RPM, emulated, ~8 min
+PLATFORM=linux/amd64 packaging/build-appimage.sh          # the AppImage is x86_64 only
+```
+
+On an x86_64 Linux host, `PLATFORM=linux/arm64` needs qemu-user-static. If
+`archive.ubuntu.com` is unreachable, `UBUNTU_MIRROR=http://us.archive.ubuntu.com`
+points the AppImage build at one of Canonical's country mirrors,
+which carry the same packages, source packages included.
+
+`build-rpm.sh` makes the same release build as `cargo tauri build` and
+packages it with `packaging/clovereye.spec`. The RPM recommends
+`/usr/bin/ffmpeg`, so Fedora's `ffmpeg-free` and RPM Fusion's `ffmpeg` both
+satisfy it. The containers copy the working tree in (uncommitted edits
+included), so build from a clean checkout of the release commit. The `.deb`
+and the AppImage link against Ubuntu 22.04, so they run on glibc 2.35 and
+newer. The AppImage's sources tar is its Corresponding Source and ships with
+every AppImage; `--no-sources` is for quick local rebuilds only.
+
+### 3. Windows
+
+Built on a GitHub Windows runner by `.github/workflows/windows.yml`, which
+runs the Rust tests and makes an NSIS installer and an MSI (both install
+WebView2 if it is missing). It runs when a `v*` tag is pushed, or by hand
+from Actions → Windows → Run workflow. The installers are the run's
+artifact, `clovereye-windows`, already named for the release:
+
+```sh
+git tag v<v> && git push origin v<v>
+gh run list --workflow Windows -L 1                        # wait for it to finish
+gh run download <run-id> -n clovereye-windows -D out/
+```
+
+To build on a Windows machine instead: install Rust (MSVC toolchain) and the
+Tauri CLI (`cargo install tauri-cli --version '^2' --locked`), then
+`cd src-tauri` and `cargo tauri build --bundles nsis,msi`. The installers
+land in `src-tauri/target/release/bundle/nsis/` and `bundle/msi/`; rename
+them as in the table.
+
+### 4. macOS
+
+Built on a Mac with the Xcode Command Line Tools (`xcode-select --install`),
+Rust, and the Tauri CLI (`cargo install tauri-cli --version '^2' --locked`).
+No other libraries: the app uses the system WebKit.
+
+```sh
+cd src-tauri
+cargo tauri build --bundles app,dmg
+cp target/release/bundle/dmg/CloverEye_<v>_aarch64.dmg ../out/CloverEye-<v>-aarch64.dmg
+```
+
+This builds for the Mac's own architecture; the releases so far are Apple
+silicon only. The app is ad-hoc signed and not notarised, so the first launch
+needs right-click → Open (or System Settings → Privacy & Security → Open
+Anyway). `codesign --verify` reports "code has no resources but signature
+indicates they must be present" for this ad-hoc signature; every release so
+far has done the same.
+
+### 5. Publish
+
+Put every file for the release in one folder, write the checksums, and
+attach them. A test build goes out as a pre-release, so the website and the
+"Latest" release stay on the last stable version:
+
+```sh
+cd out/
+shasum -a 256 clovereye-<v>-* clovereye_<v>_* CloverEye-<v>-* > SHA256SUMS   # sha256sum on Linux
+gh release create v<v> --prerelease --title "CloverEye <v> (test build)" ./*
+gh release upload v<v> <file>… SHA256SUMS --clobber   # adding files to an existing release
+```
+
+`gh release upload --clobber` replaces a file of the same name, so upload
+the rewritten `SHA256SUMS` along with any file added later. Check the result
+by downloading it again and running `shasum -a 256 -c SHA256SUMS`. When a
+version becomes the stable one, mark it Latest and update the download links
+in `index.html` and at the top of this README.
 
 ## Live API probe (C0 gate)
 

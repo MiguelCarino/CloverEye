@@ -30,6 +30,8 @@
 # clovereye-appimage-cargo and clovereye-appimage-rustup. The AppImage bundles
 # WebKitGTK and GStreamer (tauri.conf.json bundleMediaFramework), so WebM
 # should play without the host's codecs.
+# On an Apple silicon Mac, set PLATFORM=linux/amd64 (podman machine with
+# Rosetta): the AppImage is x86_64 only.
 set -euo pipefail
 
 sources=1
@@ -42,18 +44,22 @@ version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo/src-tauri/Cargo.toml" | hea
 commit=$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)
 git -C "$repo" diff --quiet HEAD 2>/dev/null || commit="$commit (with uncommitted changes)"
 
-exec podman run --rm -i --security-opt label=disable \
+exec podman run --rm -i --security-opt label=disable ${PLATFORM:+--platform "$PLATFORM"} \
     -v "$repo:/src:ro" -v "$out:/out" \
     -v clovereye-appimage-cargo:/root/.cargo -v clovereye-appimage-rustup:/root/.rustup \
-    -e JOBS -e VERSION="$version" -e COMMIT="$commit" -e SOURCES="$sources" \
+    -e JOBS -e VERSION="$version" -e COMMIT="$commit" -e SOURCES="$sources" -e UBUNTU_MIRROR \
     docker.io/library/ubuntu:22.04 bash -s <<'EOF'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive PATH=/root/.cargo/bin:$PATH APPIMAGE_EXTRACT_AND_RUN=1
+# UBUNTU_MIRROR (e.g. http://us.archive.ubuntu.com) replaces archive.ubuntu.com
+# when it is unreachable; Canonical's country mirrors carry the same packages.
+mirror=${UBUNTU_MIRROR:-http://archive.ubuntu.com}
+sed -i "s#http://archive.ubuntu.com#$mirror#g" /etc/apt/sources.list
 # deb-src for `apt-get source` (the sources tar): every pocket the binaries
 # can come from, including -updates and -security
 cat >/etc/apt/sources.list.d/clovereye-src.list <<SRC
-deb-src http://archive.ubuntu.com/ubuntu/ jammy main restricted universe multiverse
-deb-src http://archive.ubuntu.com/ubuntu/ jammy-updates main restricted universe multiverse
+deb-src $mirror/ubuntu/ jammy main restricted universe multiverse
+deb-src $mirror/ubuntu/ jammy-updates main restricted universe multiverse
 deb-src http://security.ubuntu.com/ubuntu/ jammy-security main restricted universe multiverse
 SRC
 apt-get update -qq >/dev/null
@@ -69,7 +75,32 @@ if ! command -v cargo >/dev/null; then
   curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain stable
 fi
 command -v cargo-tauri >/dev/null || cargo install -q tauri-cli --version '^2' --locked
-mkdir /build && cd /src && tar --exclude=./target --exclude=./src-tauri/target --exclude=./.git -cf - . | tar -C /build -xf -
+# Copy the tree in, minus target/ and .git. cp, not tar: under Rosetta
+# (PLATFORM=linux/amd64 on a Mac) GNU tar cannot stat the shared folder
+# ("Function not implemented"), while cp -a reads it fine.
+copy_tree() {   # copy_tree <from> <to>: every entry except target/ and .git
+  mkdir -p "$2"
+  for e in "$1"/* "$1"/.[!.]*; do
+    [ -e "$e" ] || continue
+    case ${e##*/} in
+      target|.git) ;;
+      src-tauri) copy_tree "$e" "$2/src-tauri" ;;
+      *) cp -a "$e" "$2/" ;;
+    esac
+  done
+}
+copy_tree /src /build
+# AppImages write "AI\x02" into spare ELF header bytes; Rosetta's binfmt match
+# (PLATFORM=linux/amd64 on a Mac) then refuses them ("Exec format error").
+# Tauri clears those bytes on linuxdeploy but not on the AppImage plugin it
+# downloads, so fetch the plugin into Tauri's cache first and clear them here.
+# Harmless on a native x86_64 host: the bytes only help desktop integration.
+plugin=/root/.cache/tauri/linuxdeploy-plugin-appimage.AppImage
+mkdir -p "${plugin%/*}"
+[ -f "$plugin" ] || curl -sSLf -o "$plugin" \
+  https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage
+chmod +x "$plugin"
+printf '\0\0\0' | dd of="$plugin" bs=1 seek=8 count=3 conv=notrunc 2>/dev/null
 cd /build/src-tauri
 CARGO_BUILD_JOBS=${JOBS:-4} cargo tauri build --verbose --bundles appimage -- --locked
 app=/out/CloverEye-$VERSION-x86_64.AppImage
@@ -84,11 +115,11 @@ src=/tmp/srctar/$name
 mkdir -p "$src/ubuntu"
 python3 /build/packaging/appimage-sources.py target/release/bundle/appimage/CloverEye.AppDir "$src"
 mkdir "$src/clovereye"
-(cd /src && tar --exclude=./target --exclude=./src-tauri/target --exclude=./.git -cf - .) | tar -C "$src/clovereye" -xf -
+copy_tree /src "$src/clovereye"
 cp -r target/release/bundle/appimage/CloverEye.AppDir/apprun-hooks "$src/appimage-tools-apprun-hooks"
 while IFS=$'\t' read -r pkg ver; do
   mkdir -p "$src/ubuntu/$pkg"
-  (cd "$src/ubuntu/$pkg" && apt-get source -qq --download-only "$pkg=$ver" >/dev/null 2>"/tmp/apt-source-$pkg.log") \
+  (cd "$src/ubuntu/$pkg" && apt-get source -qq --download-only -o Acquire::Retries=5 "$pkg=$ver" >/dev/null 2>"/tmp/apt-source-$pkg.log") \
     || { echo "apt-get source $pkg=$ver failed:" >&2; cat "/tmp/apt-source-$pkg.log" >&2; exit 1; }
 done <"$src/sources.tsv"
 cat >"$src/README.txt" <<README

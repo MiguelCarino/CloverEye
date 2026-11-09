@@ -41,4 +41,4 @@ rpmbuild -bb "$repo/packaging/clovereye.spec" \
     --define "_rpmdir $out" \
     --define "_build_name_fmt %%{NAME}-%%{VERSION}-%%{RELEASE}.%%{ARCH}.rpm" \
     >"$stage/rpmbuild.log" 2>&1 || { cat "$stage/rpmbuild.log" >&2; exit 1; }
-echo "$out/clovereye-$version-1$dist.x86_64.rpm"
+echo "$out/clovereye-$version-1$dist.$(rpm --eval '%{_arch}').rpm"

@@ -11,7 +11,7 @@ Release:        1%{?dist}
 Summary:        Unofficial desktop client for 4chan
 License:        AGPL-3.0-only AND OFL-1.1
 URL:            https://github.com/MiguelCarino/CloverEye
-ExclusiveArch:  x86_64
+ExclusiveArch:  x86_64 aarch64
 
 # The ELF dependency scan adds webkit2gtk4.1 and gtk3.
 Requires:       hicolor-icon-theme
