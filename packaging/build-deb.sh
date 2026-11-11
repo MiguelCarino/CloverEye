@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 #
-# Build the CloverEye .deb (amd64) for Ubuntu 22.04 and newer and Debian 12
+# Build the CloverEye .deb (amd64, or arm64) for Ubuntu 22.04 and newer and Debian 12
 # and newer, inside an Ubuntu 22.04 container, so it links against the oldest
 # glibc and WebKitGTK 4.1 it supports. Unlike the AppImage it bundles nothing:
 # it depends on the system's own WebKitGTK, GTK 3 and GStreamer (apt pulls
@@ -10,10 +10,15 @@
 # Usage: packaging/build-deb.sh [out-dir]
 #   out-dir defaults to $XDG_CACHE_HOME/clovereye/packaging (never the repo).
 #
-# Output: clovereye_<version>_amd64.deb
+# Output: clovereye_<version>_<arch>.deb (amd64, arm64)
+#
+# PLATFORM picks the container's architecture, and so the package's:
+# linux/amd64 (the default) or linux/arm64 (native on an Apple silicon Mac;
+# needs qemu-user-static on an x86_64 Linux host).
 #
 # Needs podman. Shares the AppImage build's cached Rust toolchain and Tauri
-# CLI (podman volumes clovereye-appimage-cargo and clovereye-appimage-rustup).
+# CLI (podman volumes clovereye-appimage-cargo and clovereye-appimage-rustup;
+# for arm64, the same names ending in -arm64, since the binaries differ).
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -21,10 +26,16 @@ out=${1:-${XDG_CACHE_HOME:-$HOME/.cache}/clovereye/packaging}
 mkdir -p "$out"
 command -v podman >/dev/null || { echo "podman is not installed" >&2; exit 1; }
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo/src-tauri/Cargo.toml" | head -1)
+platform=${PLATFORM:-linux/amd64}
+case $platform in
+  linux/amd64) vol= ;;
+  linux/arm64) vol=-arm64 ;;
+  *) echo "PLATFORM must be linux/amd64 or linux/arm64" >&2; exit 1 ;;
+esac
 
-exec podman run --rm -i --security-opt label=disable \
+exec podman run --rm -i --security-opt label=disable --platform "$platform" \
     -v "$repo:/src:ro" -v "$out:/out" \
-    -v clovereye-appimage-cargo:/root/.cargo -v clovereye-appimage-rustup:/root/.rustup \
+    -v "clovereye-appimage-cargo$vol:/root/.cargo" -v "clovereye-appimage-rustup$vol:/root/.rustup" \
     -e JOBS -e VERSION="$version" \
     docker.io/library/ubuntu:22.04 bash -s <<'EOF'
 set -euo pipefail
@@ -41,7 +52,7 @@ command -v cargo-tauri >/dev/null || cargo install -q tauri-cli --version '^2' -
 mkdir /build && cd /src && tar --exclude=./target --exclude=./src-tauri/target --exclude=./.git -cf - . | tar -C /build -xf -
 cd /build/src-tauri
 CARGO_BUILD_JOBS=${JOBS:-4} cargo tauri build --bundles deb -- --locked
-deb=/out/clovereye_${VERSION}_amd64.deb
+deb=/out/clovereye_${VERSION}_$(dpkg --print-architecture).deb
 cp target/release/bundle/deb/*.deb "$deb"
 echo "--- control"
 dpkg-deb -f "$deb"

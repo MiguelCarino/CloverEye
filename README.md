@@ -205,7 +205,7 @@ and each GitHub release carries a `SHA256SUMS` covering all of them.
 |---|---|---|---|
 | Fedora (host release) | a Fedora machine | `packaging/build-rpm.sh` | `clovereye-<v>-1.fc<N>.<arch>.rpm` |
 | Fedora (other release or arch) | Linux or a Mac with podman | `packaging/build-in-container.sh <N>` | `clovereye-<v>-1.fc<N>.<arch>.rpm` (x86_64, aarch64) |
-| Ubuntu 22.04+ / Debian 12+ | any Linux with podman | `packaging/build-deb.sh` | `clovereye_<v>_amd64.deb` |
+| Ubuntu 22.04+ / Debian 12+ | Linux or a Mac with podman | `packaging/build-deb.sh` | `clovereye_<v>_<arch>.deb` (amd64, arm64) |
 | Other Linux | Linux or a Mac with podman | `packaging/build-appimage.sh` | `CloverEye-<v>-x86_64.AppImage` + `CloverEye-<v>-appimage-sources.tar` |
 | Windows | GitHub Actions (`windows.yml`) | push a `v*` tag, or run it by hand | `CloverEye-<v>-x64-setup.exe`, `CloverEye-<v>-x64.msi` |
 | macOS (Apple silicon) | a Mac | `cargo tauri build --bundles app,dmg` | `CloverEye-<v>-aarch64.dmg` |
@@ -241,12 +241,14 @@ packaging/build-deb.sh                 # .deb, in an Ubuntu 22.04 container
 packaging/build-appimage.sh            # AppImage + its sources tar, in an Ubuntu 22.04 container
 ```
 
-`PLATFORM` picks the container's architecture, and so the RPM's. On an Apple
-silicon Mac (podman machine with Rosetta enabled):
+`PLATFORM` picks the container's architecture, and so the RPM's or the .deb's
+(the .deb defaults to amd64). On an Apple silicon Mac (podman machine with
+Rosetta enabled):
 
 ```sh
 PLATFORM=linux/arm64 packaging/build-in-container.sh 44   # aarch64 RPM, native, ~3 min
 PLATFORM=linux/amd64 packaging/build-in-container.sh 44   # x86_64 RPM, emulated, ~8 min
+PLATFORM=linux/arm64 packaging/build-deb.sh               # arm64 .deb, native
 PLATFORM=linux/amd64 packaging/build-appimage.sh          # the AppImage is x86_64 only
 ```
 
