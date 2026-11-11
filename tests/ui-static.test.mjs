@@ -33,6 +33,7 @@ test('the board fixture shipped with the UI mock equals the recorded one', () =>
 test('the UI makes no outside requests: only allowed hosts appear', () => {
   const allowed = [
     'https://www.4chan.org/rules', // opened in the system browser, never fetched
+    'https://4stats.io/', // Stats → Boards: opened in the system browser, never fetched
     // reverse image search (sauce-model.js): opened in the system browser, never fetched
     'https://saucenao.com/search.php',
     'https://lens.google.com/uploadbyurl',

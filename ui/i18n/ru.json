@@ -288,7 +288,6 @@
  "More actions": "Другие действия",
  "New filter": "Новый фильтр",
  "New posts": "Новые сообщения",
- "No boards here yet. Open a board’s catalog, star favourites, or turn on Track board activity in Settings → Stats.": "Здесь пока нет досок. Откройте каталог доски, отметьте избранное или включите «Следить за активностью досок» в Настройки → Статистика.",
  "No boards to sample yet.": "Пока нет досок для опроса.",
  "No filters yet.": "Фильтров пока нет.",
  "No list of filters was found in that JSON.": "В этом JSON нет списка фильтров.",
@@ -706,5 +705,13 @@
  "{0}CloverEye never runs this and never asks for admin rights: paste it into a terminal yourself, then re-check.": "{0}CloverEye никогда не запускает это и не просит прав администратора: вставьте команду в терминал сами, затем проверьте снова.",
  "|| (c?.state ===": "|| (c?.state ===",
  "|| c.step >= c.tasks.length) return c;\n  const max = c.tasks[c.step].items.length;\n  return { ...c, current: Math.max(0, Math.min(max, Math.round(Number(n) || 0))) };\n}\n\n/** Keeps the shown item as this task": "|| c.step >= c.tasks.length) return c;\n  const max = c.tasks[c.step].items.length;\n  return { ...c, current: Math.max(0, Math.min(max, Math.round(Number(n) || 0))) };\n}\n\n/** Keeps the shown item as this task",
- "“{0}” is hidden by a filter": "“{0}” скрыт фильтром"
+ "“{0}” is hidden by a filter": "“{0}” скрыт фильтром",
+ "Activity for every board, with history, in your browser.": "Активность каждой доски, с историей, в вашем браузере.",
+ "Couldn’t open 4stats.io: {0}": "Не удалось открыть 4stats.io: {0}",
+ "Detailed 4chan stats are on 4stats.io.": "Подробная статистика 4chan — на 4stats.io.",
+ "For detailed 4chan stats, with history for every board:": "Подробная статистика 4chan, с историей каждой доски:",
+ "No boards here yet. Open a board’s catalog or star favourites.": "Здесь пока нет досок. Откройте каталог доски или отметьте избранные.",
+ "Open 4stats.io": "Открыть 4stats.io",
+ "Search image": "Найти изображение",
+ "To follow your own boards here, turn on Settings → Stats → Track board activity.": "Чтобы следить здесь за своими досками, включите Настройки → Статистика → Следить за активностью досок."
 }

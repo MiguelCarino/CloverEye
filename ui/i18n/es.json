@@ -288,7 +288,6 @@
  "More actions": "Más acciones",
  "New filter": "Filtro nuevo",
  "New posts": "Publicaciones nuevas",
- "No boards here yet. Open a board’s catalog, star favourites, or turn on Track board activity in Settings → Stats.": "Aún no hay tableros aquí. Abre el catálogo de un tablero, marca favoritos o activa Seguir la actividad de los tableros en Ajustes → Estadísticas.",
  "No boards to sample yet.": "Aún no hay tableros que muestrear.",
  "No filters yet.": "Aún no hay filtros.",
  "No list of filters was found in that JSON.": "No se encontró una lista de filtros en ese JSON.",
@@ -706,5 +705,13 @@
  "{0}CloverEye never runs this and never asks for admin rights: paste it into a terminal yourself, then re-check.": "{0}CloverEye nunca ejecuta esto ni pide derechos de administrador: pégalo tú mismo en una terminal y luego vuelve a comprobar.",
  "|| (c?.state ===": "|| (c?.state ===",
  "|| c.step >= c.tasks.length) return c;\n  const max = c.tasks[c.step].items.length;\n  return { ...c, current: Math.max(0, Math.min(max, Math.round(Number(n) || 0))) };\n}\n\n/** Keeps the shown item as this task": "|| c.step >= c.tasks.length) return c;\n  const max = c.tasks[c.step].items.length;\n  return { ...c, current: Math.max(0, Math.min(max, Math.round(Number(n) || 0))) };\n}\n\n/** Keeps the shown item as this task",
- "“{0}” is hidden by a filter": "“{0}” está oculto por un filtro"
+ "“{0}” is hidden by a filter": "“{0}” está oculto por un filtro",
+ "Activity for every board, with history, in your browser.": "La actividad de cada tablero, con historial, en tu navegador.",
+ "Couldn’t open 4stats.io: {0}": "No se pudo abrir 4stats.io: {0}",
+ "Detailed 4chan stats are on 4stats.io.": "Las estadísticas detalladas de 4chan están en 4stats.io.",
+ "For detailed 4chan stats, with history for every board:": "Para estadísticas detalladas de 4chan, con historial de cada tablero:",
+ "No boards here yet. Open a board’s catalog or star favourites.": "Todavía no hay tableros aquí. Abre el catálogo de un tablero o marca favoritos.",
+ "Open 4stats.io": "Abrir 4stats.io",
+ "Search image": "Buscar imagen",
+ "To follow your own boards here, turn on Settings → Stats → Track board activity.": "Para seguir aquí tus propios tableros, activa Ajustes → Estadísticas → Seguir la actividad de los tableros."
 }

@@ -288,7 +288,6 @@
  "More actions": "その他の操作",
  "New filter": "新しいフィルター",
  "New posts": "新しい投稿",
- "No boards here yet. Open a board’s catalog, star favourites, or turn on Track board activity in Settings → Stats.": "まだ板がありません。板のカタログを開くか、お気に入りにスターを付けるか、設定 → 統計 で「板の活動を記録」をオンにしてください。",
  "No boards to sample yet.": "サンプリングする板がまだありません。",
  "No filters yet.": "フィルターはまだありません。",
  "No list of filters was found in that JSON.": "その JSON にフィルターの一覧が見つかりませんでした。",
@@ -706,5 +705,13 @@
  "{0}CloverEye never runs this and never asks for admin rights: paste it into a terminal yourself, then re-check.": "{0}CloverEye がこれを実行することも、管理者権限を求めることもありません。ターミナルに自分で貼り付けて実行し、もう一度確認してください。",
  "|| (c?.state ===": "|| (c?.state ===",
  "|| c.step >= c.tasks.length) return c;\n  const max = c.tasks[c.step].items.length;\n  return { ...c, current: Math.max(0, Math.min(max, Math.round(Number(n) || 0))) };\n}\n\n/** Keeps the shown item as this task": "|| c.step >= c.tasks.length) return c;\n  const max = c.tasks[c.step].items.length;\n  return { ...c, current: Math.max(0, Math.min(max, Math.round(Number(n) || 0))) };\n}\n\n/** Keeps the shown item as this task",
- "“{0}” is hidden by a filter": "“{0}” はフィルターで非表示です"
+ "“{0}” is hidden by a filter": "“{0}” はフィルターで非表示です",
+ "Activity for every board, with history, in your browser.": "すべての板の活動と履歴をブラウザで見られます。",
+ "Couldn’t open 4stats.io: {0}": "4stats.io を開けませんでした: {0}",
+ "Detailed 4chan stats are on 4stats.io.": "4chan の詳しい統計は 4stats.io にあります。",
+ "For detailed 4chan stats, with history for every board:": "4chan の詳しい統計(すべての板の履歴つき):",
+ "No boards here yet. Open a board’s catalog or star favourites.": "まだ板がありません。板のカタログを開くか、お気に入りに星を付けてください。",
+ "Open 4stats.io": "4stats.io を開く",
+ "Search image": "画像を検索",
+ "To follow your own boards here, turn on Settings → Stats → Track board activity.": "自分の板をここで追うには、設定 → 統計 → 板の活動を記録 をオンにしてください。"
 }

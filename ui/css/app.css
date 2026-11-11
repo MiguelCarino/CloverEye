@@ -3662,7 +3662,21 @@ button.post__id:hover {
 /* Reverse image search: the file's Search menu button (sauce-model.js) */
 .post__file .post__sauce {
   justify-self: start;
-  font-size: var(--fs-xs);
+  min-height: 26px;
+  gap: 6px;
+  padding: 0 var(--space-2);
+  color: var(--text);
+}
+
+.post__file .post__sauce .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--accent);
+}
+
+.post__file .post__sauce:hover .icon,
+.post__file .post__sauce[aria-expanded='true'] .icon {
+  color: var(--accent-hover);
 }
 
 .sauce-pick {
@@ -4054,6 +4068,30 @@ button.post__id:hover {
 
 .stats__promise .icon {
   color: var(--ok);
+}
+
+/* 4stats.io: the line under the board table, and the panel while board
+   activity is off */
+.stats-fourstats__line {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.stats-fourstats > .icon,
+.stats-fourstats__line .icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.stats-fourstats__line .icon {
+  display: inline-block;
+  vertical-align: -0.2em;
+  margin-right: var(--space-2);
+}
+
+.stats-fourstats .inline {
+  margin-top: var(--space-3);
 }
 
 .stats-table-wrap {

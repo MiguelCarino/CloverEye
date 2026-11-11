@@ -174,6 +174,37 @@ function boardsTable({ rows, view, keyPrefix, hue, now, onSort, onOpenBoard, onO
   );
 }
 
+/** Detailed stats for every board, on 4stats.io, in the system browser. */
+export const FOURSTATS_URL = 'https://4stats.io/';
+
+function fourStatsButton(o, cls = 'btn') {
+  return o.onOpen4stats
+    ? h('button', { type: 'button', class: cls, 'data-key': `${o.keyPrefix || ''}stats-4stats-open`, title: FOURSTATS_URL, onclick: o.onOpen4stats }, icon('external'), 'Open 4stats.io')
+    : null;
+}
+
+/** Board activity is off (Settings → Stats → Track board activity): the
+ *  pane offers only 4stats.io. */
+function boardsOffPanel(o) {
+  return h(
+    'div',
+    { class: 'stats__panel' },
+    h(
+      'div',
+      { class: 'callout stats-fourstats' },
+      icon('chart'),
+      h(
+        'div',
+        {},
+        h('strong', { text: 'Detailed 4chan stats are on 4stats.io. ' }),
+        'Activity for every board, with history, in your browser.',
+        h('div', { class: 'inline' }, fourStatsButton(o)),
+      ),
+    ),
+    h('p', { class: 'field__hint', text: 'To follow your own boards here, turn on Settings → Stats → Track board activity.' }),
+  );
+}
+
 function boardsPanel(o) {
   const { boards, view, now } = o;
   const rows = boards.map((b) => boardRow(b, o.store.boards[b], now));
@@ -182,11 +213,20 @@ function boardsPanel(o) {
     { class: 'stats__panel' },
     rows.length
       ? boardsTable({ ...o, rows, view })
-      : h('p', { class: 'rail__empty', text: 'No boards here yet. Open a board’s catalog, star favourites, or turn on Track board activity in Settings → Stats.' }),
+      : h('p', { class: 'rail__empty', text: 'No boards here yet. Open a board’s catalog or star favourites.' }),
     h('p', {
       class: 'field__hint',
       text: 'Posts a minute come from how far a board’s highest post number rose between two samples (each board numbers its posts one by one). Threads an hour count new opening posts between samples; the busiest thread gained the most replies since the sample before. Samples are kept for 24 hours, on this computer.',
     }),
+    o.onOpen4stats
+      ? h(
+          'p',
+          { class: 'stats-fourstats__line' },
+          icon('chart'),
+          'For detailed 4chan stats, with history for every board: ',
+          h('button', { type: 'button', class: 'link-btn', 'data-key': `${o.keyPrefix || ''}stats-4stats`, onclick: o.onOpen4stats, text: '4stats.io' }),
+        )
+      : null,
   );
 }
 
@@ -343,10 +383,13 @@ function minePanel({ mine, on, now, view, keyPrefix, hue, onMetric, onMineToggle
  * @param {object} o.store          board samples (stats-model.js)
  * @param {object} o.mine           your counts (my-stats-model.js)
  * @param {boolean} o.mineOn        Settings → Stats → Count my own activity
+ * @param {boolean} o.trackOn       Settings → Stats → Track board activity
+ * @param {Function} [o.onOpen4stats] opens 4stats.io in the system browser
  * @param {object} o.status         the sampler's (stats.js)
  */
 export function statsView(o) {
   const { view, keyPrefix = '', status, isMain, now = Date.now() } = o;
+  const trackOn = o.trackOn !== false;
   const tab = (key, label) =>
     h('button', {
       type: 'button',
@@ -363,11 +406,11 @@ export function statsView(o) {
       'div',
       { class: 'browse__tools' },
       h('div', { class: 'stats-tabs', role: 'group', 'aria-label': 'Stats' }, tab('boards', 'Boards'), tab('you', 'You')),
-      view.tab === 'boards'
+      view.tab === 'boards' && trackOn
         ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}stats-refresh`, title: o.refreshKeys || null, onclick: o.onRefresh }, icon('refresh'), 'Sample now')
         : null,
     ),
-    view.tab === 'boards' ? h('p', { class: 'stats__status', role: 'status', 'data-stats-status': '', text: statusText(status, { isMain, now }) }) : null,
-    view.tab === 'boards' ? boardsPanel({ ...o, now }) : minePanel({ mine: o.mine, on: o.mineOn, now, view, keyPrefix, hue: o.hue, onMetric: o.onMetric, onMineToggle: o.onMineToggle, onDeleteMine: o.onDeleteMine, onOpenBoard: o.onOpenBoard }),
+    view.tab === 'boards' && trackOn ? h('p', { class: 'stats__status', role: 'status', 'data-stats-status': '', text: statusText(status, { isMain, now }) }) : null,
+    view.tab === 'boards' ? (trackOn ? boardsPanel({ ...o, now }) : boardsOffPanel(o)) : minePanel({ mine: o.mine, on: o.mineOn, now, view, keyPrefix, hue: o.hue, onMetric: o.onMetric, onMineToggle: o.onMineToggle, onDeleteMine: o.onDeleteMine, onOpenBoard: o.onOpenBoard }),
   );
 }

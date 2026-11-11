@@ -386,15 +386,16 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
             'button',
             {
               type: 'button',
-              class: 'link-btn post__sauce',
+              class: 'btn btn--sm post__sauce',
               title: 'Reverse image search',
               'aria-label': `Reverse image search for No. ${post.no}`,
               'aria-haspopup': 'menu',
               'aria-expanded': 'false',
               'data-key': `${idPrefix}sauce-${post.no}`,
               onclick: (e) => openMenu(e.currentTarget, sauce(), `Reverse image search for No. ${post.no}`),
-              text: 'Search',
             },
+            icon('search'),
+            h('span', { text: 'Search image' }),
           )
         : null,
     );

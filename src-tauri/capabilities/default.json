@@ -41,6 +41,9 @@
           "url": "https://www.4chan.org/rules"
         },
         {
+          "url": "https://4stats.io/*"
+        },
+        {
           "url": "https://saucenao.com/search.php*"
         },
         {

@@ -25,7 +25,7 @@ import { savedListView, confirmDialog } from './offline.js';
 import { postFlag } from './bridge.js';
 import * as SM from './stats-model.js';
 import { createStats } from './stats.js';
-import { statsView, statusText } from './stats-view.js';
+import { statsView, statusText, FOURSTATS_URL } from './stats-view.js';
 
 /** A catalog is fetched again on its own after this long (manual Refresh
  *  any time; the queue still keeps ≤ 1 request/s). */
@@ -1261,6 +1261,10 @@ export function openShell({
       store: stats.boards(),
       mine: stats.mine(),
       mineOn: Boolean(settings.stats?.mine),
+      trackOn: Boolean(settings.stats?.track),
+      onOpen4stats: bridge?.openExternal
+        ? () => Promise.resolve(bridge.openExternal(FOURSTATS_URL)).catch((e) => toast(`Couldn’t open 4stats.io: ${e?.message || e}`))
+        : null,
       hue: M.boardHue,
       refreshKeys: B.refreshKeysLabel(),
       onTab: (t) => {
