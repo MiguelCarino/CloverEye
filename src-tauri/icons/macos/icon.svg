@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- ui/assets/icon.svg on Apple's macOS icon grid: the tile 824 px wide,
+       centred on a 1024 px canvas, so macOS shows it as is (a full-canvas
+       icon is put on a system tile, dark in dark mode). -->
+  <svg x="100" y="100" width="824" height="824" viewBox="4 4 504 504">
+  <defs>
+    <!-- one leaf, drawn like a quick oekaki doodle: tip at the origin, lobes up -->
+    <path id="ce-leaf" d="M2 6C-30 -18 -98 -52 -100 -112C-101 -160 -46 -178 -2 -136C44 -180 100 -158 98 -110C96 -50 34 -20 2 6Z"/>
+  </defs>
+  <rect x="10" y="10" width="492" height="492" rx="112" fill="#fbf1d6" stroke="#4a2f0c" stroke-width="12"/>
+  <path d="M264 270C282 330 318 372 380 404" fill="none" stroke="#4a2f0c" stroke-width="34" stroke-linecap="round"/>
+  <path d="M264 270C282 330 318 372 380 404" fill="none" stroke="#e0a526" stroke-width="14" stroke-linecap="round"/>
+  <g id="ce-gold" transform="translate(256 252)" fill="#f4c542" stroke="#4a2f0c" stroke-width="16" stroke-linejoin="round">
+    <use href="#ce-leaf" transform="rotate(-47) scale(0.97)"/>
+    <use href="#ce-leaf" transform="rotate(44) scale(1.01)"/>
+    <use href="#ce-leaf" transform="rotate(137) scale(0.95)"/>
+    <use href="#ce-leaf" transform="rotate(224) scale(1)"/>
+  </g>
+  <g transform="translate(256 252)" fill="none" stroke="#fffbe9" stroke-width="12" stroke-linecap="round">
+    <path d="M-96 -44C-104 -64 -98 -82 -84 -90"/>
+    <path d="M46 -94C66 -100 84 -92 90 -76"/>
+    <path d="M90 50C96 68 88 84 74 90"/>
+    <path d="M-46 92C-66 96 -82 86 -88 70"/>
+  </g>
+  <circle cx="256" cy="252" r="24" fill="#4a2f0c"/>
+  <circle cx="263" cy="245" r="7" fill="#fffbe9"/>
+  </svg>
+</svg>
