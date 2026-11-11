@@ -7,13 +7,40 @@ import * as M from '../ui/js/setup-model.js';
 const boards = JSON.parse(readFileSync(new URL('../ui/data/boards.sample.json', import.meta.url))).boards;
 const now = new Date('2026-11-04T12:00:00Z');
 
-test('seven steps, all introduced in version 1; NSFW is not one of them', () => {
+test('eight steps: seven from version 1, Your stats from version 2; NSFW is not one of them', () => {
   assert.deepEqual(
     M.STEPS.map((s) => s.id),
-    ['welcome', 'look', 'boards', 'video', 'watching', 'files', 'done'],
+    ['welcome', 'look', 'boards', 'video', 'watching', 'files', 'stats', 'done'],
   );
-  assert.ok(M.STEPS.every((s) => s.since === 1 && s.label));
-  assert.equal(M.SETUP_VERSION, 1);
+  assert.ok(M.STEPS.every((s) => s.label && s.since === (s.id === 'stats' ? 2 : 1)));
+  assert.equal(M.SETUP_VERSION, 2);
+});
+
+test('upgrading from version 1: only Your stats, then Done, once', () => {
+  const v1done = M.completeSetup(M.defaults(), { now, version: 1 });
+  assert.equal(M.needsSetup(v1done), true);
+  assert.deepEqual(M.stepsToShow(v1done).map((s) => s.id), ['stats', 'done']);
+  const v2done = M.completeSetup(v1done, { now });
+  assert.equal(v2done.setupVersion, 2);
+  assert.equal(M.needsSetup(v2done), false);
+  assert.deepEqual(M.stepsToShow(v2done), [], 'not shown again');
+  // never finished: the whole flow, the new step included
+  assert.deepEqual(M.stepsToShow(M.defaults()).map((s) => s.id).slice(-2), ['stats', 'done']);
+  // the answers given in version 1 are kept
+  const old = M.completeSetup({ ...M.defaults(), favourites: ['g'], theme: 'light' }, { now, version: 1 });
+  const up = M.completeSetup({ ...old, stats: { ...old.stats, mine: true } }, { now });
+  assert.deepEqual(up.favourites, ['g']);
+  assert.equal(up.theme, 'light');
+  assert.equal(up.stats.mine, true);
+});
+
+test('stats settings: everything off by default, junk falls back', () => {
+  assert.deepEqual(M.defaults().stats, { track: false, scope: 'favourites', intervalMin: 5, mine: false });
+  assert.deepEqual(M.normalizeSettings({}).stats, M.defaults().stats);
+  assert.deepEqual(M.normalizeSettings({ stats: { track: true, scope: 'visible', intervalMin: 30, mine: true } }).stats, { track: true, scope: 'visible', intervalMin: 30, mine: true });
+  assert.deepEqual(M.normalizeSettings({ stats: { track: 'yes', scope: 'nsfw', intervalMin: 1, mine: 1, samples: [1, 2] } }).stats, M.defaults().stats);
+  assert.deepEqual(M.normalizeSettings({ stats: 'on' }).stats, M.defaults().stats);
+  assert.ok(!('samples' in M.normalizeSettings({ stats: { samples: [1] } }).stats), 'no samples in settings');
 });
 
 test('defaults: worksafe only, no favourites, 10 s, metadata stripped, memory cache, system theme', () => {
@@ -232,26 +259,29 @@ test('boardHue is stable and never lands in the green band', () => {
 });
 
 test('stepsToShow: first run and rerun show all; up to date shows none', () => {
-  assert.equal(M.stepsToShow(M.defaults()).length, 7);
-  assert.equal(M.stepsToShow(null).length, 7);
+  assert.equal(M.stepsToShow(M.defaults()).length, 8);
+  assert.equal(M.stepsToShow(null).length, 8);
   const done = M.completeSetup(M.defaults(), { now });
   assert.deepEqual(M.stepsToShow(done), []);
-  assert.equal(M.stepsToShow(done, { rerun: true }).length, 7);
+  assert.equal(M.stepsToShow(done, { rerun: true }).length, 8);
   assert.equal(M.needsSetup(done), false);
   assert.equal(M.needsSetup(M.defaults()), true);
   assert.equal(M.needsSetup(null), true);
 });
 
 test('setupVersion migration: a later release shows only its new steps, then Done', () => {
-  const v2steps = [...M.STEPS.slice(0, 6), { id: 'filters', label: 'Filters', since: 2 }, M.STEPS[6]];
-  const v1done = M.completeSetup(M.defaults(), { now, version: 1 });
-  const shown = M.stepsToShow(v1done, { steps: v2steps, version: 2 });
+  const v3steps = [...M.STEPS.slice(0, 7), { id: 'filters', label: 'Filters', since: 3 }, M.STEPS[7]];
+  const v2done = M.completeSetup(M.defaults(), { now, version: 2 });
+  const shown = M.stepsToShow(v2done, { steps: v3steps, version: 3 });
   assert.deepEqual(shown.map((s) => s.id), ['filters', 'done']);
-  assert.equal(M.needsSetup(v1done, 2), true);
-  const v2done = M.completeSetup(v1done, { now, version: 2 });
-  assert.deepEqual(M.stepsToShow(v2done, { steps: v2steps, version: 2 }), []);
+  assert.equal(M.needsSetup(v2done, 3), true);
+  const v3done = M.completeSetup(v2done, { now, version: 3 });
+  assert.deepEqual(M.stepsToShow(v3done, { steps: v3steps, version: 3 }), []);
+  // two versions behind: both versions' new steps
+  const v1done = M.completeSetup(M.defaults(), { now, version: 1 });
+  assert.deepEqual(M.stepsToShow(v1done, { steps: v3steps, version: 3 }).map((s) => s.id), ['stats', 'filters', 'done']);
   // never finished: still the whole flow
-  assert.equal(M.stepsToShow(M.defaults(), { steps: v2steps, version: 2 }).length, 8);
+  assert.equal(M.stepsToShow(M.defaults(), { steps: v3steps, version: 3 }).length, 9);
 });
 
 test('completeSetup stamps version and time, normalises, and records a skip', () => {
@@ -353,7 +383,9 @@ test('installHint: a copyable command per OS, never run by the app', () => {
 test('summary lists every setup answer and never mentions NSFW', () => {
   const s = M.completeSetup({ ...M.defaults(), favourites: ['g', 'diy'] }, { now });
   const rows = M.summary(s, { clip: M.clipReadiness({ found: false }) });
-  assert.deepEqual(rows.map((r) => r.step), ['look', 'boards', 'video', 'watching', 'files']);
+  assert.deepEqual(rows.map((r) => r.step), ['look', 'boards', 'video', 'watching', 'files', 'stats']);
+  assert.equal(rows[5].value, 'Off');
+  assert.equal(M.summary({ ...s, stats: { ...s.stats, mine: true } })[5].value, 'Counted on this computer only');
   assert.equal(rows[0].value, 'System theme · Comfortable · Default text');
   assert.equal(rows[1].value, '/g/ /diy/');
   assert.match(rows[2].value, /Clip is off/);
@@ -378,4 +410,177 @@ test('themes: every id is unique, grouped, labelled and kept by normalizeSetting
   assert.ok(ids.includes('yotsuba') && ids.includes('tomorrow') && ids.includes('cyberpunk') && ids.includes('orchard-dark'));
   assert.equal(M.normalizeSettings({ theme: 'neon' }).theme, 'system');
   assert.equal(M.themeLabel('win95'), 'Windows 95');
+});
+
+test('filters and posts hidden by hand: empty by default, normalised when read', () => {
+  const d = M.defaults();
+  assert.deepEqual(d.filters, []);
+  assert.deepEqual(d.hiddenPosts, []);
+  const s = M.normalizeSettings({
+    filters: [{ id: 'a1', field: 'com', pattern: 'spam', boards: ['g', 'NOPE'], action: 'highlight' }, { field: 'bogus', pattern: 'x' }, { field: 'id', pattern: '' }, 'junk'],
+    hiddenPosts: [{ board: 'g', no: 3 }, { board: 'g', no: 3 }, { board: 'g', no: 'x' }],
+  });
+  assert.deepEqual(s.filters, [{ id: 'a1', field: 'com', pattern: 'spam', regex: false, matchCase: false, boards: ['g'], action: 'highlight', enabled: true }]);
+  assert.deepEqual(s.hiddenPosts, [{ board: 'g', no: 3 }]);
+  assert.deepEqual(M.normalizeSettings({ filters: 'nope', hiddenPosts: {} }).filters, []);
+});
+
+test('hiding replies to hidden posts: on by default, kept when read, junk falls back', () => {
+  assert.deepEqual(M.defaults().hide, { replies: true });
+  assert.deepEqual(M.normalizeSettings({}).hide, { replies: true });
+  assert.deepEqual(M.normalizeSettings({ hide: { replies: false } }).hide, { replies: false });
+  assert.deepEqual(M.normalizeSettings({ hide: { replies: 'no', junk: 1 } }).hide, { replies: true });
+  assert.deepEqual(M.normalizeSettings({ hide: 'off' }).hide, { replies: true });
+});
+
+test('quote links: open inline and preview by default, kept when read, junk falls back', () => {
+  assert.deepEqual(M.defaults().quotes, { links: 'inline', preview: true });
+  assert.deepEqual(M.normalizeSettings({}).quotes, { links: 'inline', preview: true });
+  assert.deepEqual(M.normalizeSettings({ quotes: { links: 'jump', preview: false } }).quotes, { links: 'jump', preview: false });
+  assert.deepEqual(M.normalizeSettings({ quotes: { links: 'teleport', preview: 'yes', junk: 1 } }).quotes, { links: 'inline', preview: true });
+  assert.deepEqual(M.normalizeSettings({ quotes: [] }).quotes, { links: 'inline', preview: true });
+});
+
+test('poster ID colours: on by default, kept when read, junk falls back', () => {
+  assert.deepEqual(M.defaults().ids, { colour: true });
+  assert.deepEqual(M.normalizeSettings({ ids: { colour: false } }).ids, { colour: false });
+  assert.deepEqual(M.normalizeSettings({ ids: { colour: 'no', junk: 1 } }).ids, { colour: true });
+  assert.deepEqual(M.normalizeSettings({ ids: 'off' }).ids, { colour: true });
+});
+
+test('reverse image search: four sites by default, kept when read, junk dropped', () => {
+  assert.deepEqual(M.defaults().sauce, { engines: ['saucenao', 'lens', 'yandex', 'iqdb'] });
+  assert.deepEqual(M.normalizeSettings({}).sauce, { engines: ['saucenao', 'lens', 'yandex', 'iqdb'] });
+  assert.deepEqual(M.normalizeSettings({ sauce: { engines: ['tracemoe', 'tineye', 'bing', 'tineye'] } }).sauce, { engines: ['tineye', 'tracemoe'] });
+  assert.deepEqual(M.normalizeSettings({ sauce: { engines: [] } }).sauce, { engines: [] }, 'none chosen stays none');
+  assert.deepEqual(M.normalizeSettings({ sauce: { engines: 'all', junk: 1 } }).sauce, { engines: ['saucenao', 'lens', 'yandex', 'iqdb'] });
+  assert.deepEqual(M.normalizeSettings({ sauce: [] }).sauce, { engines: ['saucenao', 'lens', 'yandex', 'iqdb'] });
+});
+
+test('archive links: on, automatic for every board by default; choices checked when read', () => {
+  assert.deepEqual(M.defaults().archives, { enabled: true, boards: {} });
+  assert.deepEqual(M.normalizeSettings({}).archives, { enabled: true, boards: {} });
+  assert.deepEqual(M.normalizeSettings({ archives: { enabled: false, boards: { g: 'b4k', v: 'off', sci: 'desuarchive', 'x/': 'off' }, junk: 1 } }).archives, {
+    enabled: false,
+    boards: { g: 'b4k', v: 'off' },
+  });
+  assert.deepEqual(M.normalizeSettings({ archives: 'off' }).archives, { enabled: true, boards: {} });
+});
+
+test('embeds: click to load by default; only off or click kept', () => {
+  assert.deepEqual(M.defaults().embeds, { mode: 'click' });
+  assert.deepEqual(M.normalizeSettings({}).embeds, { mode: 'click' });
+  assert.deepEqual(M.normalizeSettings({ embeds: { mode: 'off', junk: 1 } }).embeds, { mode: 'off' });
+  assert.deepEqual(M.normalizeSettings({ embeds: { mode: 'auto' } }).embeds, { mode: 'click' });
+  assert.deepEqual(M.normalizeSettings({ embeds: 'off' }).embeds, { mode: 'click' });
+});
+
+test('read marks: empty by default, cleaned when read, NSFW ones dropped while NSFW is off', () => {
+  assert.deepEqual(M.defaults().lastRead, {});
+  assert.deepEqual(M.normalizeSettings({ lastRead: { 'g/1': 5, 'bad key': 2, 'g/2': 0 } }).lastRead, { 'g/1': 5 });
+  assert.deepEqual(M.normalizeSettings({ lastRead: [] }).lastRead, {});
+  assert.deepEqual(M.normalizeSettings({ nsfwBoards: ['b'], lastRead: { 'g/1': 5, 'b/2': 9 } }).lastRead, { 'g/1': 5 });
+});
+
+test('settings at every cap still fit what the app agrees to store', () => {
+  const b = (i) => `b${i}`.padEnd(10, 'x').slice(0, 10);
+  const big = Number.MAX_SAFE_INTEGER;
+  const raw = {
+    nsfw: { enabled: true, confirmedAdultAt: '2026-01-01T00:00:00Z' },
+    filters: Array.from({ length: 500 }, (_, i) => ({ field: 'com', pattern: `${i}`.padEnd(500, 'é'), boards: Array.from({ length: 50 }, (_, j) => b(j)), regex: true })),
+    hiddenPosts: Array.from({ length: 5000 }, (_, i) => ({ board: b(i), no: big - i })),
+    lastRead: Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`${b(i)}/${big - i}`, big - i])),
+    yous: Array.from({ length: 1000 }, (_, i) => ({ board: b(i), no: big - i })),
+    watched: Array.from({ length: M.MAX_WATCHED }, (_, i) => ({ board: b(i), no: big - i, title: 'あ'.repeat(200), seen: big })),
+    favourites: Array.from({ length: 30 }, (_, i) => b(i)),
+    nsfwBoards: Array.from({ length: 200 }, (_, i) => b(i + 100)),
+    files: { downloadDir: 'あ'.repeat(1024) },
+    post: { name: 'あ'.repeat(100) },
+  };
+  const s = M.normalizeSettings(raw);
+  assert.ok(M.settingsBytes(s) <= M.SETTINGS_BUDGET, `${M.settingsBytes(s)} bytes`);
+  assert.ok(M.SETTINGS_BUDGET < 256 * 1024);
+  assert.equal(s.watched.length, M.MAX_WATCHED, 'watched threads are never dropped');
+  assert.ok(s.filters.length > 0);
+});
+
+test('fitSettings drops the oldest read marks, then hidden posts, then (You)s', () => {
+  const small = M.defaults();
+  assert.equal(M.fitSettings(small), small, 'already fits: the same object');
+  const s = {
+    ...M.defaults(),
+    lastRead: Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`g/${i + 1}`, i + 1])),
+    hiddenPosts: Array.from({ length: 100 }, (_, i) => ({ board: 'g', no: i + 1 })),
+  };
+  const budget = M.settingsBytes(s) - 500;
+  const fit = M.fitSettings(s, budget);
+  assert.ok(M.settingsBytes(fit) <= budget);
+  assert.equal(fit.hiddenPosts.length, 100, 'read marks went first');
+  const keys = Object.keys(fit.lastRead);
+  assert.ok(keys.length < 100 && keys.length > 0);
+  assert.equal(keys[keys.length - 1], 'g/100', 'the newest stay');
+  const tight = M.fitSettings(s, M.settingsBytes({ ...s, lastRead: {} }) - 300);
+  assert.deepEqual(tight.lastRead, {});
+  assert.ok(tight.hiddenPosts.length < 100);
+  assert.deepEqual(tight.hiddenPosts[tight.hiddenPosts.length - 1], { board: 'g', no: 100 });
+  assert.equal(M.fitSettings(null), null);
+});
+
+test('display switches (Settings → Posts): defaults, kept when read, junk falls back', () => {
+  const d = { time: 'local', revealSpoilers: false, hideImages: false, autoExpand: false, galleryPreload: true, anonymize: false };
+  assert.deepEqual(M.defaults().display, d);
+  assert.deepEqual(M.normalizeSettings({}).display, d);
+  const all = { time: 'relative', revealSpoilers: true, hideImages: true, autoExpand: true, galleryPreload: false, anonymize: true };
+  assert.deepEqual(M.normalizeSettings({ display: all }).display, all);
+  assert.deepEqual(M.normalizeSettings({ display: { time: 'board', anonymize: 'yes', junk: 1 } }).display, { ...d, time: 'board' });
+  assert.deepEqual(M.normalizeSettings({ display: 'work' }).display, d);
+});
+
+test('post.randomName: off by default, only a real boolean turns it on', () => {
+  assert.equal(M.defaults().post.randomName, false);
+  assert.equal(M.normalizeSettings({ post: { randomName: true } }).post.randomName, true);
+  assert.equal(M.normalizeSettings({ post: { randomName: 'yes' } }).post.randomName, false);
+  assert.equal(M.normalizeSettings({ post: { name: 'x' } }).post.randomName, false);
+  assert.equal(M.normalizeSettings({}).post.randomName, false);
+});
+
+test('files: the saved threads folder is a full path or empty (the default)', () => {
+  assert.equal(M.defaults().files.savedDir, '');
+  assert.equal(M.normalizeSettings({ files: { savedDir: '  /home/me/Saved  ' } }).files.savedDir, '/home/me/Saved');
+  assert.equal(M.normalizeSettings({ files: { savedDir: 'C:\\Users\\me\\Saved' } }).files.savedDir, 'C:\\Users\\me\\Saved');
+  assert.equal(M.normalizeSettings({ files: { savedDir: '\\\\server\\share' } }).files.savedDir, '\\\\server\\share');
+  for (const bad of ['relative/dir', '~/Saved', 'a\u0000b', '/x\ny', 42, null, `/${'a'.repeat(1100)}`]) {
+    assert.equal(M.normalizeSettings({ files: { savedDir: bad } }).files.savedDir, '', String(bad).slice(0, 20));
+  }
+  assert.equal(M.normalizeFolder('  '), '');
+  assert.equal(M.normalizeFolder('/ok'), '/ok');
+  assert.equal(M.normalizeSettings({ files: { downloadDir: '/d' } }).files.downloadDir, '/d', 'the download folder is unchanged');
+});
+
+test('NSFW off: Settings → Archives lists no NSFW boards and keeps no choices for them', () => {
+  const off = { nsfw: { enabled: false, confirmedAdultAt: null }, nsfwBoards: ['b', 'h'] };
+  const shown = M.visibleArchivedBoards(off);
+  assert.ok(shown.includes('g'));
+  assert.ok(!shown.includes('b') && !shown.includes('h'));
+  // from a loaded board list too, without remembered codes
+  const fromList = M.visibleArchivedBoards({ nsfw: { enabled: false } }, [{ board: 'b', ws_board: 0 }, { board: 'g', ws_board: 1 }]);
+  assert.ok(!fromList.includes('b') && fromList.includes('g'));
+  const on = { nsfw: { enabled: true, confirmedAdultAt: now.toISOString() }, nsfwBoards: ['b'] };
+  assert.ok(M.visibleArchivedBoards(on).includes('b'));
+
+  const n = M.normalizeSettings({ ...off, archives: { enabled: true, boards: { b: 'off', g: 'off' } } });
+  assert.deepEqual(n.archives.boards, { g: 'off' });
+  const kept = M.normalizeSettings({ ...on, archives: { enabled: true, boards: { b: 'off' } } });
+  assert.deepEqual(kept.archives.boards, { b: 'off' });
+
+  const s = M.normalizeSettings({ ...on, archives: { enabled: true, boards: { b: 'off', g: 'off' } } });
+  assert.deepEqual(M.setNsfw(s, false).archives.boards, { g: 'off' });
+});
+
+test('boardHidden: NSFW boards only, and only while they are off', () => {
+  const off = { nsfw: { enabled: false, confirmedAdultAt: null }, nsfwBoards: ['b'] };
+  assert.equal(M.boardHidden(off, 'b'), true);
+  assert.equal(M.boardHidden(off, 'g'), false);
+  assert.equal(M.boardHidden({ nsfw: { enabled: false } }, 'h', [{ board: 'h', ws_board: 0 }]), true);
+  assert.equal(M.boardHidden({ ...off, nsfw: { enabled: true, confirmedAdultAt: now.toISOString() } }, 'b'), false);
 });

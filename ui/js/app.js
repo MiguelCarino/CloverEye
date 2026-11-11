@@ -2,14 +2,16 @@
 // with new steps, or #setup) or the shell.
 
 import { createBridge, safeStorage, mockOptionsFromSearch } from './bridge.js';
-import { defaults, needsSetup, normalizeSettings } from './setup-model.js';
+import { defaults, fitSettings, needsSetup, normalizeSettings } from './setup-model.js';
 import { applyLook } from './look.js';
 import { startSetup } from './setup.js';
 import { openShell } from './shell.js';
 import { toast } from './dom.js';
 import { installHoverPreview } from './hover.js';
+import { installQuotePreview } from './quotes.js';
 import { panesFromHash } from './browse-model.js';
 import { tr } from './i18n.js';
+import { titleWithCount } from './unread-model.js';
 
 const bridge = createBridge({
   tauri: window.__TAURI__ ?? null,
@@ -22,15 +24,27 @@ const titleEl = document.getElementById('titlebarTitle');
 // The title is often a thread's name: only the app's own titles ("Settings",
 // "Setup · Look"...) are translated, here, and the page translator keeps out.
 titleEl.setAttribute('translate', 'no');
-const setTitle = (t) => {
-  const shown = t ? tr(t) : t;
+// `unread`: the focused thread's unread posts, put in front: "(3) /g/ · …".
+const setTitle = (t, unread = 0) => {
+  const shown = titleWithCount(t ? tr(t) : t, unread);
   titleEl.textContent = shown;
-  document.title = shown ? `${shown} · CloverEye` : 'CloverEye';
+  const full = shown ? `${shown} · CloverEye` : 'CloverEye';
+  if (document.title === full) return;
+  document.title = full;
+  bridge.window.setTitle?.(full);
 };
 
 function wireWindowControls() {
   const box = document.getElementById('windowControls');
   if (!bridge.window.available) return;
+  // macOS draws its own traffic lights over the title bar (the main window:
+  // tauri.macos.conf.json; extra windows: extra.rs open_window, both with
+  // titleBarStyle Overlay), so the drawn buttons stay hidden there and the
+  // bar leaves room on the left for the native ones.
+  if (/Mac/.test(navigator.platform || navigator.userAgent)) {
+    document.documentElement.dataset.platform = 'macos';
+    return;
+  }
   box.hidden = false;
   box.addEventListener('click', (e) => {
     const act = e.target.closest('button')?.dataset.action;
@@ -66,9 +80,11 @@ function showShell(settings) {
       runSetup(current, true);
     },
     onSave: async (next) => {
-      current = next;
+      // Kept under the size the app agrees to store (old read marks and
+      // hidden posts go first), so a long list never blocks every save.
+      current = fitSettings(next);
       try {
-        await bridge.setSettings(next);
+        await bridge.setSettings(current);
       } catch (e) {
         toast(`Settings were not saved: ${e?.message || e}`);
       }
@@ -147,5 +163,6 @@ function endSplash(started) {
 }
 
 installHoverPreview();
+installQuotePreview();
 const bootStarted = performance.now();
 boot().finally(() => endSplash(bootStarted));

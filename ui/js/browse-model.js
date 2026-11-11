@@ -3,10 +3,15 @@
 
 import { commentText, decodeEntities, parseComment } from './render.js';
 
-/** catalog.json's pages flattened into one list, in bump order. */
+/** catalog.json's pages flattened into one list, in bump order. Each
+ *  thread keeps the number of the page it was on as `page` (stats-model.js). */
 export function catalogThreads(data) {
   if (!Array.isArray(data)) return [];
-  return data.flatMap((page) => (Array.isArray(page?.threads) ? page.threads : []));
+  return data.flatMap((page) => {
+    if (!Array.isArray(page?.threads)) return [];
+    const n = Number.isSafeInteger(page.page) && page.page > 0 ? page.page : null;
+    return n ? page.threads.map((t) => (t && typeof t === 'object' ? { ...t, page: n } : t)) : page.threads;
+  });
 }
 
 /** A thread's title: its subject, else the start of its comment, else No. */
@@ -87,8 +92,27 @@ export function panesFromHash(hash) {
     (v) =>
       v &&
       (v.kind === 'boards' ||
+        v.kind === 'saved' ||
+        v.kind === 'stats' ||
         (v.kind === 'board' && /^[a-z0-9]{1,10}$/.test(v.board)) ||
-        (v.kind === 'thread' && /^[a-z0-9]{1,10}$/.test(v.board) && Number.isSafeInteger(v.no) && v.no > 0)),
+        ((v.kind === 'thread' || v.kind === 'offline') && /^[a-z0-9]{1,10}$/.test(v.board) && Number.isSafeInteger(v.no) && v.no > 0)),
   );
-  return ok.length ? ok.slice(0, 5).map((v) => (v.kind === 'thread' ? { kind: 'thread', board: v.board, no: v.no } : v.kind === 'board' ? { kind: 'board', board: v.board } : { kind: 'boards' })) : null;
+  return ok.length
+    ? ok.slice(0, 5).map((v) =>
+        v.kind === 'thread' || v.kind === 'offline' ? { kind: v.kind, board: v.board, no: v.no } : v.kind === 'board' ? { kind: 'board', board: v.board } : { kind: v.kind },
+      )
+    : null;
+}
+
+/** The browser's reload keys: F5 and Ctrl+R (⌘R on a Mac), each also with
+ *  Shift (the hard reload). In CloverEye they update the focused pane. */
+export function isRefreshKey(e) {
+  if (e.altKey) return false;
+  if (e.key === 'F5') return !e.metaKey;
+  return (e.key === 'r' || e.key === 'R') && (e.ctrlKey !== e.metaKey);
+}
+
+/** The refresh keys as shown in a button's tooltip on this platform. */
+export function refreshKeysLabel(platform = globalThis.navigator?.platform || '') {
+  return /Mac/.test(platform) ? '⌘R · F5' : 'Ctrl+R · F5';
 }

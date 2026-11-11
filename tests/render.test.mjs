@@ -25,6 +25,15 @@ test('cross-thread links keep the post number from the fragment', () => {
   assert.equal(line[0].target, 1000);
 });
 
+test('cross-thread links also name their board and thread; same-thread ones do not', () => {
+  const [line] = parseComment('<a href="/g/thread/999#p1000" class="quotelink">&gt;&gt;1000</a> <a href="#p5" class="quotelink">&gt;&gt;5</a>');
+  assert.deepEqual(line[0], { type: 'quotelink', text: '>>1000', target: 1000, board: 'g', thread: 999 });
+  assert.deepEqual(line[2], { type: 'quotelink', text: '>>5', target: 5 });
+  const [slug] = parseComment('<a href="/v/thread/12/some-title#p13" class="quotelink">&gt;&gt;13</a>');
+  assert.equal(slug[0].thread, 12);
+  assert.equal(slug[0].board, 'v');
+});
+
 test('spoilers, code, dead links and wbr', () => {
   const lines = parseComment('<s>secret</s> and <pre class="prettyprint">let x = 1;<br>x += 1;</pre><span class="deadlink">&gt;&gt;5</span>long<wbr>word');
   assert.deepEqual(lines[0], [

@@ -237,6 +237,72 @@ export function postFields({ isThread, thread, name = '', email = '', sub = '', 
   return f;
 }
 
+// ------------------------------------------------------------- quoting
+
+/** The lines a reply starts with when it quotes post `no`: ">>N", then the
+ *  text selected in that post as greentext ("> line"). Blank lines at the
+ *  ends are dropped, ones inside kept as ">"; ends with a line break. */
+export function quoteText(no, selection = '') {
+  const lines = String(selection || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/ /g, ' ')
+    .split('\n')
+    .map((l) => l.replace(/\s+$/, ''));
+  while (lines.length && !lines[0].trim()) lines.shift();
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  const out = [];
+  if (Number.isSafeInteger(no) && no > 0) out.push(`>>${no}`);
+  for (const l of lines) out.push(l.trim() ? `> ${l}` : '>');
+  return out.length ? `${out.join('\n')}\n` : '';
+}
+
+/** The app's own controls inside a post's comment (quoted copies opened
+ *  in it, Embed buttons after links, archive links after dead quotes):
+ *  never part of what the poster wrote, so never quoted. */
+export const UI_ONLY_IN_COMMENT = '.quote-inline, .seg-embed, .archive-link';
+
+/** The text of a cloned piece of a comment (`box`, a DOM element), one
+ *  line per .post__line, without the app's own controls. */
+export function selectionText(box) {
+  if (!box) return '';
+  box.querySelectorAll(UI_ONLY_IN_COMMENT).forEach((n) => n.remove());
+  const lines = [...box.querySelectorAll('.post__line')];
+  return lines.length ? lines.map((l) => l.textContent).join('\n') : box.textContent;
+}
+
+/** Puts `snippet` into `text` at `pos` (the caret; past the end or not a
+ *  number: the end), on lines of its own. Returns { text, caret }, the
+ *  caret just after what went in. */
+export function insertAtCaret(text, pos, snippet) {
+  const t = String(text || '');
+  const s = String(snippet || '');
+  const at = Number.isFinite(pos) ? Math.max(0, Math.min(t.length, Math.round(pos))) : t.length;
+  if (!s) return { text: t, caret: at };
+  const before = t.slice(0, at);
+  const after = t.slice(at);
+  const lead = before && !before.endsWith('\n') ? '\n' : '';
+  const tail = s.endsWith('\n') || !after || after.startsWith('\n') ? '' : '\n';
+  const add = `${lead}${s}${tail}`;
+  return { text: before + add + after, caret: before.length + add.length };
+}
+
+// ------------------------------------------------------- random file name
+
+const YEAR_MS = 365 * 24 * 3600 * 1000;
+
+/** A random-looking name for an upload, as 4chan X makes one: a time in
+ *  milliseconds (13 digits, up to a year back) plus the original extension
+ *  ("1731312345678.png"). `rand` returns [0, 1). */
+export function randomFileName(name, now = Date.now(), rand = Math.random) {
+  const m = /\.([A-Za-z0-9]{1,5})$/.exec(String(name || ''));
+  const back = Math.floor(Math.min(0.999999, Math.max(0, Number(rand()) || 0)) * YEAR_MS);
+  const ms = Math.max(1e12, Math.floor(Number(now) || 0) - back);
+  return `${String(ms).padStart(13, '0').slice(-13)}${m ? `.${m[1]}` : ''}`;
+}
+
+/** The name an attached file goes out under: the random one when asked. */
+export const uploadName = (file, random) => (random && file?.randomName ? file.randomName : file?.name || '');
+
 // ----------------------------------------------------------------- (You)
 
 export const MAX_YOUS = 1000;

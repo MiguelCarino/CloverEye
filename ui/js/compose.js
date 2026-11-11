@@ -69,6 +69,31 @@ function formatLeft(s) {
   return `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`;
 }
 
+/** The text selected inside one post card's own comment (not in quoted
+ *  copies opened inside it), one line per line of the post; '' when the
+ *  selection is elsewhere or empty. Read as the post's No. is pressed. */
+export function postSelection(post) {
+  const sel = globalThis.getSelection?.();
+  if (!post || !sel || sel.isCollapsed || !sel.rangeCount) return '';
+  const com = [...post.querySelectorAll('.post__com')].find((c) => c.closest('.post') === post);
+  if (!com) return '';
+  try {
+    const r = sel.getRangeAt(0);
+    const part = document.createRange();
+    part.selectNodeContents(com);
+    const a = part.comparePoint(r.startContainer, r.startOffset);
+    const b = part.comparePoint(r.endContainer, r.endOffset);
+    if (a > 0 || b < 0) return ''; // wholly before or after the comment
+    if (a === 0) part.setStart(r.startContainer, r.startOffset);
+    if (b === 0) part.setEnd(r.endContainer, r.endOffset);
+    const box = document.createElement('div');
+    box.append(part.cloneContents());
+    return C.selectionText(box);
+  } catch (_) {
+    return ''; // a selection in another document (a frame): nothing to quote
+  }
+}
+
 export function createComposer({ bridge, getSettings, saveSettings, getBoard, onPosted, onSitePage = null }) {
   const drafts = loadDrafts(); // "board/thread" → { com, sub, email, at }
   const cooldowns = new Map(); // board → time the next post may go
@@ -196,8 +221,11 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     st = null;
   }
 
-  async function open({ board, thread = 0, quote = 0 }) {
+  async function open({ board, thread = 0, quote = 0, selection = '' }) {
     const same = st && st.board === board && st.thread === thread;
+    // An open form takes the quote at its caret; a form opened now, at the end.
+    const ta0 = same ? el?.querySelector('[data-key="compose-com"]') : null;
+    const caret = ta0 && document.activeElement === ta0 ? ta0.selectionStart : same ? st.caret : null;
     if (!same) {
       stash();
       const d = drafts.get(key(board, thread)) || {};
@@ -209,8 +237,10 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
         sub: d.sub || '',
         email: d.email || '',
         name: s.post?.name || '',
-        file: null, // { name, size, type, bytes }
+        file: null, // { name, size, type, bytes, randomName }
         spoiler: false,
+        randomName: s.post?.randomName === true, // send the file under its random name
+        caret: null, // where the comment's caret was when it lost the focus
         strip: s.files?.stripMetadata !== false,
         captcha: { state: 'idle' },
         busy: false,
@@ -221,14 +251,18 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       };
     }
     st.min = false;
-    if (quote) {
-      const line = `>>${quote}\n`;
-      if (!st.com.includes(`>>${quote}`)) st.com = st.com && !st.com.endsWith('\n') ? `${st.com}\n${line}` : `${st.com}${line}`;
-    }
+    const picked = String(selection || '').trim() ? String(selection) : '';
+    // The selection comes in as greentext under the >>N; a bare >>N only
+    // when the comment does not quote that post yet.
+    if (picked || (quote && !st.com.includes(`>>${quote}`))) {
+      const r = C.insertAtCaret(st.com, Number.isFinite(caret) ? caret : st.com.length, C.quoteText(quote, picked));
+      st.com = r.text;
+      st.caret = r.caret;
+    } else if (Number.isFinite(caret)) st.caret = caret;
     draw();
-    el.querySelector('[data-key="compose-com"]')?.focus();
     const ta = el.querySelector('[data-key="compose-com"]');
-    if (ta) ta.selectionStart = ta.selectionEnd = ta.value.length;
+    ta?.focus();
+    if (ta) ta.selectionStart = ta.selectionEnd = Number.isFinite(st.caret) ? Math.min(st.caret, ta.value.length) : ta.value.length;
     if (!same) {
       st.info = await getBoard(board).catch(() => null);
       if (st && st.board === board) draw('keep');
@@ -266,7 +300,8 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   async function pickFile(file) {
     if (!st || !file) return;
     const bytes = new Uint8Array(await file.arrayBuffer());
-    st.file = { name: file.name || 'pasted.png', size: bytes.length, type: file.type || '', bytes };
+    const name = file.name || 'pasted.png';
+    st.file = { name, size: bytes.length, type: file.type || '', bytes, randomName: C.randomFileName(name) };
     draw('keep');
   }
 
@@ -301,7 +336,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
         bytes = r.bytes;
         cleaned = r.removed;
       }
-      file = { name: mine.file.name, type: mine.file.type, b64: C.toBase64(bytes) };
+      file = { name: C.uploadName(mine.file, mine.randomName), type: mine.file.type, b64: C.toBase64(bytes) };
     }
     const fields = C.postFields({
       isThread,
@@ -541,8 +576,10 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
             class: 'input composer__com',
             rows: '6',
             'data-key': 'compose-com',
+            onblur: (e) => (st.caret = e.target.selectionStart),
             oninput: (e) => {
               st.com = e.target.value;
+              st.caret = e.target.selectionStart;
               typed();
               const n = el.querySelector('[data-com-count]');
               if (n) {
@@ -586,10 +623,19 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
             ? h(
                 'span',
                 { class: 'composer__filename' },
-                `${st.file.name} · ${(st.file.size / 1024 / 1024).toFixed(2)} MB${fileLimit ? ` of ${(fileLimit / 1024 / 1024).toFixed(0)} MB` : ''}`,
+                `${C.uploadName(st.file, st.randomName)} · ${(st.file.size / 1024 / 1024).toFixed(2)} MB${fileLimit ? ` of ${(fileLimit / 1024 / 1024).toFixed(0)} MB` : ''}`,
+                st.randomName ? h('span', { class: 'composer__origname', translate: 'no', title: 'The file’s own name, not sent', text: st.file.name }) : null,
                 h('button', { type: 'button', class: 'link-btn', 'data-key': 'compose-file-remove', onclick: () => ((st.file = null), draw('keep')), text: 'Remove' }),
               )
             : h('span', { class: 'field__hint', text: 'or drop / paste one here' }),
+          st.file
+            ? h(
+                'label',
+                { class: 'checkline composer__random' },
+                h('input', { type: 'checkbox', checked: st.randomName, 'data-key': 'compose-random', onchange: (e) => ((st.randomName = e.target.checked), draw('keep')) }),
+                h('span', { text: 'Random name' }),
+              )
+            : null,
         ),
         h(
           'div',
@@ -619,7 +665,11 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     else document.body.append(next);
     el = next;
     const ta = el.querySelector('[data-key="compose-com"]');
-    if (ta) ta.value = st.com;
+    if (ta) {
+      ta.value = st.com;
+      // the caret stays where it was, for a quote added while the form is open
+      if (Number.isFinite(st.caret)) ta.setSelectionRange(Math.min(st.caret, ta.value.length), Math.min(st.caret, ta.value.length));
+    }
     if (focus === 'keep' && focusKey) {
       const f = el.querySelector(`[data-key="${CSS.escape(focusKey)}"]`);
       f?.focus({ preventScroll: true });

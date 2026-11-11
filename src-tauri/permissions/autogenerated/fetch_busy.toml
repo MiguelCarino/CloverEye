@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fetch-busy"
+description = "Enables the fetch_busy command without any pre-configured scope."
+commands.allow = ["fetch_busy"]
+
+[[permission]]
+identifier = "deny-fetch-busy"
+description = "Denies the fetch_busy command without any pre-configured scope."
+commands.deny = ["fetch_busy"]

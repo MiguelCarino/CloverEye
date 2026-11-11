@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { createBridge, safeStorage, mockOptionsFromSearch, CANNED_FFMPEG, postFlag } from '../ui/js/bridge.js';
+import { findLinks, embedFor } from '../ui/js/link-model.js';
+import { parseComment } from '../ui/js/render.js';
 
 const fixture = readFileSync(new URL('../ui/data/boards.sample.json', import.meta.url), 'utf8');
 
@@ -138,16 +140,32 @@ test('tauri: every call goes through invoke with the right command names', async
   await b.fetchBoards();
   await b.checkFfmpeg();
   await b.openExternal('https://www.4chan.org/rules');
+  await b.openLink('https://example.org/a');
   assert.deepEqual(calls, [
     ['get_settings', undefined],
     ['set_settings', { settings: { theme: 'dark' } }],
     ['fetch_boards', undefined],
     ['check_ffmpeg', undefined],
     ['plugin:opener|open_url', { url: 'https://www.4chan.org/rules' }],
+    ['open_link', { url: 'https://example.org/a' }],
   ]);
   assert.equal(b.siteRequests(), 1);
   assert.equal(await b.requestNotificationPermission(), 'later');
   assert.equal(b.window.available, false, 'no window API in this fake');
+});
+
+test('the mock opens post links in a new tab, http and https only', async () => {
+  const opened = [];
+  const was = globalThis.open;
+  globalThis.open = (...a) => opened.push(a);
+  try {
+    const b = createBridge({ storage: memoryStorage() });
+    await b.openLink('https://example.org/a');
+    await assert.rejects(() => b.openLink('javascript:alert(1)'));
+    assert.deepEqual(opened, [['https://example.org/a', '_blank', 'noopener,noreferrer']]);
+  } finally {
+    globalThis.open = was;
+  }
 });
 
 test('mock options come from the query string', () => {
@@ -171,4 +189,37 @@ test('postFlag: country and board flags, as the site shows them', () => {
   assert.equal(postFlag('g', {}), null);
   assert.equal(postFlag('int', { country: '../x' }), null, 'odd codes never reach a URL');
   assert.equal(postFlag('../x', { board_flag: 'TM' }), null);
+});
+
+test('mock: ?mock-links adds a reply with web addresses, embeddable and not', async () => {
+  const catalog = readFileSync(new URL('../ui/data/catalog.sample.json', import.meta.url), 'utf8');
+  const fetchImpl = async (url) => ({ ok: true, status: 200, json: async () => JSON.parse(url.includes('catalog') ? catalog : fixture) });
+  assert.deepEqual(mockOptionsFromSearch('?mock-links'), { links: true });
+  const b = createBridge({ fetchImpl, mock: { delayMs: 0, links: true } });
+  const no = JSON.parse(catalog)[0].threads[0].no;
+  const posts = (await b.fetchThread('g', no)).data.posts;
+  const text = parseComment(posts[posts.length - 1].com).map((l) => l.map((s) => s.text).join(''));
+  const hrefs = text.flatMap((t) => findLinks(t).filter((p) => p.href).map((p) => p.href));
+  assert.ok(hrefs.includes('https://en.wikipedia.org/wiki/Clover_(disambiguation)'), 'joined across <wbr>, the full stop left out');
+  assert.equal(hrefs.filter((h) => embedFor(h)).length, 6);
+  assert.ok(hrefs.includes('https://x.com/user/status/123'));
+  assert.ok(hrefs.every((h) => /^https:\/\//.test(h)));
+  assert.ok(!hrefs.some((h) => /javascript|data:|example\.org\/x|file\.txt/.test(h)));
+});
+
+test('mock: ?mock-cross adds a reply quoting another thread, a gone thread and a dead post', async () => {
+  const catalog = readFileSync(new URL('../ui/data/catalog.sample.json', import.meta.url), 'utf8');
+  const fetchImpl = async (url) => ({ ok: true, status: 200, json: async () => JSON.parse(url.includes('catalog') ? catalog : fixture) });
+  assert.deepEqual(mockOptionsFromSearch('?mock-cross'), { cross: true });
+  const plain = createBridge({ fetchImpl, mock: { delayMs: 0 } });
+  const cross = createBridge({ fetchImpl, mock: { delayMs: 0, cross: true } });
+  const no = JSON.parse(catalog)[0].threads[0].no;
+  const a = (await plain.fetchThread('g', no)).data.posts;
+  const b = (await cross.fetchThread('g', no)).data.posts;
+  assert.equal(b.length, a.length + 1);
+  const com = b[b.length - 1].com;
+  assert.match(com, /class="quotelink">&gt;&gt;&gt;\/g\/\d+<\/a>/);
+  assert.match(com, /href="\/g\/thread\/1#p2"/);
+  assert.match(com, /<span class="deadlink">&gt;&gt;\d+<\/span>/);
+  await assert.rejects(cross.fetchThread('g', 1), /not-found/);
 });

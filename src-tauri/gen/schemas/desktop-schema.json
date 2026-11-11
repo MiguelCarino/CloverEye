@@ -351,10 +351,22 @@
           "markdownDescription": "Enables the check_ffmpeg command without any pre-configured scope."
         },
         {
+          "description": "Enables the download_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-download-file",
+          "markdownDescription": "Enables the download_file command without any pre-configured scope."
+        },
+        {
           "description": "Enables the fetch_boards command without any pre-configured scope.",
           "type": "string",
           "const": "allow-fetch-boards",
           "markdownDescription": "Enables the fetch_boards command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the fetch_busy command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-fetch-busy",
+          "markdownDescription": "Enables the fetch_busy command without any pre-configured scope."
         },
         {
           "description": "Enables the fetch_catalog command without any pre-configured scope.",
@@ -373,6 +385,42 @@
           "type": "string",
           "const": "allow-get-settings",
           "markdownDescription": "Enables the get_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the offline_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-offline-delete",
+          "markdownDescription": "Enables the offline_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the offline_fetch_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-offline-fetch-file",
+          "markdownDescription": "Enables the offline_fetch_file command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the offline_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-offline-list",
+          "markdownDescription": "Enables the offline_list command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the offline_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-offline-read",
+          "markdownDescription": "Enables the offline_read command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the offline_write_thread command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-offline-write-thread",
+          "markdownDescription": "Enables the offline_write_thread command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_link command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-link",
+          "markdownDescription": "Enables the open_link command without any pre-configured scope."
         },
         {
           "description": "Enables the open_post_window command without any pre-configured scope.",
@@ -417,16 +465,40 @@
           "markdownDescription": "Enables the set_settings command without any pre-configured scope."
         },
         {
+          "description": "Enables the stats_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stats-read",
+          "markdownDescription": "Enables the stats_read command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stats_write command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stats-write",
+          "markdownDescription": "Enables the stats_write command without any pre-configured scope."
+        },
+        {
           "description": "Denies the check_ffmpeg command without any pre-configured scope.",
           "type": "string",
           "const": "deny-check-ffmpeg",
           "markdownDescription": "Denies the check_ffmpeg command without any pre-configured scope."
         },
         {
+          "description": "Denies the download_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-download-file",
+          "markdownDescription": "Denies the download_file command without any pre-configured scope."
+        },
+        {
           "description": "Denies the fetch_boards command without any pre-configured scope.",
           "type": "string",
           "const": "deny-fetch-boards",
           "markdownDescription": "Denies the fetch_boards command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the fetch_busy command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-fetch-busy",
+          "markdownDescription": "Denies the fetch_busy command without any pre-configured scope."
         },
         {
           "description": "Denies the fetch_catalog command without any pre-configured scope.",
@@ -445,6 +517,42 @@
           "type": "string",
           "const": "deny-get-settings",
           "markdownDescription": "Denies the get_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the offline_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-offline-delete",
+          "markdownDescription": "Denies the offline_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the offline_fetch_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-offline-fetch-file",
+          "markdownDescription": "Denies the offline_fetch_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the offline_list command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-offline-list",
+          "markdownDescription": "Denies the offline_list command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the offline_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-offline-read",
+          "markdownDescription": "Denies the offline_read command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the offline_write_thread command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-offline-write-thread",
+          "markdownDescription": "Denies the offline_write_thread command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_link command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-link",
+          "markdownDescription": "Denies the open_link command without any pre-configured scope."
         },
         {
           "description": "Denies the open_post_window command without any pre-configured scope.",
@@ -487,6 +595,18 @@
           "type": "string",
           "const": "deny-set-settings",
           "markdownDescription": "Denies the set_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stats_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stats-read",
+          "markdownDescription": "Denies the stats_read command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stats_write command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stats-write",
+          "markdownDescription": "Denies the stats_write command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

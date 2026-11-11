@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stats-write"
+description = "Enables the stats_write command without any pre-configured scope."
+commands.allow = ["stats_write"]
+
+[[permission]]
+identifier = "deny-stats-write"
+description = "Denies the stats_write command without any pre-configured scope."
+commands.deny = ["stats_write"]

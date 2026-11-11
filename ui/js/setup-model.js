@@ -1,7 +1,17 @@
 // First-time setup: steps, defaults, validation, migration and board
 // visibility (SCOPE §3.1b). No DOM here, so it runs under `node --test`.
 
-export const SETUP_VERSION = 1;
+import { normalizeFilters, normalizeHiddenPosts } from './filter-model.js';
+import { QUOTE_LINK_MODES } from './quote-model.js';
+import { normalizeLastRead } from './unread-model.js';
+import { DEFAULT_SAUCE, normalizeSauce } from './sauce-model.js';
+import { normalizeArchivePrefs, archivedBoards } from './archive-model.js';
+import { EMBED_MODES } from './link-model.js';
+import { displayDefaults, normalizeDisplay } from './display-model.js';
+import { normalizeStatsSettings } from './stats-model.js';
+
+/** 2: Your stats (opt-in, local only). */
+export const SETUP_VERSION = 2;
 
 /** Every step, with the setup version that introduced it. A later release
  *  that adds a step gives it `since: 2`; people who finished version 1 then
@@ -13,6 +23,7 @@ export const STEPS = Object.freeze([
   { id: 'video', label: 'Video', since: 1 },
   { id: 'watching', label: 'Watching', since: 1 },
   { id: 'files', label: 'Files and privacy', short: 'Files', since: 1 },
+  { id: 'stats', label: 'Your stats', short: 'Stats', since: 2 },
   { id: 'done', label: 'Done', since: 1 },
 ]);
 
@@ -105,17 +116,56 @@ export function defaults() {
      *  hidden while the opt-in is off even before the list is loaded. */
     nsfwBoards: [],
     watch: { notifyReplies: false, keepInTray: false, intervalSec: MIN_WATCH_INTERVAL },
-    files: { downloadDir: '', stripMetadata: true, cache: 'memory', cacheCapMB: 256 },
+    /** savedDir: where Save offline keeps threads ('' = the download
+     *  folder's CloverEye/Saved threads; offline-model.js). */
+    files: { downloadDir: '', savedDir: '', stripMetadata: true, cache: 'memory', cacheCapMB: 256 },
     /** Layout choices made in the shell. */
     ui: { railHidden: false, splitWidth: 520, hoverPreview: true, rows: 1 },
     /** Posts made from CloverEye: [{ board, no }]. */
     yous: [],
-    /** The reply form's remembered name, and the deletion password the
-     *  site keeps with each post (made once, kept on this computer). */
-    post: { name: '', pwd: '' },
+    /** The reply form's remembered name, the deletion password the site
+     *  keeps with each post (made once, kept on this computer), and whether
+     *  attached files go out under a random name (compose-model.js). */
+    post: { name: '', pwd: '', randomName: false },
     /** Watched threads: { board, no, title, seen (last post no read),
      *  dead (404), archived }. */
     watched: [],
+    /** Filters (ui/js/filter-model.js): { id, field, pattern, regex,
+     *  matchCase, boards ([] = every board), action, enabled }. */
+    filters: [],
+    /** Posts and threads hidden by hand: [{ board, no }]. */
+    hiddenPosts: [],
+    /** Hiding (ui/js/hide-model.js): also hide replies whose quotes are all
+     *  hidden posts. */
+    hide: { replies: true },
+    /** Quote links in a thread: open the post below the link ('inline') or
+     *  scroll to it ('jump'); preview the post on hover or keyboard focus. */
+    quotes: { links: 'inline', preview: true },
+    /** Poster IDs: each in a colour of its own (ui/js/ids-model.js). */
+    ids: { colour: true },
+    /** Reverse image search: the sites each file's Search menu offers
+     *  (ui/js/sauce-model.js); none means no menu. */
+    sauce: { engines: [...DEFAULT_SAUCE] },
+    /** Archive links (ui/js/archive-model.js): on or off, and each board's
+     *  archive ('off', or an archive id; no entry = the first that keeps it). */
+    archives: { enabled: true, boards: {} },
+    /** Links in posts (ui/js/link-model.js): YouTube, Vimeo, Streamable and
+     *  SoundCloud links get an Embed button ('click') or stay links ('off').
+     *  Nothing loads from those sites before the button is clicked. */
+    embeds: { mode: 'click' },
+    /** Display switches (ui/js/display-model.js, Settings → Posts): post
+     *  times, spoilers, work mode, images expanded in threads, gallery
+     *  preloading, anonymised names. */
+    display: displayDefaults(),
+    /** Where each thread was last read (ui/js/unread-model.js):
+     *  "board/no" → the last post No. on screen, oldest first. */
+    lastRead: {},
+    /** Settings → Stats (stats-model.js): background sampling of board
+     *  activity (`track`, off) for the favourites, every worksafe board or
+     *  every visible board, each at most every `intervalMin` minutes; and
+     *  counting your own activity on this computer (`mine`, off). The
+     *  samples and counts live in files of their own, never here. */
+    stats: normalizeStatsSettings(null),
   };
 }
 
@@ -152,6 +202,15 @@ export function clampInterval(v) {
   const n = Math.round(Number(v));
   if (!Number.isFinite(n)) return MIN_WATCH_INTERVAL;
   return Math.min(MAX_WATCH_INTERVAL, Math.max(MIN_WATCH_INTERVAL, n));
+}
+
+/** A folder setting: a full path (/… , or C:\… or \\server\… on
+ *  Windows), at most 1024 characters, or '' (the default folder). */
+export function normalizeFolder(raw) {
+  if (typeof raw !== 'string') return '';
+  const dir = raw.trim();
+  if (!dir || dir.length > 1024 || /[\u0000-\u001f]/.test(dir)) return '';
+  return dir.startsWith('/') || /^[A-Za-z]:[\\/]/.test(dir) || dir.startsWith('\\\\') ? dir : '';
 }
 
 /** Reads anything (stored JSON, an older schema, garbage) into a complete,
@@ -193,6 +252,7 @@ export function normalizeSettings(raw) {
     const dir = typeof raw.files.downloadDir === 'string' ? raw.files.downloadDir : '';
     out.files = {
       downloadDir: dir.length <= 1024 && !dir.includes('\0') ? dir.trim() : '',
+      savedDir: normalizeFolder(raw.files.savedDir),
       stripMetadata: bool(raw.files.stripMetadata, d.files.stripMetadata),
       cache: pick(raw.files.cache, CACHE_MODES, d.files.cache),
       cacheCapMB: pick(raw.files.cacheCapMB, CACHE_CAPS_MB, d.files.cacheCapMB),
@@ -207,6 +267,22 @@ export function normalizeSettings(raw) {
       rows: [1, 2, 3].includes(raw.ui.rows) ? raw.ui.rows : d.ui.rows,
     };
   }
+  out.filters = normalizeFilters(raw.filters);
+  out.hiddenPosts = normalizeHiddenPosts(raw.hiddenPosts);
+  if (isObj(raw.hide)) out.hide = { replies: bool(raw.hide.replies, d.hide.replies) };
+  if (isObj(raw.quotes)) {
+    out.quotes = {
+      links: pick(raw.quotes.links, QUOTE_LINK_MODES, d.quotes.links),
+      preview: bool(raw.quotes.preview, d.quotes.preview),
+    };
+  }
+  if (isObj(raw.ids)) out.ids = { colour: bool(raw.ids.colour, d.ids.colour) };
+  if (isObj(raw.sauce)) out.sauce = { engines: normalizeSauce(raw.sauce.engines) };
+  if (isObj(raw.archives)) out.archives = normalizeArchivePrefs(raw.archives);
+  if (isObj(raw.embeds)) out.embeds = { mode: pick(raw.embeds.mode, EMBED_MODES, d.embeds.mode) };
+  out.display = normalizeDisplay(raw.display);
+  out.stats = normalizeStatsSettings(raw.stats);
+  out.lastRead = normalizeLastRead(raw.lastRead);
   if (Array.isArray(raw.yous)) {
     out.yous = raw.yous
       .filter((y) => isObj(y) && isBoardCode(y.board) && Number.isSafeInteger(y.no) && y.no > 0)
@@ -217,6 +293,7 @@ export function normalizeSettings(raw) {
     out.post = {
       name: typeof raw.post.name === 'string' ? raw.post.name.slice(0, 100) : '',
       pwd: typeof raw.post.pwd === 'string' && /^[A-Za-z0-9]{8,32}$/.test(raw.post.pwd) ? raw.post.pwd : '',
+      randomName: bool(raw.post.randomName, d.post.randomName),
     };
   }
   if (Array.isArray(raw.watched)) {
@@ -236,6 +313,38 @@ export function normalizeSettings(raw) {
   if (!nsfwVisible(out) && out.nsfwBoards.length) {
     const nsfw = new Set(out.nsfwBoards);
     out.watched = out.watched.filter((w) => !nsfw.has(w.board));
+    for (const k of Object.keys(out.lastRead)) if (nsfw.has(k.split('/')[0])) delete out.lastRead[k];
+    for (const b of Object.keys(out.archives?.boards || {})) if (nsfw.has(b)) delete out.archives.boards[b];
+  }
+  return fitSettings(out);
+}
+
+/** The app refuses to store a settings file over 256 KiB (src-tauri
+ *  main.rs MAX_SETTINGS_BYTES); this leaves room to spare. */
+export const SETTINGS_BUDGET = 224 * 1024;
+
+const encoder = new TextEncoder();
+/** The settings' size as the app saves them (pretty-printed JSON). */
+export const settingsBytes = (s) => encoder.encode(JSON.stringify(s, null, 2)).length;
+
+/** Settings that fit in `budget` bytes: past it, the oldest read marks go
+ *  first, then the oldest posts hidden by hand, then the oldest (You)s.
+ *  Filters and watched threads are never dropped here (their own caps keep
+ *  them well inside). Returns `s` itself when it already fits. */
+export function fitSettings(s, budget = SETTINGS_BUDGET) {
+  if (!isObj(s) || settingsBytes(s) <= budget) return s;
+  const out = { ...s };
+  const trims = [
+    ['lastRead', (v, n) => Object.fromEntries(Object.entries(v).slice(n)), (v) => Object.keys(v).length],
+    ['hiddenPosts', (v, n) => v.slice(n), (v) => v.length],
+    ['yous', (v, n) => v.slice(n), (v) => v.length],
+  ];
+  for (const [key, drop, size] of trims) {
+    if (out[key] === null || typeof out[key] !== 'object') continue;
+    while (size(out[key]) > 0 && settingsBytes(out) > budget) {
+      out[key] = drop(out[key], Math.max(1, Math.ceil(size(out[key]) / 8)));
+    }
+    if (settingsBytes(out) <= budget) break;
   }
   return out;
 }
@@ -320,6 +429,26 @@ export function visibleBoards(boards, s) {
   return nsfwVisible(s) ? all.slice() : all.filter(isWorksafe);
 }
 
+/** The NSFW board codes known: remembered ones, and those of `boards`. */
+function nsfwCodes(s, boards = null) {
+  return new Set([
+    ...(Array.isArray(s?.nsfwBoards) ? s.nsfwBoards : []),
+    ...(Array.isArray(boards) ? boards.filter((b) => !isWorksafe(b)).map((b) => b.board) : []),
+  ]);
+}
+
+/** Settings → Archives' boards: every archived board, less the NSFW ones
+ *  while NSFW boards are off. */
+export function visibleArchivedBoards(s, boards = null) {
+  const all = archivedBoards();
+  if (nsfwVisible(s)) return all;
+  const nsfw = nsfwCodes(s, boards);
+  return all.filter((b) => !nsfw.has(b));
+}
+
+/** Whether board `code` is hidden: an NSFW board while NSFW boards are off. */
+export const boardHidden = (s, code, boards = null) => !nsfwVisible(s) && nsfwCodes(s, boards).has(code);
+
 export const hiddenBoardCount = (boards, s) => (Array.isArray(boards) ? boards.length : 0) - visibleBoards(boards, s).length;
 
 /** Records which boards of a loaded list are NSFW (see `nsfwBoards`). */
@@ -356,14 +485,14 @@ export function setNsfw(s, enabled, { confirmedAdult = false, now = new Date(), 
     if (!confirmedAdult) return s;
     return { ...s, nsfw: { enabled: true, confirmedAdultAt: now.toISOString() } };
   }
-  const off = pruneFavourites({ ...s, nsfw: { enabled: false, confirmedAdultAt: null } }, boards);
-  const nsfw = new Set([
-    ...(Array.isArray(off.nsfwBoards) ? off.nsfwBoards : []),
-    ...(Array.isArray(boards) ? boards.filter((b) => !isWorksafe(b)).map((b) => b.board) : []),
-  ]);
-  return Array.isArray(off.watched) && off.watched.some((w) => nsfw.has(w.board))
-    ? { ...off, watched: off.watched.filter((w) => !nsfw.has(w.board)) }
-    : off;
+  let off = pruneFavourites({ ...s, nsfw: { enabled: false, confirmedAdultAt: null } }, boards);
+  const nsfw = nsfwCodes(off, boards);
+  if (Array.isArray(off.watched) && off.watched.some((w) => nsfw.has(w.board))) off = { ...off, watched: off.watched.filter((w) => !nsfw.has(w.board)) };
+  const picks = off.archives?.boards;
+  if (picks && Object.keys(picks).some((b) => nsfw.has(b))) {
+    off = { ...off, archives: { ...off.archives, boards: Object.fromEntries(Object.entries(picks).filter(([b]) => !nsfw.has(b))) } };
+  }
+  return off;
 }
 
 export function toggleFavourite(s, code) {
@@ -568,6 +697,11 @@ export function summary(s, { clip = null } = {}) {
       s.files.stripMetadata ? 'location and camera data stripped' : 'images posted as they are',
       s.files.cache === 'memory' ? 'media cache in memory only' : `temp cache up to ${s.files.cacheCapMB} MB`,
     ].join(' · '),
+  });
+  rows.push({
+    step: 'stats',
+    label: 'Your stats',
+    value: s.stats?.mine ? 'Counted on this computer only' : 'Off',
   });
   return rows;
 }

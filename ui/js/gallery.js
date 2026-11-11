@@ -3,6 +3,7 @@
 // D saves; Esc or G closes. Lives outside the shell's redraws.
 
 import { step, saveName } from './gallery-model.js';
+import { preloadIndices } from './display-model.js';
 import { h, icon, toast } from './dom.js';
 import { formatBytes } from './render.js';
 
@@ -14,15 +15,17 @@ const WHEEL_GAP_MS = 180;
  * @param {number} [o.start]       index to open on
  * @param {string} o.title         thread title, for the bar
  * @param {(item) => Promise<string>} o.onSave   saves one file; returns where
+ * @param {boolean} [o.preload]   load the next and previous images ahead (Settings → Posts)
  * @param {(no: number) => void} [o.onClose]     the post shown last
  */
-export function openGallery({ items, start = 0, title = '', onSave, onClose = () => {} }) {
+export function openGallery({ items, start = 0, title = '', onSave, preload = true, onClose = () => {} }) {
   if (!items.length) {
     toast('This thread has no files.');
     return null;
   }
   let index = Math.max(0, Math.min(items.length - 1, start));
   let lastWheel = 0;
+  let preloaded = []; // kept so the loads are not dropped early
   const opener = document.activeElement;
   const strip = h('div', { class: 'gallery__strip', role: 'listbox', 'aria-label': 'Files in this thread' });
   const stage = h('div', { class: 'gallery__stage' });
@@ -77,18 +80,22 @@ export function openGallery({ items, start = 0, title = '', onSave, onClose = ()
         : h('img', { class: 'gallery__media', src: it.full, alt: it.name, decoding: 'async' }),
     );
     counter.textContent = `${index + 1} / ${items.length}`;
+    // Stats → You counts files viewed (stats.js; nothing while that is off)
+    document.dispatchEvent(new CustomEvent('clovereye:file-view', { detail: { how: 'gallery' } }));
     name.textContent = `${it.name}${it.w && it.h ? ` · ${it.w}×${it.h}` : ''}${it.size ? ` · ${formatBytes(it.size)}` : ''}`;
     for (const t of strip.children) {
       const on = Number(t.dataset.index) === index;
       t.setAttribute('aria-selected', String(on));
       if (on) t.scrollIntoView({ block: 'nearest', inline: 'center' });
     }
-    // the next file starts loading now, so moving on is instant
-    const nx = items[step(index, 1, items.length)];
-    if (nx && !nx.video) {
+    // the next and previous images start loading now, so moving either way
+    // is instant (from the image host, as the gallery itself loads them)
+    preloaded = preloadIndices(items, index, preload).map((i) => {
       const pre = new Image();
-      pre.src = nx.full;
-    }
+      pre.decoding = 'async';
+      pre.src = items[i].full;
+      return pre;
+    });
   }
 
   function go(delta) {
@@ -189,6 +196,8 @@ export function openGallery({ items, start = 0, title = '', onSave, onClose = ()
 
   function close() {
     clearTimeout(saveReset);
+    for (const img of preloaded) img.removeAttribute('src');
+    preloaded = [];
     document.removeEventListener('keydown', onKey, true);
     for (const v of root.querySelectorAll('video')) v.pause();
     root.remove();

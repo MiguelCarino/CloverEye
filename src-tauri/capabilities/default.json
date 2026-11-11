@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Every CloverEye window (main and the extra ones, w-*): the app commands the UI calls, settings events, window controls for the custom title bar, and opening the site's rules page in the system browser. The hidden post helper is not in this list; it has its own capability with one command.",
+  "description": "Every CloverEye window (main and the extra ones, w-*): the app commands the UI calls, settings events, window controls for the custom title bar (and its title, for the task bar), and opening the site's rules page, the reverse image search sites and the thread archives in the system browser; links in posts open there too, through open_link (http and https only). The hidden post helper is not in this list; it has its own capability with one command.",
   "windows": [
     "main",
     "w-*"
@@ -18,16 +18,69 @@
     "allow-post-agent-show",
     "allow-open-window",
     "allow-save-media",
+    "allow-offline-list",
+    "allow-offline-read",
+    "allow-offline-write-thread",
+    "allow-offline-fetch-file",
+    "allow-offline-delete",
+    "allow-download-file",
+    "allow-open-link",
+    "allow-fetch-busy",
+    "allow-stats-read",
+    "allow-stats-write",
     "core:event:default",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
+    "core:window:allow-set-title",
     "core:window:allow-start-dragging",
     {
       "identifier": "opener:allow-open-url",
       "allow": [
         {
           "url": "https://www.4chan.org/rules"
+        },
+        {
+          "url": "https://saucenao.com/search.php*"
+        },
+        {
+          "url": "https://lens.google.com/uploadbyurl*"
+        },
+        {
+          "url": "https://yandex.com/images/search*"
+        },
+        {
+          "url": "https://iqdb.org/*"
+        },
+        {
+          "url": "https://tineye.com/search*"
+        },
+        {
+          "url": "https://trace.moe/*"
+        },
+        {
+          "url": "https://desuarchive.org/*"
+        },
+        {
+          "url": "https://archive.4plebs.org/*"
+        },
+        {
+          "url": "https://warosu.org/*"
+        },
+        {
+          "url": "https://arch.b4k.dev/*"
+        },
+        {
+          "url": "https://thebarchive.com/*"
+        },
+        {
+          "url": "https://archiveofsins.com/*"
+        },
+        {
+          "url": "https://archive.palanq.win/*"
+        },
+        {
+          "url": "https://archived.moe/*"
         }
       ]
     }

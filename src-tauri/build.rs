@@ -16,6 +16,16 @@ fn main() {
             "post_agent_show",
             "open_window",
             "save_media",
+            "offline_list",
+            "offline_read",
+            "offline_write_thread",
+            "offline_fetch_file",
+            "offline_delete",
+            "download_file",
+            "open_link",
+            "fetch_busy",
+            "stats_read",
+            "stats_write",
         ])),
     )
     .expect("failed to run tauri-build");

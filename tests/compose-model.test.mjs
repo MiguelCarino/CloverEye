@@ -192,3 +192,89 @@ test('paneRows: up to three rows, the first rows take the extra pane', () => {
   assert.deepEqual(paneRows(4, 3), [2, 1, 1]);
   assert.deepEqual(paneRows(3, 9), [1, 1, 1]);
 });
+
+test('quoteText: >>N, then the selection as greentext lines', () => {
+  assert.equal(C.quoteText(123), '>>123\n');
+  assert.equal(C.quoteText(123, 'hello'), '>>123\n> hello\n');
+  assert.equal(C.quoteText(123, '\n  \nfirst\r\n\nsecond  \n\n'), '>>123\n> first\n>\n> second\n');
+  assert.equal(C.quoteText(5, '>implying\n>>99 lol'), '>>5\n> >implying\n> >>99 lol\n', 'quoted quotes stay text, never a new link');
+  assert.equal(C.quoteText(5, 'a b'), '>>5\n> a b\n');
+  assert.equal(C.quoteText(0, 'only text'), '> only text\n');
+  assert.equal(C.quoteText(0, '   '), '');
+});
+
+test('insertAtCaret: the quote goes in at the caret, on lines of its own', () => {
+  assert.deepEqual(C.insertAtCaret('', 0, '>>1\n'), { text: '>>1\n', caret: 4 });
+  assert.deepEqual(C.insertAtCaret('hello', 5, '>>1\n'), { text: 'hello\n>>1\n', caret: 10 });
+  assert.deepEqual(C.insertAtCaret('hello\nworld', 6, '>>1\n'), { text: 'hello\n>>1\nworld', caret: 10 });
+  assert.deepEqual(C.insertAtCaret('hello world', 5, '>>1\n'), { text: 'hello\n>>1\n world', caret: 10 });
+  assert.deepEqual(C.insertAtCaret('abc', undefined, '>>2\n'), { text: 'abc\n>>2\n', caret: 8 }, 'no caret: the end');
+  assert.deepEqual(C.insertAtCaret('abc', 99, '>>2\n'), { text: 'abc\n>>2\n', caret: 8 });
+  assert.deepEqual(C.insertAtCaret('abc', -4, '>>2'), { text: '>>2\nabc', caret: 4 });
+  assert.deepEqual(C.insertAtCaret('abc', 1, ''), { text: 'abc', caret: 1 });
+});
+
+test('randomFileName: 13 digits like a time in ms, the extension kept', () => {
+  const now = 1762800000000;
+  assert.equal(C.randomFileName('holiday photo.JPG', now, () => 0), '1762800000000.JPG');
+  const n = C.randomFileName('clip.webm', now, () => 0.5);
+  assert.match(n, /^\d{13}\.webm$/);
+  assert.ok(Number(n.slice(0, 13)) < now && Number(n.slice(0, 13)) > now - 366 * 24 * 3600 * 1000, 'within a year back');
+  assert.match(C.randomFileName('no-extension', now, () => 0.2), /^\d{13}$/);
+  assert.match(C.randomFileName('', now, () => 0.9), /^\d{13}$/);
+  assert.match(C.randomFileName('a.tar.gz', now, () => 1), /^\d{13}\.gz$/, 'a bad random value stays in range');
+  assert.match(C.randomFileName('x.png', 5, () => 0), /^\d{13}\.png$/, 'always 13 digits');
+  assert.notEqual(C.randomFileName('a.png', now, () => 0.1), C.randomFileName('a.png', now, () => 0.2));
+});
+
+test('uploadName: the random name only when switched on', () => {
+  const f = { name: 'me.png', randomName: '1762800000000.png' };
+  assert.equal(C.uploadName(f, true), '1762800000000.png');
+  assert.equal(C.uploadName(f, false), 'me.png');
+  assert.equal(C.uploadName({ name: 'me.png' }, true), 'me.png');
+  assert.equal(C.uploadName(null, true), '');
+});
+
+// A tiny stand-in for the DOM: elements with classes, text and children.
+function el(cls, ...kids) {
+  const node = {
+    cls: new Set(cls ? cls.split(' ') : []),
+    kids: [],
+    parent: null,
+    get textContent() {
+      return this.kids.map((k) => (typeof k === 'string' ? k : k.textContent)).join('');
+    },
+    remove() {
+      if (this.parent) this.parent.kids = this.parent.kids.filter((k) => k !== this);
+    },
+    querySelectorAll(sel) {
+      const want = sel.split(',').map((s) => s.trim().replace(/^\./, ''));
+      const out = [];
+      const walk = (n) => {
+        for (const k of n.kids) {
+          if (typeof k === 'string') continue;
+          if (want.some((c) => k.cls.has(c))) out.push(k);
+          walk(k);
+        }
+      };
+      walk(this);
+      return out;
+    },
+  };
+  for (const k of kids) {
+    if (typeof k !== 'string') k.parent = node;
+    node.kids.push(k);
+  }
+  return node;
+}
+
+test('selectionText: lines of the post, without Embed buttons, archive links or inline quotes', () => {
+  const box = el(
+    '',
+    el('post__line', 'watch https://youtu.be/abc', el('seg-embed', 'Embed'), ' please'),
+    el('post__line', '>>5', el('archive-link', 'Archive (x)'), el('quote-inline', 'quoted copy')),
+  );
+  assert.equal(C.selectionText(box), 'watch https://youtu.be/abc please\n>>5');
+  assert.equal(C.selectionText(el('', 'just text', el('seg-embed', 'Insertar'))), 'just text');
+  assert.equal(C.selectionText(null), '');
+});

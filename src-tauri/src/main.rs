@@ -7,6 +7,7 @@
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use clovereye_fetch::models::{BoardsResponse, Catalog, Thread};
@@ -16,6 +17,9 @@ use serde_json::Value;
 use tauri::{Emitter, Manager};
 
 mod extra;
+mod links;
+mod offline;
+mod stats;
 
 /// Settings are plain JSON for C0; SQLite replaces this in C1 (SCOPE §4.1).
 const SETTINGS_FILE: &str = "settings.json";
@@ -23,6 +27,32 @@ const MAX_SETTINGS_BYTES: usize = 256 * 1024;
 
 struct AppState {
     client: Arc<LiveClient>,
+    /// API requests waiting in the queue or under way, from every window.
+    busy: Arc<AtomicUsize>,
+}
+
+/// Counts one API request for as long as it lives (fetch_busy).
+struct Busy(Arc<AtomicUsize>);
+
+impl Busy {
+    fn new(n: &Arc<AtomicUsize>) -> Self {
+        n.fetch_add(1, Ordering::SeqCst);
+        Busy(n.clone())
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// How many API requests are waiting or under way. The Stats pane's
+/// background sampling asks first and waits while the person's own
+/// requests are in the queue.
+#[tauri::command]
+fn fetch_busy(state: tauri::State<'_, AppState>) -> usize {
+    state.busy.load(Ordering::SeqCst)
 }
 
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -85,7 +115,9 @@ async fn check_ffmpeg() -> Result<FfmpegCheck, String> {
 #[tauri::command]
 async fn fetch_boards(state: tauri::State<'_, AppState>) -> Result<Value, String> {
     let client = state.client.clone();
+    let busy = Busy::new(&state.busy);
     tauri::async_runtime::spawn_blocking(move || {
+        let _busy = busy;
         let fetched = client.get(&Endpoint::Boards).map_err(|e| e.to_string())?;
         let _typed: BoardsResponse = fetched.json().map_err(|e| e.to_string())?;
         serde_json::from_slice::<Value>(&fetched.body).map_err(|e| e.to_string())
@@ -125,7 +157,9 @@ fn load_error(e: FetchError) -> String {
 #[tauri::command]
 async fn fetch_catalog(state: tauri::State<'_, AppState>, board: String) -> Result<Loaded, String> {
     let client = state.client.clone();
+    let busy = Busy::new(&state.busy);
     tauri::async_runtime::spawn_blocking(move || {
+        let _busy = busy;
         let fetched = client.get(&Endpoint::Catalog(board)).map_err(load_error)?;
         let _typed: Catalog = fetched.json().map_err(load_error)?;
         let data = serde_json::from_slice::<Value>(&fetched.body).map_err(|e| e.to_string())?;
@@ -141,7 +175,9 @@ async fn fetch_catalog(state: tauri::State<'_, AppState>, board: String) -> Resu
 #[tauri::command]
 async fn fetch_thread(state: tauri::State<'_, AppState>, board: String, no: u64) -> Result<Loaded, String> {
     let client = state.client.clone();
+    let busy = Busy::new(&state.busy);
     tauri::async_runtime::spawn_blocking(move || {
+        let _busy = busy;
         let fetched = client.get(&Endpoint::Thread(board, no)).map_err(load_error)?;
         let _typed: Thread = fetched.json().map_err(load_error)?;
         let data = serde_json::from_slice::<Value>(&fetched.body).map_err(|e| e.to_string())?;
@@ -282,8 +318,13 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             client: Arc::new(live_client()),
+            busy: Arc::new(AtomicUsize::new(0)),
         })
         .manage(extra::AgentState::default())
+        .manage(offline::OfflineState::default())
+        .manage(stats::StatsState::default())
+        // saved threads' files, for CloverEye's own windows only (offline.rs)
+        .register_asynchronous_uri_scheme_protocol(offline::SCHEME, offline::protocol)
         // CLOVEREYE_TRY_CAPTCHA=<board>: asks for one captcha at start and
         // prints what came back. For finding out why a captcha does not
         // arrive, from a terminal; it never posts.
@@ -332,12 +373,22 @@ fn main() {
             fetch_boards,
             fetch_catalog,
             fetch_thread,
+            fetch_busy,
             open_post_window,
             extra::post_agent,
             extra::post_agent_reply,
             extra::post_agent_show,
             extra::open_window,
-            extra::save_media
+            extra::save_media,
+            offline::offline_list,
+            offline::offline_read,
+            offline::offline_write_thread,
+            offline::offline_fetch_file,
+            offline::offline_delete,
+            offline::download_file,
+            links::open_link,
+            stats::stats_read,
+            stats::stats_write
         ])
         .run(tauri::generate_context!())
         .expect("error while running CloverEye");

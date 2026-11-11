@@ -6,6 +6,12 @@ import { h, clear, icon, toast, copyText } from './dom.js';
 import { applyLook } from './look.js';
 import { parseComment, formatBytes, backlinks, decodeEntities } from './render.js';
 import { themePicker } from './theme-picker.js';
+import { openMenu } from './post-menu.js';
+import { findLinks, embedFor } from './link-model.js';
+import { tr } from './i18n.js';
+import { embedTitle } from './embeds.js';
+import { ago } from './browse-model.js';
+import { displayDefaults, postTime, posterName, fileView, autoExpands } from './display-model.js';
 
 export const RULES_URL = 'https://www.4chan.org/rules';
 
@@ -42,6 +48,48 @@ export function targetKind(el) {
 
 /** Volume and mute carry over from one video to the next this session. */
 const videoPrefs = { volume: 0.6, muted: false };
+const DISPLAY_DEFAULTS = displayDefaults();
+/** Files shown from work mode's one-line links, and files opened by
+ *  themselves (Expand images) that the person closed: this session only,
+ *  so a thread update keeps them as they were. */
+const shownFiles = new Set();
+const closedFiles = new Set();
+
+/** A post's time (Settings → Posts → Timestamps). Relative times age by
+ *  themselves: once a minute their text is set again, nothing is redrawn. */
+function timeNode(post, mode) {
+  const when = postTime(post, mode, { locale: document.documentElement.lang || undefined });
+  if (when.relative) startRelativeClock();
+  return h('time', {
+    class: 'post__time',
+    // a relative time is UI text ("3 min ago"), translated; the others are dates
+    translate: when.relative ? null : 'no',
+    datetime: when.unix ? new Date(when.unix * 1000).toISOString() : null,
+    title: when.title || null,
+    'data-rel-time': when.relative ? String(when.unix) : null,
+    text: when.text,
+  });
+}
+
+let relativeClock = 0;
+function startRelativeClock() {
+  if (relativeClock) return;
+  relativeClock = setInterval(() => {
+    const els = document.querySelectorAll('time[data-rel-time]');
+    if (!els.length) {
+      clearInterval(relativeClock);
+      relativeClock = 0;
+      return;
+    }
+    const now = Date.now();
+    for (const el of els) {
+      const text = ago(Number(el.dataset.relTime), now);
+      if (el.dataset.relText === text) continue;
+      el.dataset.relText = text;
+      el.textContent = text;
+    }
+  }, 60_000);
+}
 
 /** One post card from API-shaped data. Text only through textContent.
  *  `thumb`/`full` are the file's URLs (the bridge decides: the image host in
@@ -57,7 +105,87 @@ function postFlagNode(flag) {
   return h('span', { class: 'post__flag post__flag--code', title, 'aria-label': title, text: flag.code });
 }
 
-export function renderPost(post, { backrefs = [], onQuote = null, onReply = null, isYou = () => false, thumb = null, full = null, flag = null, idPrefix = 'sample-p' } = {}) {
+/** A poster ID (boards with user_ids): "ID: abcd1234 (3)", in the ID's own
+ *  colour when `o.colour` is given. With `o.onClick` it is a button that
+ *  highlights the poster's posts. */
+function posterIdNode(id, o) {
+  const props = {
+    class: `post__id${o?.colour ? ' post__id--colour' : ''}${o?.active ? ' post__id--on' : ''}`,
+    style: o?.colour ? { '--id-bg': o.colour.bg, '--id-fg': o.colour.fg } : null,
+    'data-id': id,
+  };
+  const parts = [h('span', { text: 'ID:' }), ' ', h('span', { translate: 'no', text: id }), o?.count ? h('span', { class: 'post__id-count', text: ` (${o.count})` }) : null];
+  if (!o?.onClick) return h('span', props, parts);
+  return h(
+    'button',
+    {
+      ...props,
+      type: 'button',
+      'aria-pressed': String(Boolean(o.active)),
+      title: o.active ? 'Stop highlighting this poster’s posts (Esc)' : 'Highlight this poster’s posts in the thread',
+      onclick: () => o.onClick(id),
+    },
+    parts,
+  );
+}
+
+/**
+ * A comment segment's text with its web addresses (link-model.js) as links
+ * that open in the system browser (`links.open`), never in the app. With
+ * `links.embeds` 'click', a link that can play here gets an Embed button
+ * after it (`links.onEmbed(embed, href)`); nothing loads before the click.
+ */
+function linkedText(text, links) {
+  const parts = findLinks(text);
+  if (!parts.some((p) => p.href)) return text;
+  const openIt = (e, href) => {
+    e.preventDefault();
+    links.open(href);
+  };
+  return parts.map((p) => {
+    if (!p.href) return p.text;
+    const a = h('a', {
+      class: 'seg-link',
+      href: p.href,
+      rel: 'noopener noreferrer',
+      title: p.href,
+      onclick: (e) => openIt(e, p.href),
+      onauxclick: (e) => (e.button === 1 ? openIt(e, p.href) : null),
+      text: p.text,
+    });
+    const emb = links.embeds === 'click' && links.onEmbed ? embedFor(p.href) : null;
+    if (!emb) return a;
+    const playing = Boolean(links.isPlaying?.(emb.src));
+    return [
+      a,
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'seg-embed',
+          'aria-pressed': String(playing),
+          'data-embed-src': emb.src,
+          'data-embed-label': emb.label,
+          title: embedTitle(playing, emb.label),
+          onclick: () => links.onEmbed(emb, p.href),
+        },
+        icon('play'),
+        h('span', { text: tr('Embed') }),
+      ),
+    ];
+  });
+}
+
+/**
+ * One post card. `menu`, when given, returns the actions of the post's "…"
+ * menu ([{ label, onSelect }]); it is asked each time the menu opens.
+ * `links`, when given, turns web addresses in the comment into links:
+ * { open(href), embeds: 'off' | 'click', onEmbed(embed, href), isPlaying(src) }.
+ */
+export function renderPost(post, { backrefs = [], onQuote = null, onReply = null, isYou = () => false, thumb = null, full = null, flag = null, idPrefix = 'sample-p', menu = null, posterId = null, sauce = null, links = null, display = null } = {}) {
+  // Settings → Posts (display-model.js): times, spoilers, work mode, names
+  const disp = display || DISPLAY_DEFAULTS;
+  const who = posterName(post, disp.anonymize);
   const lines = parseComment(post.com || '');
   const com = h('div', { class: 'post__com', translate: 'no' });
   for (const line of lines) {
@@ -69,12 +197,17 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
             type: 'button',
             class: `seg-quotelink${seg.target && isYou(seg.target) ? ' seg-quotelink--you' : ''}`,
             'data-target': seg.target ?? '',
-            onclick: () => onQuote?.(seg.target),
+            'data-kind': 'q',
+            'data-board': seg.thread ? seg.board : null,
+            'data-thread': seg.thread || null,
+            onclick: (e) => onQuote?.(seg.target, e),
             text: seg.target && isYou(seg.target) ? `${seg.text} (You)` : seg.text,
           }),
         );
       } else if (seg.type === 'code') {
         row.append(h('code', { class: 'seg-code', text: seg.text }));
+      } else if (links && seg.type !== 'deadlink') {
+        row.append(h('span', { class: `seg-${seg.type}` }, linkedText(seg.text, links)));
       } else {
         row.append(h('span', { class: `seg-${seg.type}`, text: seg.text }));
       }
@@ -98,95 +231,207 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
     'div',
     { class: 'post__meta' },
     flag ? postFlagNode(flag) : null,
-    h('span', { class: 'post__name', translate: 'no', text: decodeEntities(post.name || 'Anonymous') }),
-    post.trip ? h('span', { translate: 'no', text: post.trip }) : null,
+    h('span', { class: 'post__name', translate: 'no', text: decodeEntities(who.name) }),
+    who.trip ? h('span', { translate: 'no', text: who.trip }) : null,
+    post.id ? posterIdNode(post.id, posterId) : null,
     isYou(post.no) ? h('span', { class: 'pill pill--you', text: 'You' }) : null,
     post.capcode ? h('span', { class: 'pill', text: post.capcode }) : null,
-    h('span', { translate: 'no', text: post.now || '' }),
+    timeNode(post, disp.time),
     onReply
-      ? h('button', { type: 'button', class: 'post__no post__no--reply', title: 'Reply quoting this post', 'aria-label': `Reply quoting No. ${post.no}`, onclick: onReply, text: `No. ${post.no}` })
+      ? h('button', {
+          type: 'button',
+          class: 'post__no post__no--reply',
+          title: 'Reply quoting this post',
+          'aria-label': `Reply quoting No. ${post.no}`,
+          // pressing it keeps a text selection, which the reply then quotes
+          onmousedown: (e) => {
+            if (globalThis.getSelection?.()?.isCollapsed === false) e.preventDefault();
+          },
+          onclick: onReply,
+          text: `No. ${post.no}`,
+        })
       : h('span', { class: 'post__no', text: `No. ${post.no}` }),
+    menu
+      ? h(
+          'button',
+          {
+            type: 'button',
+            class: 'icon-btn icon-btn--sm post__menu',
+            title: 'More actions',
+            'aria-label': `Actions for No. ${post.no}`,
+            'aria-haspopup': 'menu',
+            'aria-expanded': 'false',
+            'data-key': `${idPrefix}menu-${post.no}`,
+            onclick: (e) => openMenu(e.currentTarget, menu(), `Actions for No. ${post.no}`),
+          },
+          icon('more'),
+        )
+      : null,
   );
   const thumbSrc = thumb || post._thumb || null;
   const fileName = `${decodeEntities(post.filename || 'file')}${post.ext || ''}`;
-  let file = null;
-  if (post.filedeleted) {
-    file = h('div', { class: 'post__file post__file--gone', text: 'File deleted' });
-  } else if (thumbSrc) {
-    const img = h('img', {
-      src: thumbSrc,
-      alt: fileName,
-      width: post.tn_w || 125,
-      height: post.tn_h || 125,
-      loading: 'lazy',
-      decoding: 'async',
+  const fileInfo = `${fileName} · ${post.w && post.h ? `${post.w}×${post.h} · ` : ''}${formatBytes(post.fsize)}`;
+  // one key per file, for what the person opened or closed this session
+  const fileKey = full || thumbSrc || `${idPrefix}${post.no}`;
+  const isVideo = /^\.(webm|mp4)$/i.test(post.ext || '');
+
+  /** Opens or closes the file in place (`auto`: opened as the thread is
+   *  drawn, Settings → Posts → Expand images). */
+  const toggle = (btn, { auto = false } = {}) => {
+    const fig = btn.closest('.post__file');
+    const expanded = btn.getAttribute('aria-expanded') === 'true';
+    fig.querySelectorAll('.post__media, .post__close').forEach((el) => el.remove());
+    btn.setAttribute('aria-expanded', String(!expanded));
+    fig.classList.toggle('post__file--open', !expanded);
+    // opened by itself: a redraw opens it again only if the settings still say so
+    if (auto && !expanded) fig.dataset.auto = '';
+    else delete fig.dataset.auto;
+    if (!auto) {
+      // closing a file the thread opened by itself keeps it closed this session
+      if (expanded) closedFiles.add(fileKey);
+      else closedFiles.delete(fileKey);
+    }
+    if (expanded || !full) return;
+    // Stats → You counts files viewed (stats.js; nothing while that is off)
+    if (!auto) document.dispatchEvent(new CustomEvent('clovereye:file-view', { detail: { how: 'expand' } }));
+    const media = isVideo
+      ? h('video', { class: 'post__media', src: full, controls: true, autoplay: true, loop: true, preload: 'metadata' })
+      : h('img', {
+          class: `post__media${auto ? ' post__media--auto' : ''}`,
+          // lazy before src: an image opened by itself loads only near the view
+          loading: auto ? 'lazy' : null,
+          decoding: 'async',
+          width: auto && post.w ? post.w : null,
+          height: auto && post.h ? post.h : null,
+          alt: fileName,
+          src: full,
+        });
+    if (isVideo) {
+      // One video at a time, at the volume the person last chose.
+      media.volume = videoPrefs.volume;
+      media.muted = videoPrefs.muted;
+      media.addEventListener('volumechange', () => {
+        videoPrefs.volume = media.volume;
+        videoPrefs.muted = media.muted;
+      });
+      media.addEventListener('play', () => {
+        for (const v of document.querySelectorAll('video.post__media')) if (v !== media && !v.paused) v.pause();
+      });
+    }
+    media.addEventListener('click', (ev) => {
+      if (!isVideo) {
+        ev.preventDefault();
+        btn.click();
+      }
     });
-    const isVideo = /^\.(webm|mp4)$/i.test(post.ext || '');
+    btn.after(media);
+    if (isVideo) {
+      media.after(
+        h('button', {
+          type: 'button',
+          class: 'btn btn--sm post__close',
+          onclick: () => {
+            btn.click();
+            btn.focus();
+          },
+          text: 'Close video',
+        }),
+      );
+    }
+  };
+
+  /** The file as a thumbnail (or a blank Spoiler box) that opens in place. */
+  const fileFigure = (view) => {
+    const hiddenSpoiler = view === 'spoiler';
+    const pic = hiddenSpoiler
+      ? h('span', { class: 'post__spoiler', 'aria-hidden': 'true' }, h('span', { text: 'Spoiler' }))
+      : h('img', {
+          src: thumbSrc,
+          alt: fileName,
+          width: post.tn_w || 125,
+          height: post.tn_h || 125,
+          loading: 'lazy',
+          decoding: 'async',
+        });
     const open = h(
       'button',
       {
         type: 'button',
         class: 'post__thumb',
         'aria-expanded': 'false',
-        'data-preview': full || null,
+        // a spoiler that is not revealed gets no hover preview: that would show it
+        'data-preview': hiddenSpoiler ? null : full || null,
         'data-preview-w': post.w || null,
         'data-preview-h': post.h || null,
-        'data-preview-video': isVideo ? 'true' : null,
-        'aria-label': `${isVideo ? 'Play' : 'Expand'} ${fileName}`,
-        onclick: (e) => {
-          const btn = e.currentTarget;
-          const fig = btn.closest('.post__file');
-          const expanded = btn.getAttribute('aria-expanded') === 'true';
-          fig.querySelectorAll('.post__media, .post__close').forEach((el) => el.remove());
-          btn.setAttribute('aria-expanded', String(!expanded));
-          fig.classList.toggle('post__file--open', !expanded);
-          if (expanded || !full) return;
-          const media = isVideo
-            ? h('video', { class: 'post__media', src: full, controls: true, autoplay: true, loop: true, preload: 'metadata' })
-            : h('img', { class: 'post__media', src: full, alt: fileName, decoding: 'async' });
-          if (isVideo) {
-            // One video at a time, at the volume the person last chose.
-            media.volume = videoPrefs.volume;
-            media.muted = videoPrefs.muted;
-            media.addEventListener('volumechange', () => {
-              videoPrefs.volume = media.volume;
-              videoPrefs.muted = media.muted;
-            });
-            media.addEventListener('play', () => {
-              for (const v of document.querySelectorAll('video.post__media')) if (v !== media && !v.paused) v.pause();
-            });
-          }
-          media.addEventListener('click', (ev) => {
-            if (!isVideo) {
-              ev.preventDefault();
-              btn.click();
-            }
-          });
-          btn.after(media);
-          if (isVideo) {
-            media.after(
-              h('button', {
-                type: 'button',
-                class: 'btn btn--sm post__close',
-                onclick: () => {
-                  btn.click();
-                  btn.focus();
-                },
-                text: 'Close video',
-              }),
-            );
-          }
-        },
+        'data-preview-video': isVideo && !hiddenSpoiler ? 'true' : null,
+        'aria-label': hiddenSpoiler
+          ? isVideo
+            ? `Play the spoiler ${fileName}`
+            : `Expand the spoiler ${fileName}`
+          : `${isVideo ? 'Play' : 'Expand'} ${fileName}`,
+        onclick: (e) => toggle(e.currentTarget),
       },
-      img,
+      pic,
       isVideo ? h('span', { class: 'post__play', 'aria-hidden': 'true', text: '▶' }) : null,
     );
-    file = h(
+    const fig = h(
       'figure',
       { class: 'post__file', style: { margin: 0 } },
       open,
-      h('span', { translate: 'no', text: `${fileName} · ${post.w && post.h ? `${post.w}×${post.h} · ` : ''}${formatBytes(post.fsize)}` }),
+      h('span', { translate: 'no', text: fileInfo }),
+      // reverse image search: a menu of sites (sauce-model.js), each opened
+      // in the system browser
+      sauce
+        ? h(
+            'button',
+            {
+              type: 'button',
+              class: 'link-btn post__sauce',
+              title: 'Reverse image search',
+              'aria-label': `Reverse image search for No. ${post.no}`,
+              'aria-haspopup': 'menu',
+              'aria-expanded': 'false',
+              'data-key': `${idPrefix}sauce-${post.no}`,
+              onclick: (e) => openMenu(e.currentTarget, sauce(), `Reverse image search for No. ${post.no}`),
+              text: 'Search',
+            },
+          )
+        : null,
     );
+    if (autoExpands(post, disp, { closed: closedFiles.has(fileKey) })) toggle(open, { auto: true });
+    return fig;
+  };
+
+  const view = post.filedeleted ? 'gone' : thumbSrc ? fileView(post, disp, { shown: shownFiles.has(fileKey), hasFile: true }) : 'none';
+  let file = null;
+  if (view === 'gone') {
+    file = h('div', { class: 'post__file post__file--gone', text: 'File deleted' });
+  } else if (view === 'line') {
+    // work mode: one line with the file's name; clicking it shows this file
+    file = h(
+      'div',
+      { class: 'post__file post__file--line' },
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'post__fileline',
+          title: 'Show this file',
+          'aria-label': `Show the file ${fileName}`,
+          'data-key': `${idPrefix}showfile-${post.no}`,
+          onclick: (e) => {
+            shownFiles.add(fileKey);
+            const fig = fileFigure(fileView(post, disp, { shown: true, hasFile: true }));
+            e.currentTarget.closest('.post__file').replaceWith(fig);
+            fig.querySelector('.post__thumb')?.focus();
+          },
+        },
+        icon(isVideo ? 'film' : 'eye'),
+        h('span', { class: 'post__fileline-text', translate: 'no', text: fileInfo }),
+      ),
+    );
+  } else if (view !== 'none') {
+    file = fileFigure(view);
   }
   const back = backrefs.length
     ? h(
@@ -194,7 +439,7 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
         { class: 'post__backlinks' },
         h('span', { text: 'Replies' }),
         backrefs.map((n) =>
-          h('button', { type: 'button', class: 'seg-quotelink', onclick: () => onQuote?.(n), text: `>>${n}` }),
+          h('button', { type: 'button', class: 'seg-quotelink', 'data-target': n, 'data-kind': 'b', onclick: (e) => onQuote?.(n, e), text: `>>${n}` }),
         ),
       )
     : null;
@@ -1080,6 +1325,31 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
               fieldError('cacheCapMB'),
             )
           : h('p', { class: 'field__hint', text: 'Thumbnails and media are kept in memory while CloverEye runs and nothing is written to disk.' }),
+      );
+    },
+
+    stats() {
+      const on = Boolean(st.draft.stats?.mine);
+      return h(
+        'section',
+        { class: 'step' },
+        head('Your stats', 'CloverEye can keep a private tally of how you use it, shown in the Stats pane. It is off unless you turn it on.'),
+        switchRow({
+          key: 'mystats',
+          title: 'Count my own activity',
+          desc: 'Per day, for 90 days: time spent in CloverEye, threads opened, posts read and made, replies to you, files viewed and threads saved, and time and threads per board.',
+          checked: on,
+          onToggle: () =>
+            update((s) => {
+              s.stats = { ...M.defaults().stats, ...(s.stats || {}), mine: !on };
+              return s;
+            }),
+        }),
+        h('div', { class: 'callout' }, icon('shield'), h('div', { text: 'Your stats stay on this computer: nothing is sent anywhere. Settings → Stats can switch this off again or delete what was counted.' })),
+        h('p', {
+          class: 'field__hint',
+          text: 'The Stats pane also shows how busy boards are, from the catalogs you open. Sampling boards in the background is a separate switch in Settings → Stats, off by default.',
+        }),
       );
     },
 

@@ -74,6 +74,8 @@ export function installHoverPreview(doc = document) {
     }
     box.hidden = false;
     place();
+    // Stats → You counts files viewed (stats.js; nothing while that is off)
+    doc.dispatchEvent(new CustomEvent('clovereye:file-view', { detail: { how: 'hover' } }));
   }
 
   function hide() {

@@ -9,7 +9,6 @@
 // the helper window is shown so the person can pass it.
 
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -288,13 +287,21 @@ pub async fn open_window(app: tauri::AppHandle, panes: String) -> Result<String,
     }
     let n = app.state::<AgentState>().windows.fetch_add(1, Ordering::SeqCst) + 1;
     let label = format!("w-{n}");
-    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(format!("index.html#panes={panes}").into()))
+    let builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(format!("index.html#panes={panes}").into()))
         .title("CloverEye")
         .inner_size(1180.0, 820.0)
-        .min_inner_size(640.0, 480.0)
-        .decorations(false)
-        .build()
-        .map_err(|e| e.to_string())?;
+        .min_inner_size(640.0, 480.0);
+    // macOS: the same native traffic lights over the drawn title bar as the
+    // main window (tauri.macos.conf.json); the UI hides its drawn buttons there.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .decorations(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .traffic_light_position(tauri::LogicalPosition::new(14.0, 21.0));
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.decorations(false);
+    builder.build().map_err(|e| e.to_string())?;
     Ok(label)
 }
 
@@ -344,8 +351,6 @@ pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
         .unwrap_or(first)
 }
 
-const MAX_MEDIA: u64 = 64 * 1024 * 1024;
-
 /// Saves one file from the image host into the download folder (Settings →
 /// Files, else the system Downloads folder/CloverEye). One request, made
 /// because the person asked for it.
@@ -359,27 +364,19 @@ pub async fn save_media(app: tauri::AppHandle, url: String, name: String, dir: O
         _ => app.path().download_dir().map_err(|e| e.to_string())?.join("CloverEye"),
     };
     let name = safe_name(&name);
-    tauri::async_runtime::spawn_blocking(move || {
+    // Through the download gate every file download in the app shares:
+    // at least 1 s apart, also while Download all or Save offline runs.
+    crate::offline::gated(&app, move || {
         std::fs::create_dir_all(&folder).map_err(|e| format!("creating {}: {e}", folder.display()))?;
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(10))
-            .timeout(Duration::from_secs(120))
-            .user_agent(&clovereye_fetch::user_agent())
-            .build();
-        let res = agent.get(&url).call().map_err(|e| e.to_string())?;
-        let mut body = Vec::new();
-        res.into_reader().take(MAX_MEDIA + 1).read_to_end(&mut body).map_err(|e| e.to_string())?;
-        if body.len() as u64 > MAX_MEDIA {
-            return Err("The file is larger than CloverEye saves.".into());
-        }
+        let body = match crate::offline::download(&url) {
+            Err(e) if e == "not-found" => return Err("The file is gone from the site.".into()),
+            other => other?,
+        };
         let path = unique_path(&folder, &name);
-        let tmp = path.with_extension("part");
-        std::fs::write(&tmp, &body).map_err(|e| format!("writing {}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, &path).map_err(|e| format!("saving {}: {e}", path.display()))?;
+        crate::offline::write_atomic(&path, &body)?;
         Ok(path.display().to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

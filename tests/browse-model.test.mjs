@@ -15,6 +15,11 @@ test('catalogThreads flattens pages in bump order and tolerates junk', () => {
   assert.deepEqual(B.catalogThreads(null), []);
   assert.deepEqual(B.catalogThreads([{ page: 1 }]), []);
   assert.equal(B.catalogThreads([...catalog, ...catalog]).length, 30);
+  // each thread keeps its page; the catalog itself is left as it was
+  assert.ok(t.every((x) => x.page === 1));
+  assert.ok(!('page' in catalog[0].threads[0]));
+  const two = B.catalogThreads([{ page: 1, threads: [{ no: 1 }] }, { page: 2, threads: [{ no: 2 }, { no: 3 }] }, { threads: [{ no: 4 }] }]);
+  assert.deepEqual(two.map((x) => [x.no, x.page]), [[1, 1], [2, 2], [3, 2], [4, undefined]]);
 });
 
 test('threadTitle: subject, else comment start, else No.', () => {
@@ -69,8 +74,9 @@ test('mock bridge: catalog and thread from local data, no image host', async () 
   const cat = await b.fetchCatalog('g');
   assert.equal(cat.freshness, 'new');
   const threads = B.catalogThreads(cat.data);
-  assert.equal(threads.length, 15);
-  const op = threads.find((t) => t.last_replies?.length);
+  // the fixture's 15 threads and the three newest the live mock made up (bridge.js liveCatalog)
+  assert.equal(threads.length, 18);
+  const op = B.catalogThreads(JSON.parse(sample)).find((t) => t.last_replies?.length);
   const th = await b.fetchThread('g', op.no);
   assert.equal(th.data.posts[0].no, op.no);
   assert.equal(th.data.posts.length, 1 + op.last_replies.length);
@@ -104,4 +110,24 @@ test('excerpt drops quote links and keeps the words', () => {
   const op = { com: '<a href="#p5" class="quotelink">&gt;&gt;5</a><br>Hello <span class="quote">&gt;there</span>' };
   assert.equal(B.excerpt(op), 'Hello >there');
   assert.ok(B.excerpt({ com: 'x'.repeat(500) }, 50).length === 50);
+});
+
+test('isRefreshKey: F5, Ctrl+R and ⌘R (with or without Shift), nothing else', () => {
+  const k = (key, mods = {}) => B.isRefreshKey({ key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods });
+  assert.ok(k('F5'));
+  assert.ok(k('F5', { shiftKey: true }));
+  assert.ok(k('F5', { ctrlKey: true }));
+  assert.ok(k('r', { ctrlKey: true }));
+  assert.ok(k('r', { metaKey: true }));
+  assert.ok(k('R', { metaKey: true, shiftKey: true }));
+  assert.ok(!k('r'));
+  assert.ok(!k('r', { altKey: true, ctrlKey: true }));
+  assert.ok(!k('r', { ctrlKey: true, metaKey: true }));
+  assert.ok(!k('F5', { altKey: true }));
+  assert.ok(!k('t', { ctrlKey: true }));
+});
+
+test('refreshKeysLabel names ⌘ on a Mac and Ctrl elsewhere', () => {
+  assert.equal(B.refreshKeysLabel('MacIntel'), '⌘R · F5');
+  assert.equal(B.refreshKeysLabel('Linux x86_64'), 'Ctrl+R · F5');
 });

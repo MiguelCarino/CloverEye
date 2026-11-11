@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: blob: https://i.4cdn.org https://s.4cdn.org; media-src 'self' blob: https://i.4cdn.org; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: blob: https://i.4cdn.org https://s.4cdn.org cesaved: http://cesaved.localhost; media-src 'self' blob: https://i.4cdn.org cesaved: http://cesaved.localhost; frame-src 'self' https://www.youtube-nocookie.com https://player.vimeo.com https://streamable.com https://w.soundcloud.com; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'"
     }
   },
   "bundle": {

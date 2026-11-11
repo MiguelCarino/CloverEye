@@ -12,7 +12,7 @@ const root = new URL('..', import.meta.url).pathname;
 const JS = readdirSync(join(root, 'ui/js'))
   .filter((f) => f.endsWith('.js') && !['i18n.js', 'look.js', 'render.js', 'hover.js'].includes(f))
   .map((f) => join(root, 'ui/js', f));
-const RUST = ['src-tauri/src/main.rs', 'src-tauri/src/extra.rs'].map((f) => join(root, f));
+const RUST = ['src-tauri/src/main.rs', 'src-tauri/src/extra.rs', 'src-tauri/src/links.rs', 'src-tauri/src/offline.rs', 'src-tauri/src/stats.rs'].map((f) => join(root, f));
 
 function literals(src) {
   const out = [];

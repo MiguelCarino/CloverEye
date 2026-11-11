@@ -114,6 +114,16 @@ kbd {
   min-width: 0;
 }
 
+/* Room for the native traffic lights (three 12px buttons from x = 14,
+   tauri.macos.conf.json), so they never sit on the brand. */
+:root[data-platform='macos'] .titlebar {
+  padding-left: 84px;
+}
+
+:root[data-platform='macos'] .titlebar__title {
+  padding-left: 14px;
+}
+
 .titlebar__brand {
   display: flex;
   align-items: center;
@@ -1561,6 +1571,13 @@ dialog[open] {
   color: var(--text);
 }
 
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+  background: transparent;
+  color: var(--text-muted);
+}
+
 .only-narrow {
   display: none;
 }
@@ -2748,6 +2765,16 @@ video.post__media {
   overflow-wrap: anywhere;
 }
 
+/* the file's own name, greyed, while it goes out under a random one */
+.composer__origname {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.composer__random {
+  font-size: var(--fs-sm);
+}
+
 .composer__checks {
   display: grid;
   gap: 4px;
@@ -3114,4 +3141,1203 @@ video.post__media {
   bottom: 2px;
   font-size: 12px;
   text-shadow: 0 1px 3px #000;
+}
+
+/* ================================================ filters, hidden posts */
+
+.post__menu {
+  align-self: center;
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+}
+
+.menu {
+  position: fixed;
+  z-index: 960;
+  display: grid;
+  min-width: 12rem;
+  max-width: min(22rem, calc(100vw - 16px));
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-2);
+}
+
+.menu__item {
+  display: block;
+  width: 100%;
+  padding: 7px var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu__item:hover,
+.menu__item:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.menu__item:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--focus);
+}
+
+.post-stub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--space-2);
+  padding: 6px var(--space-3);
+  border: 1px dashed var(--border);
+  border-radius: var(--post-radius);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+.post-stub__show {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  padding: 2px 0;
+  font: inherit;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.post-stub__show span {
+  overflow-wrap: anywhere;
+}
+
+.post-stub__show:hover {
+  color: var(--text);
+}
+
+.post--highlight,
+.catalog__item--highlight {
+  border-color: var(--warn);
+  box-shadow: inset 0 0 0 1px var(--warn);
+}
+
+.post--revealed {
+  border-style: dashed;
+}
+
+.post--reply-you {
+  border-color: var(--accent-line);
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--post-bg);
+}
+
+.catalog__item--hidden {
+  opacity: 0.55;
+}
+
+.catalog__item--hidden:hover,
+.catalog__item--hidden:focus-within {
+  opacity: 1;
+}
+
+.browse__hidden {
+  gap: var(--space-2);
+}
+
+.badge--you {
+  background: none;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
+.pill--hl {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.filter-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.filter-list__item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+  min-width: 0;
+}
+
+.filter-list__item--editing {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.filter-list__item--off .filter-list__text {
+  opacity: 0.6;
+}
+
+.filter-list__text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.filter-list__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px var(--space-2);
+  min-width: 0;
+}
+
+.filter-list__field {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+
+.filter-list__pattern {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.filter-list__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.switch--sm {
+  margin-top: 0;
+}
+
+.filter-form {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.filter-form__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: flex-end;
+}
+
+.filter-form__grow {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.filter-form__pattern {
+  font-family: var(--font-mono);
+}
+
+.filter-form__checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.filter-panel {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.filter-panel__text {
+  min-height: 9rem;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  resize: vertical;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .catalog__item--hidden {
+    transition: none;
+  }
+}
+
+/* quote links: a quoted post opened below its link, and the hover preview
+   (ui/js/quotes.js) */
+
+.seg-quotelink[aria-expanded='true'] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.seg-quotelink--loop {
+  opacity: 0.6;
+}
+
+.quote-inline {
+  display: block;
+  margin: var(--space-2) 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--accent-line);
+  font-size: var(--fs-base);
+  white-space: normal;
+}
+
+.quote-inline > .post {
+  max-width: 100%;
+}
+
+.post__inlines {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.post__inlines > .quote-inline {
+  margin: 0;
+}
+
+.quote-inline__missing,
+.quote-preview__missing {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-style: italic;
+  color: var(--text-faint);
+}
+
+.quote-preview {
+  position: fixed;
+  z-index: 890;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: var(--post-radius);
+  box-shadow: var(--shadow-2);
+  animation: quote-preview-in var(--dur-fast) var(--ease);
+}
+
+.quote-preview[hidden] {
+  display: none;
+}
+
+.quote-preview > .post {
+  max-width: none;
+  border-color: var(--border-strong);
+}
+
+.quote-preview__missing {
+  background: var(--post-bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--post-radius);
+  padding: var(--space-2) var(--space-3);
+}
+
+@keyframes quote-preview-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quote-preview {
+    animation: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .quote-inline {
+    padding-left: var(--space-2);
+  }
+}
+
+/* Other threads' posts and archive links (ui/js/quotes.js, archive-model.js):
+   a quoted post from another thread has a dashed edge; dead quote links are
+   struck through, with a small button to the archive beside them. */
+.quote-inline--cross {
+  border-left-style: dashed;
+}
+
+.quote-inline__missing .archive-link,
+.quote-inline__missing .link-btn {
+  font-style: normal;
+}
+
+.seg-deadlink {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  text-decoration: line-through;
+}
+
+.archive-link--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5em;
+  height: 1.5em;
+  margin-left: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--accent);
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+.archive-link--icon:hover {
+  background: var(--quotelink-bg);
+  color: var(--accent-hover);
+}
+
+.archive-link--icon:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.archive-link--icon .icon {
+  width: 0.95em;
+  height: 0.95em;
+}
+
+.archive-link__host {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.archive-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.archive-changed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.archive-changed__item {
+  font-family: inherit;
+  cursor: pointer;
+  gap: 4px;
+}
+
+/* Poster IDs (boards with user_ids): each ID in a colour of its own, made
+   from the ID (the colours are data, ui/js/ids-model.js; black or white
+   text, whichever reads better). Clicking one highlights that poster. */
+.post__id {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font: inherit;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+button.post__id {
+  cursor: pointer;
+}
+
+.post__id--colour {
+  background: var(--id-bg);
+  color: var(--id-fg);
+  border-color: transparent;
+}
+
+button.post__id:hover {
+  border-color: var(--text-muted);
+}
+
+.post__id--on {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.post__id-count {
+  opacity: 0.85;
+}
+
+.post--id-hl {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.pill--id-hl {
+  border-color: var(--accent);
+  color: var(--text);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.pill--id-hl:hover {
+  background: var(--accent-soft);
+}
+
+.pill--id-hl .icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* Unread posts: the "New posts" line above the first post after what was
+   read, and the jump button's count. */
+.unread-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-1) 0;
+  color: var(--danger);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+.unread-line::before,
+.unread-line::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid currentColor;
+}
+
+.thread-unread__count {
+  margin-left: 2px;
+}
+
+.thread-unread__count[hidden] {
+  display: none;
+}
+
+/* a post jumped to clears the thread's controls */
+.thread > [data-no] {
+  scroll-margin-top: calc(var(--control-h) + var(--space-5));
+}
+
+/* Thread stats in the thread toolbar (stats-model.js): replies, files,
+   posters, catalog page; the last page and the bump limit in warn. */
+.thread-stats {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--space-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.thread-stats > span + span:not(.visually-hidden)::before {
+  content: '·';
+  margin-right: var(--space-2);
+  color: var(--text-faint);
+}
+
+.thread-stats__warn {
+  color: var(--warn);
+  font-weight: var(--fw-medium);
+}
+
+/* Reverse image search: the file's Search menu button (sauce-model.js) */
+.post__file .post__sauce {
+  justify-self: start;
+  font-size: var(--fs-xs);
+}
+
+.sauce-pick {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+/* ------------------------------------------------- links and embeds in posts */
+
+.seg-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.seg-link:hover {
+  color: var(--accent-hover);
+}
+
+.seg-link:focus-visible,
+.seg-embed:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  border-radius: var(--radius-xs);
+}
+
+.seg-spoiler .seg-link {
+  color: transparent;
+}
+
+.seg-spoiler:hover .seg-link,
+.seg-spoiler:focus-within .seg-link {
+  color: var(--accent);
+}
+
+.seg-greentext .seg-link {
+  color: inherit;
+}
+
+.seg-embed {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+  padding: 0 6px;
+  vertical-align: baseline;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.8em;
+  font-weight: 600;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.seg-embed .icon {
+  width: 10px;
+  height: 10px;
+}
+
+.seg-embed:hover {
+  color: var(--text);
+  border-color: var(--accent-line);
+}
+
+.seg-embed[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* One player per window, outside the panes (ui/js/embeds.js); under the
+   reply form, the gallery and menus. */
+.embed-player {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 700;
+  width: min(480px, calc(100vw - 32px));
+  display: grid;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+}
+
+.embed-player--tall {
+  width: min(300px, calc(100vw - 32px));
+}
+
+.embed-player__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 4px 4px 4px var(--space-3);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+
+.embed-player__bar > .icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--accent);
+}
+
+.embed-player__label {
+  flex: none;
+  font-weight: 600;
+}
+
+.embed-player__url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+}
+
+.embed-player__frame {
+  display: block;
+  width: 100%;
+  max-height: calc(100vh - var(--titlebar-h) - 120px);
+  border: 0;
+  background: #000;
+}
+
+.embed-player--audio .embed-player__frame {
+  background: var(--surface-2);
+}
+
+/* ------------------------------------------------ display switches (Posts) */
+
+.post__time[data-rel-time] {
+  cursor: help;
+}
+
+/* A spoilered file that is not revealed: a blank box until it is opened. */
+.post__spoiler {
+  display: grid;
+  place-items: center;
+  width: 100px;
+  height: 100px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  /* a surface, not --spoiler (the hidden-text colour): its label stays
+     readable (--text-muted on --surface-2 is ≥ 4.5:1 in every theme) */
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+/* Spoiler text shown (Settings → Posts → Reveal spoilers), still marked. */
+:root[data-reveal-spoilers='on'] .seg-spoiler {
+  color: inherit;
+  background: none;
+  border-radius: 0;
+  border-bottom: 2px dotted var(--spoiler);
+  text-decoration: none;
+}
+
+:root[data-reveal-spoilers='on'] .seg-spoiler .seg-link {
+  color: var(--accent);
+}
+
+/* Work mode: a file is one line until clicked. */
+.post__file--line {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.post__fileline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.post__fileline:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+.post__fileline:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.post__fileline svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.post__fileline-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.post__main:has(.post__file--line) {
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* Opened as the thread is drawn: fitted like the hover preview, inside the
+   pane and the window, never past the file's own size. */
+.post__media--auto {
+  max-height: calc(100vh - 24px);
+  object-fit: contain;
+}
+
+.catalog-card__nofile--hidden,
+.catalog-card__nofile--spoiler {
+  padding: 4px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.catalog-card__nofile--spoiler {
+  border-style: solid;
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------- saved threads */
+
+.btn--danger {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.btn--danger:hover {
+  background: var(--danger);
+  color: var(--bg);
+}
+
+/* A save or download running: its progress and Cancel, in the toolbar. */
+.save-job {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  padding: 0 var(--space-1) 0 var(--space-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.pill--saved {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.saved__list {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.saved__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.saved__open {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--space-3);
+  row-gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
+}
+
+.saved__open:hover {
+  background: var(--surface-2);
+}
+
+.saved__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--fw-medium);
+}
+
+.saved__meta {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.saved__delete {
+  color: var(--text-faint);
+}
+
+.saved__delete:hover {
+  color: var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .saved__open {
+    transition: none;
+  }
+}
+
+/* ------------------------------------------------------------------ stats */
+/* The Stats pane (stats-view.js): board activity and your own counts.
+   Colours come from the theme's tokens only. */
+
+.stats {
+  container-type: inline-size;
+}
+
+.stats-tabs {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+
+.stats-tabs .btn[aria-pressed='true'],
+.stats-metrics .btn[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+
+.stats__status {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.stats__panel {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.stats__promise {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.stats__promise .icon {
+  color: var(--ok);
+}
+
+.stats-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-table th,
+.stats-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  vertical-align: middle;
+}
+
+.stats-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.stats-table thead th {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  vertical-align: bottom;
+  background: var(--surface-2);
+}
+
+.stats-table .stats-table__board,
+.stats-table .stats-table__busiest {
+  text-align: left;
+}
+
+.stats-table tbody .stats-table__board {
+  font-weight: var(--fw-regular);
+}
+
+.stats-table__sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.stats-table__sort:hover {
+  color: var(--text);
+}
+
+.stats-table th[aria-sort] .stats-table__sort {
+  color: var(--accent);
+}
+
+.stats-table__arrow {
+  min-width: 0.8em;
+  font-size: 0.8em;
+}
+
+.stats-table__open {
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  cursor: pointer;
+}
+
+.stats-table__open:hover .board-tag {
+  filter: brightness(1.15);
+}
+
+.stats-table__when {
+  display: block;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.stats-table__ppm strong {
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
+.stats-table__wait {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  min-width: 11ch;
+}
+
+.stats-table__thread {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  max-width: 18ch;
+  padding: 2px 6px;
+  margin: -2px -6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stats-table__thread:hover {
+  background: var(--surface-2);
+}
+
+.stats-table__added {
+  color: var(--ok);
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+}
+
+.stats-table__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stats-spark {
+  display: block;
+  margin-left: auto;
+  overflow: visible;
+}
+
+.stats-spark__base {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.stats-spark__line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* a narrower pane: live threads, then the 24-hour average give way; the
+   sideways scroll stays for anything narrower still */
+@container (max-width: 820px) {
+  .stats-table th,
+  .stats-table td {
+    padding-inline: var(--space-2);
+  }
+
+  .stats-table .stats-table__threads {
+    display: none;
+  }
+}
+
+@container (max-width: 680px) {
+  .stats-table .stats-table__day {
+    display: none;
+  }
+}
+
+.stats-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--space-3);
+}
+
+.stats-card {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.stats-card__title,
+.stats-section__title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+}
+
+.stats-card__list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.stats-card__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.stats-card__row dt {
+  color: var(--text-muted);
+}
+
+.stats-card__row dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-medium);
+}
+
+.stats-section {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.stats-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.stats-chart {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.stats-chart__svg {
+  display: block;
+  width: 100%;
+  height: 96px;
+}
+
+.stats-chart__bar {
+  fill: var(--accent);
+}
+
+.stats-chart__bar--none {
+  fill: var(--border-strong);
+}
+
+.stats-chart__axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--space-1);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+.stats-top {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stats-top__row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-top__threads {
+  color: var(--text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stats-table__thread,
+  .stats-table__sort {
+    transition: none;
+  }
 }

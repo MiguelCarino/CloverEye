@@ -33,9 +33,23 @@ test('the board fixture shipped with the UI mock equals the recorded one', () =>
 test('the UI makes no outside requests: only allowed hosts appear', () => {
   const allowed = [
     'https://www.4chan.org/rules', // opened in the system browser, never fetched
+    // reverse image search (sauce-model.js): opened in the system browser, never fetched
+    'https://saucenao.com/search.php',
+    'https://lens.google.com/uploadbyurl',
+    'https://yandex.com/images/search',
+    'https://iqdb.org/',
+    'https://tineye.com/search',
+    'https://trace.moe/',
     'https://i.4cdn.org', // CSP: media for C1
+    // embeds (link-model.js): CSP frame-src; a frame loads only after Embed is clicked
+    'https://www.youtube-nocookie.com',
+    'https://player.vimeo.com',
+    'https://streamable.com',
+    'https://w.soundcloud.com',
+    'https://soundcloud.com/', // the page a SoundCloud player is asked for, never fetched
     'https://s.4cdn.org',
     'http://ipc.localhost', // Tauri IPC
+    'http://cesaved.localhost', // saved threads' files, the app's own scheme (Windows form; offline.rs)
     'http://www.w3.org/2000/svg', // SVG namespace
   ];
   for (const f of textFiles(UI)) {

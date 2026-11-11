@@ -22,7 +22,7 @@ const attr = (tag, name) => {
 /**
  * @returns {Array<Array<{type: string, text: string, target?: number}>>}
  *   lines of segments. Types: text, greentext, quotelink, deadlink,
- *   spoiler, code.
+ *   spoiler, code. A quotelink to another thread also has board and thread.
  */
 export function parseComment(html) {
   const lines = [[]];
@@ -37,6 +37,10 @@ export function parseComment(html) {
     if (link) {
       seg = { type: 'quotelink', text };
       if (link.target) seg.target = link.target;
+      if (link.thread) {
+        seg.board = link.board;
+        seg.thread = link.thread;
+      }
     } else {
       seg = { type: top || 'text', text };
     }
@@ -69,6 +73,12 @@ export function parseComment(html) {
         if (/\bquotelink\b/.test(cls)) {
           const n = href.match(/#p(\d+)$/);
           link = { target: n ? Number(n[1]) : null };
+          // Another thread's post: "/g/thread/999#p1000" (same-thread links are "#p1000").
+          const x = href.match(/\/([a-z0-9]{1,10})\/thread\/(\d+)(?:\/[^#]*)?#p\d+$/i);
+          if (x) {
+            link.board = x[1].toLowerCase();
+            link.thread = Number(x[2]);
+          }
         } else {
           link = null;
         }
