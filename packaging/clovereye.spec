@@ -53,6 +53,11 @@ install -Dm0644 %{_sourcedir}/README.md %{buildroot}%{_docdir}/%{name}/README.md
 %{_datadir}/icons/hicolor/*/apps/clovereye.png
 
 %changelog
+* Wed Nov 11 2026 MiguelCarino <miguel.carino1994@outlook.com> - 0.1.2-1
+- Test build: filters, hiding with stubs, inline quotes and previews, poster IDs,
+  unread line, thread stats, image search, archive links, links and embeds,
+  display options, saved threads offline, board and personal stats.
+
 * Fri Nov 06 2026 MiguelCarino <miguel.carino1994@outlook.com> - 0.1.1-1
 - Test build: captcha retries on the captcha page when the frame's abuse check fails.
 

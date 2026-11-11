@@ -684,7 +684,7 @@ const settled = (page) => page.waitForTimeout(300);
   if (await page.locator('[data-key="rail-toggle"]').isVisible()) await page.locator('[data-key="rail-toggle"]').click();
   await page.locator('[data-key="settings"]').click();
   await page.waitForSelector('[data-key="set-lang"]');
-  check('version: Settings shows it', (await page.locator('[data-key="version"]').textContent()).trim() === 'CloverEye 0.1.1');
+  check('version: Settings shows it', (await page.locator('[data-key="version"]').textContent()).trim() === 'CloverEye 0.1.2');
   const es = JSON.parse(await (await page.request.get(`${BASE}i18n/es.json`)).text());
   await page.locator('[data-key="set-lang"]').selectOption('es');
   await page.waitForFunction(() => document.documentElement.lang === 'es');
