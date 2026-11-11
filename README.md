@@ -209,6 +209,7 @@ and each GitHub release carries a `SHA256SUMS` covering all of them.
 | Other Linux | Linux or a Mac with podman | `packaging/build-appimage.sh` | `CloverEye-<v>-x86_64.AppImage` + `CloverEye-<v>-appimage-sources.tar` |
 | Windows | GitHub Actions (`windows.yml`) | push a `v*` tag, or run it by hand | `CloverEye-<v>-x64-setup.exe`, `CloverEye-<v>-x64.msi` |
 | macOS (Apple silicon) | a Mac | `cargo tauri build --bundles app,dmg` | `CloverEye-<v>-aarch64.dmg` |
+| macOS (Intel) | an Apple silicon Mac, with the official Rust toolchain | `cargo tauri build --target x86_64-apple-darwin --bundles app,dmg` | `CloverEye-<v>-x86_64.dmg` |
 
 The Linux scripts write to `~/.cache/clovereye/packaging` (or the folder given
 as their last argument), never into the repository.
@@ -295,8 +296,47 @@ cargo tauri build --bundles app,dmg
 cp target/release/bundle/dmg/CloverEye_<v>_aarch64.dmg ../out/CloverEye-<v>-aarch64.dmg
 ```
 
-This builds for the Mac's own architecture; the releases so far are Apple
-silicon only. The app is ad-hoc signed and not notarised, so the first launch
+That builds for the Mac's own architecture (Apple silicon here). The Intel
+build (0.1.2 and later) is cross-built on the same Mac, but not with
+Homebrew's Rust: Homebrew builds its own standard library, and it has none for
+`x86_64-apple-darwin` (the official one is refused, since its compiler reports
+a different version string). Use the official toolchain instead, from rustup
+(`rustup target add x86_64-apple-darwin`) or unpacked into a folder of its
+own. The official tarballs are on static.rust-lang.org, each with a `.sha256`:
+`rust-<rust>-aarch64-apple-darwin.tar.xz` for the compiler and
+`rust-std-<rust>-x86_64-apple-darwin.tar.xz` for the Intel library.
+
+```sh
+# once: official Rust in ~/.cache/clovereye/rust-<rust>, Homebrew untouched
+P=~/.cache/clovereye/rust-<rust>
+sh rust-<rust>-aarch64-apple-darwin/install.sh --prefix=$P --components=rustc,cargo,rust-std-aarch64-apple-darwin --disable-ldconfig
+sh rust-std-<rust>-x86_64-apple-darwin/install.sh --prefix=$P --disable-ldconfig
+
+cd src-tauri
+PATH=$P/bin:$PATH cargo tauri build --target x86_64-apple-darwin --bundles app,dmg
+cp target/x86_64-apple-darwin/release/bundle/dmg/CloverEye_<v>_x64.dmg ../out/CloverEye-<v>-x86_64.dmg
+```
+
+`lipo -archs` on `CloverEye.app/Contents/MacOS/clovereye` should print
+`x86_64`; on an Apple silicon Mac the app also runs under Rosetta, a quick
+check that it starts. Both dmgs need macOS 10.13 or later.
+
+The macOS bundle uses its own icon, `icons/macos/icon.icns` (set in
+`tauri.macos.conf.json`), made from `icons/macos/icon.svg`: the logo as an
+824 px tile on a 1024 px canvas, Apple's icon grid. macOS 26 and later put an
+icon that fills its whole canvas on a system tile, dark in dark mode. To
+remake it after the logo changes:
+
+```sh
+mkdir icon.iconset
+for p in 16 32 128 256 512; do
+  rsvg-convert -w $p -h $p src-tauri/icons/macos/icon.svg -o icon.iconset/icon_${p}x${p}.png
+  rsvg-convert -w $((p*2)) -h $((p*2)) src-tauri/icons/macos/icon.svg -o icon.iconset/icon_${p}x${p}@2x.png
+done
+iconutil -c icns icon.iconset -o src-tauri/icons/macos/icon.icns
+```
+
+The app is ad-hoc signed and not notarised, so the first launch
 needs right-click → Open (or System Settings → Privacy & Security → Open
 Anyway). `codesign --verify` reports "code has no resources but signature
 indicates they must be present" for this ad-hoc signature; every release so
