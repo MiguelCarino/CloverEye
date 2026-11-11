@@ -391,7 +391,7 @@
  "The saved copy of “{0}” and every file saved with it are deleted from the disk. This cannot be undone.": "La copia guardada de «{0}» y todos los archivos guardados con ella se borran del disco. No se puede deshacer.",
  "The saved thread has no posts.": "El hilo guardado no tiene mensajes.",
  "The saved threads folder must be a full path.": "La carpeta de hilos guardados debe ser una ruta completa.",
- "The site’s abuse check did not finish (it says: “{0}”). Press New captcha; if the CloverEye “Site check” window comes up, complete it there.": "La verificación antiabuso del sitio no terminó (dice: “{0}”). Pulsa Captcha nuevo; si aparece la ventana “Site check” de CloverEye, complétala ahí.",
+ "The site’s abuse check (spur.us) turned this connection away (it says: “{0}”). It usually clears after a few minutes; it happens more often through a VPN or a Tailscale exit node, and after many captchas in a row. New captcha unlocks when the wait is over.": "La verificación antiabuso del sitio (spur.us) rechazó esta conexión (dice: “{0}”). Suele resolverse en unos minutos; pasa más a menudo a través de una VPN o un nodo de salida de Tailscale, y tras muchos captchas seguidos. Captcha nuevo se desbloquea cuando termine la espera.",
  "Loading the {0}…": "Cargando {0}…",
  "Look": "Apariencia",
  "Luna": "Luna",

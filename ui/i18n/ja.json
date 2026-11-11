@@ -391,7 +391,7 @@
  "The saved copy of “{0}” and every file saved with it are deleted from the disk. This cannot be undone.": "「{0}」の保存したコピーと、一緒に保存したすべてのファイルをディスクから削除します。元に戻せません。",
  "The saved thread has no posts.": "保存したスレッドに投稿がありません。",
  "The saved threads folder must be a full path.": "保存したスレッドのフォルダーはフルパスで指定してください。",
- "The site’s abuse check did not finish (it says: “{0}”). Press New captcha; if the CloverEye “Site check” window comes up, complete it there.": "サイトの不正利用チェックが完了しませんでした（サイトの表示：「{0}」）。新しいキャプチャを押してください。CloverEye の「Site check」ウィンドウが表示された場合は、そこで完了してください。",
+ "The site’s abuse check (spur.us) turned this connection away (it says: “{0}”). It usually clears after a few minutes; it happens more often through a VPN or a Tailscale exit node, and after many captchas in a row. New captcha unlocks when the wait is over.": "サイトの不正利用チェック（spur.us）がこの接続を拒否しました（サイトの表示：「{0}」）。通常は数分で解消します。VPN や Tailscale の出口ノード経由のとき、また続けて多くのキャプチャを取得したあとに起こりやすくなります。待ち時間が終わると「新しいキャプチャ」を押せるようになります。",
  "Loading the {0}…": "{0} を読み込んでいます…",
  "Look": "外観",
  "Luna": "Luna",

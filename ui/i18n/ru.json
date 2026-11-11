@@ -391,7 +391,7 @@
  "The saved copy of “{0}” and every file saved with it are deleted from the disk. This cannot be undone.": "Сохранённая копия «{0}» и все сохранённые с ней файлы будут удалены с диска. Это нельзя отменить.",
  "The saved thread has no posts.": "В сохранённом треде нет постов.",
  "The saved threads folder must be a full path.": "Папка сохранённых тредов должна быть указана полным путём.",
- "The site’s abuse check did not finish (it says: “{0}”). Press New captcha; if the CloverEye “Site check” window comes up, complete it there.": "Проверка сайта на злоупотребления не завершилась (сайт пишет: «{0}»). Нажмите «Новая капча»; если появится окно CloverEye «Site check», пройдите её там.",
+ "The site’s abuse check (spur.us) turned this connection away (it says: “{0}”). It usually clears after a few minutes; it happens more often through a VPN or a Tailscale exit node, and after many captchas in a row. New captcha unlocks when the wait is over.": "Проверка сайта на злоупотребления (spur.us) отклонила это подключение (сайт пишет: «{0}»). Обычно это проходит через несколько минут; чаще случается через VPN или выходной узел Tailscale и после многих капч подряд. Кнопка «Новая капча» станет доступна, когда ожидание закончится.",
  "Loading the {0}…": "Загружаем: {0}…",
  "Look": "Внешний вид",
  "Luna": "Luna",

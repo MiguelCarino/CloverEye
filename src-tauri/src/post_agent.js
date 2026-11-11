@@ -223,14 +223,11 @@
           if (e.origin !== SYS) return;
           const d = e.data && typeof e.data === 'object' ? e.data.twister : null;
           if (!d) return;
-          // An error with no wait attached ("Please unblock spur.us and
-          // mcl.io", say) is the site's abuse check failing inside the hidden
-          // frame, not a real block: the captcha page as the window's own
-          // page passes it, as the first captcha did.
-          if (d.error && !d.cd && !d.pcd) {
-            log('captcha frame answered an error: ' + String(d.error).slice(0, 120));
-            return ownPage('opening the captcha page itself');
-          }
+          // An error ("Please unblock spur.us and mcl.io", say) goes to the
+          // reply form as it is. Opening the captcha page itself does not get
+          // past it: there the site's abuse check fails the same way, and
+          // every retry is one more request the check counts.
+          if (d.error) log('captcha frame answered an error: ' + String(d.error).slice(0, 120));
           clearTimeout(silent);
           removeEventListener('message', onMessage);
           frame.remove();

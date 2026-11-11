@@ -276,6 +276,18 @@ mod tests {
         assert!(!ok("https://4chan.org.evil.com/"));
         assert!(!ok("https://example.com/"));
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dmabuf_guard_only_before_the_webkit_fix() {
+        assert!(needs_dmabuf_guard((2, 50, 4))); // the AppImage's own
+        assert!(needs_dmabuf_guard((2, 52, 6))); // Ubuntu 26.04
+        assert!(needs_dmabuf_guard((2, 54, 0)));
+        assert!(!needs_dmabuf_guard((2, 54, 1)));
+        assert!(!needs_dmabuf_guard((2, 54, 2)));
+        assert!(!needs_dmabuf_guard((2, 56, 0)));
+        assert!(!needs_dmabuf_guard((3, 0, 0)));
+    }
 }
 
 /// The AppImage carries its own WebKit (from Ubuntu 22.04), which aborts
@@ -306,6 +318,28 @@ fn appimage_fonts() {
     }
 }
 
+/// WebKitGTK before 2.54.1 can corrupt its heap while a web process exits
+/// (WebKit bugs 305909 and 315577): a thread tears down its GL context while
+/// the process's exit handlers free the EGL display, and the web process
+/// aborts as CloverEye closes. Ubuntu 26.04's 2.52.6 and the AppImage's own
+/// WebKit are affected. Turning off WebKit's DMA-BUF renderer avoids that
+/// path. Only for those versions, and never over the person's own choice;
+/// CLOVEREYE_KEEP_DMABUF=1 keeps the renderer.
+#[cfg(target_os = "linux")]
+fn webkit_exit_crash_guard() {
+    use webkit2gtk::ffi;
+    let v = unsafe { (ffi::webkit_get_major_version(), ffi::webkit_get_minor_version(), ffi::webkit_get_micro_version()) };
+    if !needs_dmabuf_guard(v) || std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some() || std::env::var_os("CLOVEREYE_KEEP_DMABUF").is_some() {
+        return;
+    }
+    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+}
+
+#[cfg(target_os = "linux")]
+fn needs_dmabuf_guard((major, minor, micro): (u32, u32, u32)) -> bool {
+    (major, minor, micro) < (2, 54, 1)
+}
+
 #[cfg(target_os = "linux")]
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
@@ -313,7 +347,10 @@ fn xml_escape(s: &str) -> String {
 
 fn main() {
     #[cfg(target_os = "linux")]
-    appimage_fonts();
+    {
+        appimage_fonts();
+        webkit_exit_crash_guard();
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {

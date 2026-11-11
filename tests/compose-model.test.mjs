@@ -64,10 +64,14 @@ test('captchaState reads the site’s captcha shapes (tcaptcha.js)', () => {
   assert.deepEqual([wait.state, wait.message, wait.until], ['wait', 'Please wait a & while.', now + 30000]);
   assert.equal(C.captchaState({ error: 'You have to wait', cd: 5 }, now).until, now + 5000);
   assert.equal(C.captchaState({ error: 'Something broke' }).state, 'error');
-  const spur = C.captchaState({ error: 'Please unblock spur.us and mcl.io to proceed.' });
+  const spur = C.captchaState({ error: 'Please unblock spur.us and mcl.io to proceed.' }, now);
   assert.equal(spur.state, 'error');
-  assert.match(spur.message, /New captcha/);
+  assert.equal(spur.until, now + C.ABUSE_CHECK_WAIT_S * 1000, 'New captcha waits before asking the abuse check again');
+  assert.ok(C.ABUSE_CHECK_WAIT_S >= 60);
   assert.match(spur.message, /spur\.us/);
+  assert.match(spur.message, /VPN/);
+  assert.doesNotMatch(spur.message, /Press New captcha/, 'no invitation to ask again at once');
+  assert.equal(C.captchaState({ error: 'Please unblock spur.us and mcl.io', cd: 30 }, now).until, now + 30000, 'the site’s own cooldown wins');
   assert.equal(C.captchaState({ mpcd: 1, sitekey: 'x' }).state, 'blocked');
   assert.equal(C.captchaState(null).state, 'error');
   assert.equal(C.captchaState({ weird: 1 }).state, 'error');

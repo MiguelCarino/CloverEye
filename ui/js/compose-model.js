@@ -46,6 +46,9 @@ export function cooldownSeconds(board, { isThread = false, hasFile = false } = {
 
 // -------------------------------------------------------------- captcha
 
+/** Seconds before New captcha may ask again after the abuse check said no. */
+export const ABUSE_CHECK_WAIT_S = 60;
+
 /** Reads what the site's captcha frame sent (its own tcaptcha.js reads the
  *  same object) into a state the form draws:
  *  - { challenge, ttl, tasks: [{ str | img, items: [png…] }] }: a puzzle.
@@ -54,7 +57,8 @@ export function cooldownSeconds(board, { isThread = false, hasFile = false } = {
  *  - { challenge } without tasks: no captcha needed this time.
  *  - { pcd, pcd_msg }: wait before a captcha may be asked for.
  *  - { mpcd, sitekey }: the site wants an hCaptcha first (not shown here).
- *  - { error, cd }: an error, often with a cooldown. */
+ *  - { error, cd }: an error, often with a cooldown.
+ *  While `until` is ahead, New captcha waits (as on the site's own form). */
 export function captchaState(data, now = Date.now()) {
   if (!data || typeof data !== 'object') return { state: 'error', message: 'The captcha did not load.' };
   const text = (v) => decodeEntities(String(v || '')).replace(/<[^>]+>/g, '').trim();
@@ -67,11 +71,17 @@ export function captchaState(data, now = Date.now()) {
   if (data.error) {
     const cd = Number(data.cd || 0);
     const said = text(data.error);
-    // The site's abuse check (spur.us, mcl.io) did not finish: rarely a real
-    // block. Say what to do rather than echo the site's wording alone.
-    const message = /spur\.us|mcl\.io/i.test(said)
-      ? `The site’s abuse check did not finish (it says: “${said}”). Press New captcha; if the CloverEye “Site check” window comes up, complete it there.`
-      : said || 'The captcha did not load.';
+    // The site's abuse check (spur.us, mcl.io) turned this connection away.
+    // Asking again at once only adds to what it counts: New captcha waits a
+    // minute, and the message says what helps.
+    if (/spur\.us|mcl\.io/i.test(said) && !cd) {
+      return {
+        state: 'error',
+        message: `The site’s abuse check (spur.us) turned this connection away (it says: “${said}”). It usually clears after a few minutes; it happens more often through a VPN or a Tailscale exit node, and after many captchas in a row. New captcha unlocks when the wait is over.`,
+        until: now + ABUSE_CHECK_WAIT_S * 1000,
+      };
+    }
+    const message = said || 'The captcha did not load.';
     return { state: cd ? 'wait' : 'error', message, until: cd ? now + cd * 1000 : 0 };
   }
   if (!data.challenge) return { state: 'error', message: 'The captcha came back in a shape CloverEye does not know.' };

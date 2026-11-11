@@ -53,6 +53,13 @@ install -Dm0644 %{_sourcedir}/README.md %{buildroot}%{_docdir}/%{name}/README.md
 %{_datadir}/icons/hicolor/*/apps/clovereye.png
 
 %changelog
+* Wed Nov 11 2026 MiguelCarino <miguel.carino1994@outlook.com> - 0.1.3-1
+- Test build: when the site's abuse check (spur.us) refuses, New captcha waits
+  a minute instead of retrying at once; the captcha page is no longer reloaded
+  hidden on that error. On WebKitGTK older than 2.54.1, WebKit's DMA-BUF
+  renderer is off, avoiding an upstream crash as the app closes. A helper
+  page that keeps crashing is closed instead of reloaded without end.
+
 * Wed Nov 11 2026 MiguelCarino <miguel.carino1994@outlook.com> - 0.1.2-1
 - Test build: filters, hiding with stubs, inline quotes and previews, poster IDs,
   unread line, thread stats, image search, archive links, links and embeds,

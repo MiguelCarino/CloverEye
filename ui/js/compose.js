@@ -413,6 +413,8 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     const again = h('button', { type: 'button', class: 'btn btn--sm', 'data-key': 'compose-captcha-new', onclick: loadCaptcha }, icon('refresh'), 'New captcha');
     if (c.state !== 'ready') {
       const left = c.until ? Math.max(0, Math.ceil((c.until - Date.now()) / 1000)) : 0;
+      // The site's wait, or the abuse check's: asking now only counts against you.
+      again.disabled = left > 0;
       return h(
         'div',
         { class: `callout ${c.state === 'wait' ? 'callout--warn' : 'callout--danger'}`, role: 'status' },
@@ -694,6 +696,8 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     const s = Math.max(0, Math.ceil((c.until - Date.now()) / 1000));
     const span = el.querySelector('[data-captcha-wait]');
     if (span) span.textContent = waitText(s, c.state);
+    const again = el.querySelector('[data-key="compose-captcha-new"]');
+    if (again && again.disabled && s === 0) again.disabled = false;
     if (st.min) drawHeadNote();
     if (s === 0 && c.state === 'wait' && !c.retried) {
       c.retried = true;

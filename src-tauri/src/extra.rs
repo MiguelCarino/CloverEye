@@ -206,22 +206,84 @@ pub fn post_agent_show(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Reloads of a crashed helper page allowed within `RELOAD_WINDOW`; a page
+/// that crashes more often than that is not reloaded into the same crash.
+const RELOADS_ALLOWED: usize = 2;
+const RELOAD_WINDOW: Duration = Duration::from_secs(60);
+
+/// Whether one more reload fits: `recent` holds the times of earlier
+/// reloads, and is trimmed to the window and, if it fits, given `now`.
+fn reload_allowed(recent: &mut Vec<std::time::Instant>, now: std::time::Instant) -> bool {
+    recent.retain(|t| now.saturating_duration_since(*t) < RELOAD_WINDOW);
+    if recent.len() >= RELOADS_ALLOWED {
+        return false;
+    }
+    recent.push(now);
+    true
+}
+
 /// When the helper's web page dies (WebKit's web process crashed or was
-/// killed), whatever it was doing ends with a reason, and the page reloads.
+/// killed), whatever it was doing ends with a reason, and the page reloads,
+/// at most twice a minute: after that the helper window is closed, and the
+/// next request opens a fresh one.
+/// With CLOVEREYE_HELPER_DEBUG=1 it also logs, from WebKit's side, how every
+/// load of the site's captcha and its checks (spur.us, mcl.io, Cloudflare)
+/// ended: the HTTP status, or the network error.
 #[cfg(target_os = "linux")]
 fn watch_crashes(win: &tauri::WebviewWindow) {
-    use webkit2gtk::{WebViewExt, WebProcessTerminationReason};
+    use webkit2gtk::{WebProcessTerminationReason, WebViewExt};
     let app = win.app_handle().clone();
     let _ = win.with_webview(move |pw| {
+        if debug_on() {
+            log_check_loads(&pw.inner());
+        }
         let app = app.clone();
+        let recent = Mutex::new(Vec::new());
         pw.inner().connect_web_process_terminated(move |view, reason| {
             let why = match reason {
                 WebProcessTerminationReason::ExceededMemoryLimit => "ran out of memory",
                 _ => "crashed",
             };
-            eprintln!("clovereye post helper: the site page {why}; reloading it");
-            fail_pending(&app, &format!("The site page {why} in CloverEye's helper window. It has been reloaded: press New captcha to try again."));
-            view.reload();
+            if reload_allowed(&mut recent.lock().unwrap(), std::time::Instant::now()) {
+                eprintln!("clovereye post helper: the site page {why}; reloading it");
+                fail_pending(&app, &format!("The site page {why} in CloverEye's helper window. It has been reloaded: press New captcha to try again."));
+                view.reload();
+                return;
+            }
+            eprintln!("clovereye post helper: the site page {why} again; closing the helper window");
+            fail_pending(&app, &format!("The site page {why} again in CloverEye's helper window, so the window was closed. Press New captcha to open a fresh one."));
+            // Not from inside WebKit's own signal: on the next turn.
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(w) = app.get_webview_window(AGENT_LABEL) {
+                    let _ = w.destroy();
+                }
+            });
+        });
+    });
+}
+
+/// Debug only: how each load of the captcha and its checks ended.
+#[cfg(target_os = "linux")]
+fn log_check_loads(view: &webkit2gtk::WebView) {
+    use webkit2gtk::{URIRequestExt, URIResponseExt, WebResourceExt, WebViewExt};
+    view.connect_resource_load_started(|_view, res, req| {
+        let uri = req.uri().map(|u| u.to_string()).unwrap_or_default();
+        let host = uri.split('/').nth(2).unwrap_or_default().to_string();
+        let watched = ["spur.us", "mcl.io", "sys.4chan.org", "cloudflare.com"].iter().any(|h| host == *h || host.ends_with(&format!(".{h}")));
+        if !watched {
+            return;
+        }
+        // Up to the path: queries can carry tickets and tokens.
+        let short: String = uri.split(['?', '#']).next().unwrap_or_default().chars().take(160).collect();
+        let s1 = short.clone();
+        res.connect_finished(move |r| {
+            let status = r.response().map(|x| x.status_code()).unwrap_or(0);
+            eprintln!("clovereye post helper: debug: load {s1} status={status}");
+        });
+        res.connect_failed(move |r, e| {
+            let status = r.response().map(|x| x.status_code()).unwrap_or(0);
+            eprintln!("clovereye post helper: debug: load FAILED {short} status={status} error={e}");
         });
     });
 }
@@ -382,6 +444,20 @@ pub async fn save_media(app: tauri::AppHandle, url: String, name: String, dir: O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_crashing_helper_page_is_reloaded_at_most_twice_a_minute() {
+        let t0 = std::time::Instant::now();
+        let mut recent = Vec::new();
+        assert!(reload_allowed(&mut recent, t0));
+        assert!(reload_allowed(&mut recent, t0 + Duration::from_secs(5)));
+        assert!(!reload_allowed(&mut recent, t0 + Duration::from_secs(10)));
+        assert!(!reload_allowed(&mut recent, t0 + Duration::from_secs(59)));
+        // the first reload has left the window
+        assert!(reload_allowed(&mut recent, t0 + Duration::from_secs(61)));
+        assert!(!reload_allowed(&mut recent, t0 + Duration::from_secs(62)));
+        assert!(reload_allowed(&mut recent, t0 + Duration::from_secs(200)));
+    }
 
     #[test]
     fn only_image_host_files_are_saved() {

@@ -603,6 +603,29 @@ const settled = (page) => page.waitForTimeout(300);
   await ctx.close();
 }
 
+// ------------------------------- the abuse check says no: no asking again at once
+{
+  const { ctx, page } = await newPage({ width: 360, height: 740 });
+  const panes = encodeURIComponent(JSON.stringify([{ kind: 'thread', board: 'g', no: 500073 }]));
+  await page.goto(`${BASE}?mock-delay=0&mock-captcha=spur#panes=${panes}`);
+  await page.waitForSelector('[data-key="thread-reply"]');
+  await page.locator('[data-key="thread-reply"]').click();
+  await page.waitForSelector('[data-captcha-wait]');
+  const again = page.locator('[data-key="compose-captcha-new"]');
+  const text = (await page.locator('.composer .callout').textContent()) || '';
+  check('spur: the form says the abuse check turned the connection away, and what helps', /spur\.us/.test(text) && /VPN/.test(text), text.slice(0, 120));
+  check('spur: New captcha waits a minute', (await again.isDisabled()) && /\b(0:5\d|5\d s|1:00|60 s)/.test(text), text.slice(-40));
+  await page.evaluate(() => {
+    const now = Date.now;
+    Date.now = () => now() + 61_000; // a minute on
+  });
+  await page.waitForTimeout(600);
+  check('spur: after the wait New captcha works again', !(await again.isDisabled()));
+  check('spur: 360 px, no horizontal page scroll', await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1));
+  check('spur: no console errors', page._errors.length === 0, page._errors.join(' | '));
+  await ctx.close();
+}
+
 // ---------------------------------------------------- the wait, and drafts
 {
   const { ctx, page } = await newPage();
@@ -616,6 +639,7 @@ const settled = (page) => page.waitForTimeout(300);
   await page.waitForTimeout(2600);
   const w2 = await secs();
   check('wait: the site’s wait counts down live', w1 > 0 && w2 > 0 && w2 <= w1 - 2, `${w1} → ${w2}`);
+  check('wait: New captcha waits with the site', await page.locator('[data-key="compose-captcha-new"]').isDisabled());
   await page.locator('[data-key="compose-min"]').click(); await settled(page);
   const n1 = await page.locator('[data-compose-note]').textContent();
   await page.waitForTimeout(1200);
@@ -684,7 +708,7 @@ const settled = (page) => page.waitForTimeout(300);
   if (await page.locator('[data-key="rail-toggle"]').isVisible()) await page.locator('[data-key="rail-toggle"]').click();
   await page.locator('[data-key="settings"]').click();
   await page.waitForSelector('[data-key="set-lang"]');
-  check('version: Settings shows it', (await page.locator('[data-key="version"]').textContent()).trim() === 'CloverEye 0.1.2');
+  check('version: Settings shows it', (await page.locator('[data-key="version"]').textContent()).trim() === 'CloverEye 0.1.3');
   const es = JSON.parse(await (await page.request.get(`${BASE}i18n/es.json`)).text());
   await page.locator('[data-key="set-lang"]').selectOption('es');
   await page.waitForFunction(() => document.documentElement.lang === 'es');

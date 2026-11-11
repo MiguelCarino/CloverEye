@@ -501,6 +501,7 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       await sleep(Math.min(delay, 200));
       if (mock.captcha === 'wait') return { error: 'You have to wait a while before doing this again.', cd: 30 };
       if (mock.captcha === 'none') return { challenge: 'noop' };
+      if (mock.captcha === 'spur') return { error: 'Please unblock spur.us and mcl.io to proceed.' };
       // Inline pictures, as the site sends (it sends base64 PNGs).
       const svg = (w, body) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="80">${body}</svg>`)}`;
       // The site's shape: tasks, each a prompt and choices; the answer is the
