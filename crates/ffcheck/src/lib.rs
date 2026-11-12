@@ -182,8 +182,18 @@ fn exe_name() -> &'static str {
     }
 }
 
+/// Where package managers put ffmpeg outside the PATH an app gets when it is
+/// opened from Finder or the Dock (/usr/bin:/bin:/usr/sbin:/sbin): Homebrew
+/// on Apple silicon, Homebrew on Intel, MacPorts.
+#[cfg(target_os = "macos")]
+const EXTRA_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"];
+#[cfg(not(target_os = "macos"))]
+const EXTRA_DIRS: &[&str] = &[];
+
 /// The binary to run: a copy bundled next to the app (Windows and macOS
-/// builds ship one), else whatever `ffmpeg` is on PATH.
+/// builds ship one), else `ffmpeg` on PATH, else (macOS) the first one in
+/// Homebrew's or MacPorts' folder, else the bare name (which then fails, and
+/// the check reports ffmpeg as not found).
 pub fn ffmpeg_binary(app_dir: Option<&Path>) -> PathBuf {
     if let Some(dir) = app_dir {
         let bundled = dir.join(exe_name());
@@ -191,7 +201,22 @@ pub fn ffmpeg_binary(app_dir: Option<&Path>) -> PathBuf {
             return bundled;
         }
     }
-    PathBuf::from(exe_name())
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    pick_binary(&path, EXTRA_DIRS)
+}
+
+/// `ffmpeg` when PATH has one (Command finds it there), else the first of
+/// `extra` that holds one, by full path, else the bare name.
+fn pick_binary(path: &std::ffi::OsStr, extra: &[&str]) -> PathBuf {
+    let name = exe_name();
+    if std::env::split_paths(path).any(|d| d.join(name).is_file()) {
+        return PathBuf::from(name);
+    }
+    extra
+        .iter()
+        .map(|d| Path::new(d).join(name))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from(name))
 }
 
 fn run(bin: &Path, args: &[&str]) -> Result<String, String> {
@@ -310,7 +335,27 @@ mod tests {
         std::fs::write(dir.join(exe_name()), b"").unwrap();
         assert_eq!(ffmpeg_binary(Some(&dir)), dir.join(exe_name()));
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(ffmpeg_binary(None), PathBuf::from(exe_name()));
+    }
+
+    #[test]
+    fn falls_back_to_package_manager_folders_off_path() {
+        let base = std::env::temp_dir().join(format!("clovereye-ffpick-{}", std::process::id()));
+        let (on_path, brew, empty) = (base.join("path"), base.join("brew"), base.join("empty"));
+        for d in [&on_path, &brew, &empty] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(brew.join(exe_name()), b"").unwrap();
+        let extra = [empty.to_str().unwrap(), brew.to_str().unwrap()];
+        // not on PATH: the package manager's copy, by full path
+        let path = std::env::join_paths([&on_path]).unwrap();
+        assert_eq!(pick_binary(&path, &extra), brew.join(exe_name()));
+        // on PATH: the bare name, as before
+        std::fs::write(on_path.join(exe_name()), b"").unwrap();
+        assert_eq!(pick_binary(&path, &extra), PathBuf::from(exe_name()));
+        // nowhere: the bare name, which the check then reports as not found
+        let nowhere = std::env::join_paths([&empty]).unwrap();
+        assert_eq!(pick_binary(&nowhere, &[empty.to_str().unwrap()]), PathBuf::from(exe_name()));
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
