@@ -290,6 +290,17 @@ mod tests {
         assert!(!needs_dmabuf_guard((2, 56, 0)));
         assert!(!needs_dmabuf_guard((3, 0, 0)));
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn http1_only_with_libsoup_older_than_3_8() {
+        assert!(needs_http1((3, 0, 7))); // Ubuntu 22.04, the AppImage's own
+        assert!(needs_http1((3, 4, 4))); // Ubuntu 24.04
+        assert!(needs_http1((3, 6, 6))); // Ubuntu 26.04
+        assert!(!needs_http1((3, 8, 0)));
+        assert!(!needs_http1((3, 8, 1))); // Fedora 45
+        assert!(!needs_http1((4, 0, 0)));
+    }
 }
 
 /// The AppImage carries its own WebKit (from Ubuntu 22.04), which aborts
@@ -360,6 +371,28 @@ fn video_decoder_ranks() {
     std::env::set_var("GST_PLUGIN_FEATURE_RANK", ranks.join(","));
 }
 
+/// libsoup before 3.8 (Ubuntu 22.04's 3.0.7, which the AppImage bundles;
+/// 24.04's 3.4.4; 26.04's 3.6.6) fails an HTTP/2 answer from
+/// mcl.spur.us with "HTTP/2 Error: NO_ERROR", where 3.8.1 reads it. The
+/// captcha's abuse check then cannot load its script and the site says
+/// "Please unblock spur.us and mcl.io". Over HTTP/1.1 the same libsoup
+/// reads it, so WebKit uses HTTP/1.1 with those versions.
+/// SOUP_FORCE_HTTP1 set by hand wins; CLOVEREYE_HTTP2=1 keeps HTTP/2.
+#[cfg(target_os = "linux")]
+fn http1_guard() {
+    let keep = std::env::var_os("CLOVEREYE_HTTP2").is_some_and(|v| v != "0" && !v.is_empty());
+    if keep || std::env::var_os("SOUP_FORCE_HTTP1").is_some() || !needs_http1(diag::soup_version()) {
+        return;
+    }
+    std::env::set_var("SOUP_FORCE_HTTP1", "1");
+    diag::HTTP1_GUARD_SET.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(target_os = "linux")]
+fn needs_http1(v: (u32, u32, u32)) -> bool {
+    v < (3, 8, 0)
+}
+
 #[cfg(target_os = "linux")]
 fn needs_dmabuf_guard((major, minor, micro): (u32, u32, u32)) -> bool {
     (major, minor, micro) < (2, 54, 1)
@@ -376,6 +409,7 @@ fn main() {
         appimage_fonts();
         webkit_exit_crash_guard();
         video_decoder_ranks();
+        http1_guard();
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

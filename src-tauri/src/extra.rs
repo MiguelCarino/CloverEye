@@ -277,11 +277,18 @@ fn log_check_loads(view: &webkit2gtk::WebView) {
         // Up to the path: queries can carry tickets and tokens.
         let short: String = uri.split(['?', '#']).next().unwrap_or_default().chars().take(160).collect();
         let s1 = short.clone();
+        // WebKit sends "finished" after "failed" too: one line per load.
+        let failed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let f1 = failed.clone();
         res.connect_finished(move |r| {
+            if f1.get() {
+                return;
+            }
             let status = r.response().map(|x| x.status_code()).unwrap_or(0);
             crate::diag::quiet(&format!("post helper: load {s1} status={status}"), debug_on());
         });
         res.connect_failed(move |r, e| {
+            failed.set(true);
             let status = r.response().map(|x| x.status_code()).unwrap_or(0);
             crate::diag::quiet(&format!("post helper: load FAILED {short} status={status} error={e}"), debug_on());
         });

@@ -60,7 +60,9 @@ install -Dm0644 %{_sourcedir}/README.md %{buildroot}%{_docdir}/%{name}/README.md
 - Test build: when the site's abuse check (spur.us) refuses, New captcha waits
   a minute instead of retrying at once; the captcha page is no longer reloaded
   hidden on that error. On WebKitGTK older than 2.54.1, WebKit's DMA-BUF
-  renderer is off, avoiding an upstream crash as the app closes. A helper
+  renderer is off, avoiding an upstream crash as the app closes. With
+  libsoup older than 3.8, WebKit loads over HTTP/1.1: those versions fail
+  spur.us's HTTP/2 answer and the captcha asked to unblock it. A helper
   page that keeps crashing is closed instead of reloaded without end.
   Settings > Diagnostics saves a report to attach to bug reports. Ask (off
   by default): a model server on this computer answers questions about the

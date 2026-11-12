@@ -140,6 +140,12 @@ fn gpu() -> (u64, String) {
         cmd.creation_flags(0x0800_0000);
     }
     if let Ok(o) = cmd.output() {
+        if !o.status.success() {
+            // e.g. "Failed to initialize NVML: Driver/library version mismatch"
+            // after a driver update without a restart: say why it reads 0
+            let why = String::from_utf8_lossy(if o.stdout.is_empty() { &o.stderr } else { &o.stdout }).lines().next().unwrap_or_default().chars().take(160).collect::<String>();
+            crate::diag::quiet(&format!("assistant: nvidia-smi could not read the graphics card: {why}"), false);
+        }
         for line in String::from_utf8_lossy(&o.stdout).lines() {
             if let Some((name, mib)) = line.rsplit_once(',') {
                 let bytes = mib.trim().parse::<u64>().unwrap_or(0) * 1_048_576;

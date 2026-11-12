@@ -480,6 +480,7 @@ dependencies = [
  "clovereye-ffcheck",
  "serde",
  "serde_json",
+ "soup3-sys",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",

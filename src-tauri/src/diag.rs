@@ -33,6 +33,7 @@ struct Log {
 static LOG: Mutex<Log> = Mutex::new(Log { lines: VecDeque::new(), file: None, written: 0 });
 /// CloverEye turned WebKit's DMA-BUF renderer off itself (main.rs).
 pub static DMABUF_GUARD_SET: AtomicBool = AtomicBool::new(false);
+pub static HTTP1_GUARD_SET: AtomicBool = AtomicBool::new(false);
 
 /// UTC "2026-11-11 21:46:12" for a Unix time (no date crate needed).
 fn utc(secs: u64) -> String {
@@ -169,6 +170,19 @@ fn webkit_lines(out: &mut String) {
         Err(_) => "GStreamer's own choice".to_string(),
     };
     out.push_str(&format!("Video decoders: {hw}\n"));
+    let (a, b, c) = soup_version();
+    let http = match std::env::var("SOUP_FORCE_HTTP1") {
+        Ok(_) if HTTP1_GUARD_SET.load(Ordering::SeqCst) => "HTTP/1.1 (CloverEye: this libsoup is older than 3.8; CLOVEREYE_HTTP2=1 keeps HTTP/2)".to_string(),
+        Ok(v) => format!("HTTP/1.1 (SOUP_FORCE_HTTP1={v} set outside CloverEye)"),
+        Err(_) => "HTTP/2 allowed".to_string(),
+    };
+    out.push_str(&format!("libsoup: {a}.{b}.{c}, {http}\n"));
+}
+
+/// The libsoup WebKit loaded (it is linked into this process).
+#[cfg(target_os = "linux")]
+pub fn soup_version() -> (u32, u32, u32) {
+    unsafe { (soup3_sys::soup_get_major_version(), soup3_sys::soup_get_minor_version(), soup3_sys::soup_get_micro_version()) }
 }
 
 #[cfg(not(target_os = "linux"))]
