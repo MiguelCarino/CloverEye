@@ -9,9 +9,11 @@ import { normalizeArchivePrefs, archivedBoards } from './archive-model.js';
 import { EMBED_MODES } from './link-model.js';
 import { displayDefaults, normalizeDisplay } from './display-model.js';
 import { normalizeStatsSettings } from './stats-model.js';
+import { aiDefaults, normalizeAi, AI_KIND_LABELS } from './ai-model.js';
 
-/** 2: Your stats (opt-in, local only). */
-export const SETUP_VERSION = 2;
+/** 2: Your stats (opt-in, local only). 3: Assistant (opt-in, a model on
+ *  this computer). */
+export const SETUP_VERSION = 3;
 
 /** Every step, with the setup version that introduced it. A later release
  *  that adds a step gives it `since: 2`; people who finished version 1 then
@@ -24,6 +26,7 @@ export const STEPS = Object.freeze([
   { id: 'watching', label: 'Watching', since: 1 },
   { id: 'files', label: 'Files and privacy', short: 'Files', since: 1 },
   { id: 'stats', label: 'Your stats', short: 'Stats', since: 2 },
+  { id: 'assistant', label: 'Assistant', since: 3 },
   { id: 'done', label: 'Done', since: 1 },
 ]);
 
@@ -166,6 +169,10 @@ export function defaults() {
      *  counting your own activity on this computer (`mine`, off). The
      *  samples and counts live in files of their own, never here. */
     stats: normalizeStatsSettings(null),
+    /** Ask (ai-model.js): a model server on this computer answers questions
+     *  about what is loaded. Off unless turned on; `kind` and `port` name
+     *  the server, `reach` how much one question reads. */
+    ai: aiDefaults(),
   };
 }
 
@@ -282,6 +289,7 @@ export function normalizeSettings(raw) {
   if (isObj(raw.embeds)) out.embeds = { mode: pick(raw.embeds.mode, EMBED_MODES, d.embeds.mode) };
   out.display = normalizeDisplay(raw.display);
   out.stats = normalizeStatsSettings(raw.stats);
+  out.ai = normalizeAi(raw.ai);
   out.lastRead = normalizeLastRead(raw.lastRead);
   if (Array.isArray(raw.yous)) {
     out.yous = raw.yous
@@ -702,6 +710,11 @@ export function summary(s, { clip = null } = {}) {
     step: 'stats',
     label: 'Your stats',
     value: s.stats?.mine ? 'Counted on this computer only' : 'Off',
+  });
+  rows.push({
+    step: 'assistant',
+    label: 'Assistant',
+    value: s.ai?.enabled && s.ai.model ? `${s.ai.model} · ${AI_KIND_LABELS[s.ai.kind] || 'Other local server'}` : 'Off',
   });
   return rows;
 }

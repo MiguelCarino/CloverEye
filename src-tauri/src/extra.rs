@@ -139,7 +139,7 @@ pub async fn post_agent(app: tauri::AppHandle, op: String, args: Value) -> Resul
     let id = state.counter.fetch_add(1, Ordering::SeqCst).to_string();
     let (tx, rx) = oneshot::channel();
     state.pending.lock().unwrap().insert(id.clone(), tx);
-    eprintln!("clovereye post helper: request {id}: {op}");
+    crate::diag::note(&format!("post helper: request {id}: {op}"));
     let req = json!({ "id": id, "op": op, "args": args });
     if let Err(e) = win.eval(&format!("window.__ceAgent && window.__ceAgent.run({req})")) {
         state.pending.lock().unwrap().remove(&id);
@@ -156,7 +156,7 @@ pub async fn post_agent(app: tauri::AppHandle, op: String, args: Value) -> Resul
             return done.unwrap_or_else(|_| Err("The helper stopped.".into()));
         }
         if state.pending.lock().unwrap().contains_key(&id) {
-            eprintln!("clovereye post helper: no captcha after {SHOW_AFTER_SECS} s; showing the window");
+            crate::diag::note(&format!("post helper: no captcha after {SHOW_AFTER_SECS} s; showing the window"));
             let _ = win.show();
             let _ = win.unminimize();
             let _ = win.set_focus();
@@ -226,17 +226,16 @@ fn reload_allowed(recent: &mut Vec<std::time::Instant>, now: std::time::Instant)
 /// killed), whatever it was doing ends with a reason, and the page reloads,
 /// at most twice a minute: after that the helper window is closed, and the
 /// next request opens a fresh one.
-/// With CLOVEREYE_HELPER_DEBUG=1 it also logs, from WebKit's side, how every
-/// load of the site's captcha and its checks (spur.us, mcl.io, Cloudflare)
-/// ended: the HTTP status, or the network error.
+/// It also keeps, from WebKit's side, how every load of the site's captcha
+/// and its checks (spur.us, mcl.io, Cloudflare) ended: the HTTP status, or
+/// the network error. That goes in the diagnostics report (diag.rs), and to
+/// the terminal with CLOVEREYE_HELPER_DEBUG=1.
 #[cfg(target_os = "linux")]
 fn watch_crashes(win: &tauri::WebviewWindow) {
     use webkit2gtk::{WebProcessTerminationReason, WebViewExt};
     let app = win.app_handle().clone();
     let _ = win.with_webview(move |pw| {
-        if debug_on() {
-            log_check_loads(&pw.inner());
-        }
+        log_check_loads(&pw.inner());
         let app = app.clone();
         let recent = Mutex::new(Vec::new());
         pw.inner().connect_web_process_terminated(move |view, reason| {
@@ -245,12 +244,12 @@ fn watch_crashes(win: &tauri::WebviewWindow) {
                 _ => "crashed",
             };
             if reload_allowed(&mut recent.lock().unwrap(), std::time::Instant::now()) {
-                eprintln!("clovereye post helper: the site page {why}; reloading it");
+                crate::diag::note(&format!("post helper: the site page {why}; reloading it"));
                 fail_pending(&app, &format!("The site page {why} in CloverEye's helper window. It has been reloaded: press New captcha to try again."));
                 view.reload();
                 return;
             }
-            eprintln!("clovereye post helper: the site page {why} again; closing the helper window");
+            crate::diag::note(&format!("post helper: the site page {why} again; closing the helper window"));
             fail_pending(&app, &format!("The site page {why} again in CloverEye's helper window, so the window was closed. Press New captcha to open a fresh one."));
             // Not from inside WebKit's own signal: on the next turn.
             let app = app.clone();
@@ -263,7 +262,8 @@ fn watch_crashes(win: &tauri::WebviewWindow) {
     });
 }
 
-/// Debug only: how each load of the captcha and its checks ended.
+/// How each load of the captcha and its checks ended: kept for the
+/// diagnostics report, printed with debug on.
 #[cfg(target_os = "linux")]
 fn log_check_loads(view: &webkit2gtk::WebView) {
     use webkit2gtk::{URIRequestExt, URIResponseExt, WebResourceExt, WebViewExt};
@@ -279,11 +279,11 @@ fn log_check_loads(view: &webkit2gtk::WebView) {
         let s1 = short.clone();
         res.connect_finished(move |r| {
             let status = r.response().map(|x| x.status_code()).unwrap_or(0);
-            eprintln!("clovereye post helper: debug: load {s1} status={status}");
+            crate::diag::quiet(&format!("post helper: load {s1} status={status}"), debug_on());
         });
         res.connect_failed(move |r, e| {
             let status = r.response().map(|x| x.status_code()).unwrap_or(0);
-            eprintln!("clovereye post helper: debug: load FAILED {short} status={status} error={e}");
+            crate::diag::quiet(&format!("post helper: load FAILED {short} status={status} error={e}"), debug_on());
         });
     });
 }
@@ -317,7 +317,14 @@ pub fn post_agent_reply(webview: tauri::Webview, id: String, ok: bool, data: Val
     }
     if id == "log" {
         // What the helper saw, for the terminal (no page content).
-        eprintln!("clovereye post helper: {}", data.as_str().unwrap_or_default());
+        let line = data.as_str().unwrap_or_default();
+        if line.starts_with("debug:") || line.starts_with("frame:") {
+            // debug mode only: these carry page text and whole addresses, so
+            // they stay out of the log file and the diagnostics report
+            eprintln!("clovereye post helper: {line}");
+        } else {
+            crate::diag::note(&format!("post helper: {line}"));
+        }
         return Ok(());
     }
     let window = webview.app_handle().get_webview_window(AGENT_LABEL);

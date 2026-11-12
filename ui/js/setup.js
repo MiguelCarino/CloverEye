@@ -12,6 +12,7 @@ import { tr } from './i18n.js';
 import { embedTitle } from './embeds.js';
 import { ago } from './browse-model.js';
 import { displayDefaults, postTime, posterName, fileView, autoExpands } from './display-model.js';
+import { assistantControls, idleDetect, runDetect } from './ai-setup-view.js';
 
 export const RULES_URL = 'https://www.4chan.org/rules';
 
@@ -542,6 +543,7 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
     query: '',
     gridFocus: null, // board code holding the grid's single Tab stop
     ffmpeg: { status: 'idle', check: null },
+    ai: idleDetect(), // model servers and specs (ai-setup-view.js)
     notifyPermission: null,
   };
 
@@ -636,6 +638,14 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
     // The board list is the first request to the site, made only here.
     if (id === 'boards' && st.boards.status === 'idle') loadBoards();
     if (id === 'video' && st.ffmpeg.status === 'idle') checkFfmpeg();
+    if (id === 'assistant' && st.ai.status === 'idle') detectAi();
+  }
+
+  /** Looks for model servers on this computer (never installs anything). */
+  function detectAi(port = 0) {
+    runDetect(bridge, st.ai, port, () => {
+      if (step().id === 'assistant') render('keep');
+    });
   }
 
   function next() {
@@ -810,7 +820,7 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
         h('img', { class: 'welcome-mark', src: 'assets/icon.svg', alt: '', width: 72, height: 72 }),
         head(
           'Welcome to CloverEye',
-          'A desktop client for reading 4chan: boards and threads in a clean layout, a thread watcher, filters, and Clip, which fits a video to the board you are posting to.',
+          'A desktop client for reading 4chan: boards and threads in a clean layout, a thread watcher, filters, Clip, which fits a video to the board you are posting to, and an optional assistant that runs on your computer.',
           'First-time setup',
         ),
         h(
@@ -1350,6 +1360,24 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
         h('p', {
           class: 'field__hint',
           text: 'The Stats pane also shows how busy boards are, from the catalogs you open. Sampling boards in the background is a separate switch in Settings → Stats, off by default.',
+        }),
+      );
+    },
+
+    assistant() {
+      return h(
+        'section',
+        { class: 'step' },
+        head('Assistant', 'CloverEye can use an AI model running on this computer to answer questions about the threads you have open, with links to the posts it used. It is off unless you turn it on.'),
+        assistantControls({
+          ai: st.draft.ai || M.defaults().ai,
+          detect: st.ai,
+          onChange: (ai) =>
+            update((s) => {
+              s.ai = ai;
+              return s;
+            }),
+          onDetect: (port) => detectAi(port),
         }),
       );
     },

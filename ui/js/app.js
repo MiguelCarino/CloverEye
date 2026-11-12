@@ -20,6 +20,11 @@ const bridge = createBridge({
   mock: mockOptionsFromSearch(location.search),
 });
 
+// Errors the page did not handle go in the diagnostics report (Settings ›
+// Diagnostics), with where they happened; never post text or settings.
+window.addEventListener('error', (e) => bridge.noteError([e.message, 'at', [String(e.filename || '').split('/').pop(), e.lineno].join(':')].join(' ')));
+window.addEventListener('unhandledrejection', (e) => bridge.noteError(['unhandled:', e.reason?.message ?? e.reason].join(' ')));
+
 const titleEl = document.getElementById('titlebarTitle');
 // The title is often a thread's name: only the app's own titles ("Settings",
 // "Setup · Look"...) are translated, here, and the page translator keeps out.

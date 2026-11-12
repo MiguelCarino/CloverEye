@@ -345,10 +345,46 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the ai_chat command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ai-chat",
+          "markdownDescription": "Enables the ai_chat command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ai_detect command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ai-detect",
+          "markdownDescription": "Enables the ai_detect command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ai_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ai-stop",
+          "markdownDescription": "Enables the ai_stop command without any pre-configured scope."
+        },
+        {
           "description": "Enables the check_ffmpeg command without any pre-configured scope.",
           "type": "string",
           "const": "allow-check-ffmpeg",
           "markdownDescription": "Enables the check_ffmpeg command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the diagnostics_note command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-diagnostics-note",
+          "markdownDescription": "Enables the diagnostics_note command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the diagnostics_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-diagnostics-save",
+          "markdownDescription": "Enables the diagnostics_save command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the diagnostics_text command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-diagnostics-text",
+          "markdownDescription": "Enables the diagnostics_text command without any pre-configured scope."
         },
         {
           "description": "Enables the download_file command without any pre-configured scope.",
@@ -477,10 +513,46 @@
           "markdownDescription": "Enables the stats_write command without any pre-configured scope."
         },
         {
+          "description": "Denies the ai_chat command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ai-chat",
+          "markdownDescription": "Denies the ai_chat command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ai_detect command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ai-detect",
+          "markdownDescription": "Denies the ai_detect command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ai_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ai-stop",
+          "markdownDescription": "Denies the ai_stop command without any pre-configured scope."
+        },
+        {
           "description": "Denies the check_ffmpeg command without any pre-configured scope.",
           "type": "string",
           "const": "deny-check-ffmpeg",
           "markdownDescription": "Denies the check_ffmpeg command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the diagnostics_note command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-diagnostics-note",
+          "markdownDescription": "Denies the diagnostics_note command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the diagnostics_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-diagnostics-save",
+          "markdownDescription": "Denies the diagnostics_save command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the diagnostics_text command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-diagnostics-text",
+          "markdownDescription": "Denies the diagnostics_text command without any pre-configured scope."
         },
         {
           "description": "Denies the download_file command without any pre-configured scope.",

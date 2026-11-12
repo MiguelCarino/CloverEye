@@ -10,9 +10,9 @@ import { join } from 'node:path';
 
 const root = new URL('..', import.meta.url).pathname;
 const JS = readdirSync(join(root, 'ui/js'))
-  .filter((f) => f.endsWith('.js') && !['i18n.js', 'look.js', 'render.js', 'hover.js'].includes(f))
+  .filter((f) => f.endsWith('.js') && !['i18n.js', 'look.js', 'render.js', 'hover.js', 'ai-prompt.js'].includes(f))
   .map((f) => join(root, 'ui/js', f));
-const RUST = ['src-tauri/src/main.rs', 'src-tauri/src/extra.rs', 'src-tauri/src/links.rs', 'src-tauri/src/offline.rs', 'src-tauri/src/stats.rs'].map((f) => join(root, f));
+const RUST = ['src-tauri/src/main.rs', 'src-tauri/src/extra.rs', 'src-tauri/src/links.rs', 'src-tauri/src/offline.rs', 'src-tauri/src/stats.rs', 'src-tauri/src/ai.rs', 'src-tauri/src/diag.rs'].map((f) => join(root, f));
 
 function literals(src) {
   const out = [];
@@ -73,7 +73,7 @@ const looksLikeText = (s) => {
   if (/^[\w-]+(\s[\w-]+)*$/.test(bare) && /-/.test(bare) && !/\s/.test(bare)) return false; // kebab-case
   if (/^[a-z]/.test(bare) && !/\s/.test(bare)) return false; // single lower-case words: keys
   if (/__|--|\[|\]|^\(|^\/|\.field__|, \.|^[a-z-]+(\s[a-z_-]+)+$/.test(bare) && !/\s[a-z]+\s/.test(bare.replace(/^[a-z-]+\s/, ''))) return false; // classes, selectors, paths
-  if (/^(brew|sudo|dnf|apt|noopener)\b/.test(bare)) return false; // commands
+  if (/^(brew|sudo|dnf|apt|noopener|ollama)\b/.test(bare)) return false; // commands
   return true;
 };
 

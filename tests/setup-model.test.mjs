@@ -7,25 +7,28 @@ import * as M from '../ui/js/setup-model.js';
 const boards = JSON.parse(readFileSync(new URL('../ui/data/boards.sample.json', import.meta.url))).boards;
 const now = new Date('2026-11-04T12:00:00Z');
 
-test('eight steps: seven from version 1, Your stats from version 2; NSFW is not one of them', () => {
+test('nine steps: seven from version 1, Your stats from 2, Assistant from 3; NSFW is not one of them', () => {
   assert.deepEqual(
     M.STEPS.map((s) => s.id),
-    ['welcome', 'look', 'boards', 'video', 'watching', 'files', 'stats', 'done'],
+    ['welcome', 'look', 'boards', 'video', 'watching', 'files', 'stats', 'assistant', 'done'],
   );
-  assert.ok(M.STEPS.every((s) => s.label && s.since === (s.id === 'stats' ? 2 : 1)));
-  assert.equal(M.SETUP_VERSION, 2);
+  const since = { stats: 2, assistant: 3 };
+  assert.ok(M.STEPS.every((s) => s.label && s.since === (since[s.id] || 1)));
+  assert.equal(M.SETUP_VERSION, 3);
 });
 
-test('upgrading from version 1: only Your stats, then Done, once', () => {
+test('upgrading: only the steps added since, then Done, once', () => {
   const v1done = M.completeSetup(M.defaults(), { now, version: 1 });
   assert.equal(M.needsSetup(v1done), true);
-  assert.deepEqual(M.stepsToShow(v1done).map((s) => s.id), ['stats', 'done']);
-  const v2done = M.completeSetup(v1done, { now });
-  assert.equal(v2done.setupVersion, 2);
-  assert.equal(M.needsSetup(v2done), false);
-  assert.deepEqual(M.stepsToShow(v2done), [], 'not shown again');
-  // never finished: the whole flow, the new step included
-  assert.deepEqual(M.stepsToShow(M.defaults()).map((s) => s.id).slice(-2), ['stats', 'done']);
+  assert.deepEqual(M.stepsToShow(v1done).map((s) => s.id), ['stats', 'assistant', 'done']);
+  const v2done = M.completeSetup(M.defaults(), { now, version: 2 });
+  assert.deepEqual(M.stepsToShow(v2done).map((s) => s.id), ['assistant', 'done']);
+  const v3done = M.completeSetup(v1done, { now });
+  assert.equal(v3done.setupVersion, 3);
+  assert.equal(M.needsSetup(v3done), false);
+  assert.deepEqual(M.stepsToShow(v3done), [], 'not shown again');
+  // never finished: the whole flow, the new steps included
+  assert.deepEqual(M.stepsToShow(M.defaults()).map((s) => s.id).slice(-3), ['stats', 'assistant', 'done']);
   // the answers given in version 1 are kept
   const old = M.completeSetup({ ...M.defaults(), favourites: ['g'], theme: 'light' }, { now, version: 1 });
   const up = M.completeSetup({ ...old, stats: { ...old.stats, mine: true } }, { now });
@@ -259,29 +262,29 @@ test('boardHue is stable and never lands in the green band', () => {
 });
 
 test('stepsToShow: first run and rerun show all; up to date shows none', () => {
-  assert.equal(M.stepsToShow(M.defaults()).length, 8);
-  assert.equal(M.stepsToShow(null).length, 8);
+  assert.equal(M.stepsToShow(M.defaults()).length, 9);
+  assert.equal(M.stepsToShow(null).length, 9);
   const done = M.completeSetup(M.defaults(), { now });
   assert.deepEqual(M.stepsToShow(done), []);
-  assert.equal(M.stepsToShow(done, { rerun: true }).length, 8);
+  assert.equal(M.stepsToShow(done, { rerun: true }).length, 9);
   assert.equal(M.needsSetup(done), false);
   assert.equal(M.needsSetup(M.defaults()), true);
   assert.equal(M.needsSetup(null), true);
 });
 
 test('setupVersion migration: a later release shows only its new steps, then Done', () => {
-  const v3steps = [...M.STEPS.slice(0, 7), { id: 'filters', label: 'Filters', since: 3 }, M.STEPS[7]];
-  const v2done = M.completeSetup(M.defaults(), { now, version: 2 });
-  const shown = M.stepsToShow(v2done, { steps: v3steps, version: 3 });
+  const v4steps = [...M.STEPS.slice(0, 8), { id: 'filters', label: 'Filters', since: 4 }, M.STEPS[8]];
+  const v3done = M.completeSetup(M.defaults(), { now, version: 3 });
+  const shown = M.stepsToShow(v3done, { steps: v4steps, version: 4 });
   assert.deepEqual(shown.map((s) => s.id), ['filters', 'done']);
-  assert.equal(M.needsSetup(v2done, 3), true);
-  const v3done = M.completeSetup(v2done, { now, version: 3 });
-  assert.deepEqual(M.stepsToShow(v3done, { steps: v3steps, version: 3 }), []);
-  // two versions behind: both versions' new steps
+  assert.equal(M.needsSetup(v3done, 4), true);
+  const v4done = M.completeSetup(v3done, { now, version: 4 });
+  assert.deepEqual(M.stepsToShow(v4done, { steps: v4steps, version: 4 }), []);
+  // versions behind: every newer version's steps
   const v1done = M.completeSetup(M.defaults(), { now, version: 1 });
-  assert.deepEqual(M.stepsToShow(v1done, { steps: v3steps, version: 3 }).map((s) => s.id), ['stats', 'filters', 'done']);
+  assert.deepEqual(M.stepsToShow(v1done, { steps: v4steps, version: 4 }).map((s) => s.id), ['stats', 'assistant', 'filters', 'done']);
   // never finished: still the whole flow
-  assert.equal(M.stepsToShow(M.defaults(), { steps: v3steps, version: 3 }).length, 9);
+  assert.equal(M.stepsToShow(M.defaults(), { steps: v4steps, version: 4 }).length, 10);
 });
 
 test('completeSetup stamps version and time, normalises, and records a skip', () => {
@@ -383,8 +386,10 @@ test('installHint: a copyable command per OS, never run by the app', () => {
 test('summary lists every setup answer and never mentions NSFW', () => {
   const s = M.completeSetup({ ...M.defaults(), favourites: ['g', 'diy'] }, { now });
   const rows = M.summary(s, { clip: M.clipReadiness({ found: false }) });
-  assert.deepEqual(rows.map((r) => r.step), ['look', 'boards', 'video', 'watching', 'files', 'stats']);
+  assert.deepEqual(rows.map((r) => r.step), ['look', 'boards', 'video', 'watching', 'files', 'stats', 'assistant']);
   assert.equal(rows[5].value, 'Off');
+  assert.equal(rows[6].value, 'Off');
+  assert.equal(M.summary({ ...s, ai: { enabled: true, kind: 'ollama', port: 11434, model: 'llama3.1:8b', reach: 'normal' } })[6].value, 'llama3.1:8b · Ollama');
   assert.equal(M.summary({ ...s, stats: { ...s.stats, mine: true } })[5].value, 'Counted on this computer only');
   assert.equal(rows[0].value, 'System theme · Comfortable · Default text');
   assert.equal(rows[1].value, '/g/ /diy/');

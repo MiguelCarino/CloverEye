@@ -94,6 +94,7 @@ export function panesFromHash(hash) {
       (v.kind === 'boards' ||
         v.kind === 'saved' ||
         v.kind === 'stats' ||
+        v.kind === 'ask' ||
         (v.kind === 'board' && /^[a-z0-9]{1,10}$/.test(v.board)) ||
         ((v.kind === 'thread' || v.kind === 'offline') && /^[a-z0-9]{1,10}$/.test(v.board) && Number.isSafeInteger(v.no) && v.no > 0)),
   );

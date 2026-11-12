@@ -4,6 +4,7 @@
 // boards from the recorded fixture, a synthetic catalog, a canned ffmpeg
 // check, local pictures instead of the image host).
 
+import { mockAnswer, MOCK_GPU, MOCK_REFUSED } from './ai-prompt.js';
 import { catalogThreads, threadTitle } from './browse-model.js';
 import { addSample, emptyBoardStats, pruneBoardStats, DAY_MS } from './stats-model.js';
 import { emptyMine } from './my-stats-model.js';
@@ -297,6 +298,24 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       async openLink(url) {
         await invoke('open_link', { url });
       },
+      /** Diagnostics (src-tauri/src/diag.rs): the report as text, or saved
+       *  to the download folder (returns the path); noteError keeps a UI
+       *  error for the report. */
+      diagnosticsText: () => invoke('diagnostics_text'),
+      saveDiagnostics: (dir = '') => invoke('diagnostics_save', { dir: dir || null }),
+      noteError(line) {
+        invoke('diagnostics_note', { line: String(line) }).catch(() => {});
+      },
+      /** Ask (src-tauri/src/ai.rs): model servers running on this computer
+       *  and its specs; a question streamed to `onEvent` ({type: 'text',
+       *  text} pieces, then 'done' or 'error'); stopping one. */
+      aiDetect: (port = 0) => invoke('ai_detect', { port: port || null }),
+      aiChat({ id, kind, port, model, messages, numCtx }, onEvent) {
+        const ch = new tauri.core.Channel();
+        ch.onmessage = onEvent;
+        return invoke('ai_chat', { id, kind, port, model, messages, numCtx, onEvent: ch });
+      },
+      aiStop: (id) => invoke('ai_stop', { id }).catch(() => {}),
       window: {
         available: Boolean(tauri.window?.getCurrentWindow),
         minimize: () => win()?.minimize(),
@@ -326,6 +345,7 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
     }
   };
   let statsMemory = {};
+  const aiJobs = new Map(); // mock answers under way → stopped
   const seeded = new Set();
   const readStats = (kind) => {
     try {
@@ -665,6 +685,44 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       if (!/^https?:\/\//i.test(String(url))) throw new Error('Only http and https links open from posts.');
       globalThis.open?.(url, '_blank', 'noopener,noreferrer');
     },
+    async diagnosticsText() {
+      return JSON.stringify({ app: 'CloverEye', preview: true, userAgent: globalThis.navigator?.userAgent ?? null }, null, 1);
+    },
+    async saveDiagnostics() {
+      await sleep(delay);
+      return `${MOCK_SAVED_DIR.replace(/\/Saved threads$/, '')}/clovereye-diagnostics-preview.txt`;
+    },
+    noteError() {},
+    // Ask: ?mock-ai=none (no server running), below (no server, a small
+    // computer), fail (the server refuses). Otherwise Ollama with two models,
+    // and answers that cite the first posts they were given.
+    async aiDetect() {
+      await sleep(delay);
+      const specs = mock.ai === 'below' ? { ramGb: 8, vramGb: 0, gpu: '', unified: false } : { ramGb: 32, vramGb: 12, gpu: MOCK_GPU, unified: false };
+      const servers = mock.ai === 'none' || mock.ai === 'below' ? [] : [{ kind: 'ollama', port: 11434, models: ['llama3.1:8b', 'qwen2.5:7b', 'nomic-embed-text'] }];
+      return { servers, specs };
+    },
+    aiChat({ id, messages }, onEvent) {
+      const asked = String(messages?.at?.(-1)?.content ?? '');
+      const nos = [...asked.matchAll(/No\.(\d+)/g)].map((m) => m[1]).slice(0, 3);
+      const answer = mockAnswer(nos);
+      aiJobs.set(id, false);
+      (async () => {
+        await sleep(Math.min(delay, 200));
+        if (mock.ai === 'fail') return onEvent({ type: 'error', message: MOCK_REFUSED });
+        for (const piece of answer.match(/.{1,12}/gs) || []) {
+          if (aiJobs.get(id)) break;
+          onEvent({ type: 'text', text: piece });
+          await sleep(Math.min(delay, 40));
+        }
+        aiJobs.delete(id);
+        onEvent({ type: 'done' });
+      })();
+      return Promise.resolve();
+    },
+    aiStop(id) {
+      if (aiJobs.has(id)) aiJobs.set(id, true);
+    },
     window: { available: false, minimize() {}, toggleMaximize() {}, close() {}, setTitle() {} },
   };
 }
@@ -684,6 +742,7 @@ export function mockOptionsFromSearch(search) {
   if (p.has('mock-stats')) o.stats = true;
   if (p.get('mock-captcha')) o.captcha = p.get('mock-captcha');
   if (p.get('mock-save')) o.save = p.get('mock-save');
+  if (p.get('mock-ai')) o.ai = p.get('mock-ai');
   if (p.has('mock-delay')) {
     const n = Number(p.get('mock-delay'));
     if (Number.isFinite(n) && n >= 0) o.delayMs = n;

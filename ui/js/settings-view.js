@@ -3,17 +3,18 @@
 // save as soon as they change.
 
 import * as M from './setup-model.js';
-import { h, icon, toast } from './dom.js';
+import { h, icon, toast, copyText } from './dom.js';
 import { applyLook } from './look.js';
 import { askAdult } from './setup.js';
 import { themePicker } from './theme-picker.js';
-import { LANGS } from './i18n.js';
+import { LANGS, t } from './i18n.js';
 import { VERSION } from './version.js';
 import { filtersSection } from './filters-view.js';
 import { SAUCE_ENGINES } from './sauce-model.js';
 import { ARCHIVES, ARCHIVE_OFF, archivesFor } from './archive-model.js';
 import { normalizeDisplay } from './display-model.js';
 import { normalizeStatsSettings, SAMPLE_INTERVALS } from './stats-model.js';
+import { assistantControls } from './ai-setup-view.js';
 
 function segmented(key, label, options, value, onChange) {
   const id = `set-seg-${key}`;
@@ -50,8 +51,10 @@ function segmented(key, label, options, value, onChange) {
  * @param {(next: object, how?: {redraw?: boolean, focus?: string}) => void} o.onChange  saves and keeps the new settings
  * @param {() => void} o.onRunSetup
  * @param {(opener: Element) => void} [o.onDeleteMyStats]  asks, then deletes your own stats
+ * @param {{detect: object, onDetect: (port?: number) => void}|null} [o.assistant]  Settings → Assistant (ai-setup-view.js)
+ * @param {{text: () => Promise<string>, save: () => Promise<string>}|null} [o.diagnostics]
  */
-export function renderSettings({ settings, boards, onChange, onRunSetup, onDeleteMyStats = null }) {
+export function renderSettings({ settings, boards, onChange, onRunSetup, onDeleteMyStats = null, assistant = null, diagnostics = null }) {
   const s = settings;
   const look = (mutate) => {
     const next = structuredClone(s);
@@ -276,6 +279,26 @@ export function renderSettings({ settings, boards, onChange, onRunSetup, onDelet
       h('p', { class: 'field__hint', text: 'Walk through the first-time steps again: look, favourites, video, watching, files.' }),
       h('div', { class: 'inline' }, h('button', { type: 'button', class: 'btn', 'data-key': 'rerun', onclick: () => onRunSetup() }, icon('refresh'), 'Run setup again')),
     ),
+    assistant
+      ? h(
+          'section',
+          { class: 'settings__section', 'aria-labelledby': 'set-ai', id: 'set-ai-section' },
+          h('h2', { class: 'settings__heading', id: 'set-ai', text: 'Assistant' }),
+          h('p', { class: 'field__hint', text: 'Ask questions about the catalogs and threads you have open, answered by an AI model running on this computer.' }),
+          assistantControls({
+            ai: s.ai,
+            detect: assistant.detect,
+            full: true,
+            onChange: (ai) => {
+              const next = structuredClone(s);
+              next.ai = ai;
+              onChange(next, { focus: document.activeElement?.dataset?.key || null });
+            },
+            onDetect: (port) => assistant.onDetect(port),
+          }),
+        )
+      : null,
+    diagnostics ? diagnosticsSection(diagnostics) : null,
     h(
       'section',
       { class: 'settings__section', 'aria-labelledby': 'set-about' },
@@ -716,5 +739,69 @@ function archiveSection(s, boardList, onChange) {
       class: 'field__hint',
       text: 'Each board uses the first archive that keeps it unless you pick another. The list is built in and kept by hand, so an archive may have moved or closed since.',
     }),
+  );
+}
+
+/** Diagnostics: one text file to attach to a bug report (src-tauri/src/diag.rs). */
+function diagnosticsSection(diag) {
+  const status = h('p', { class: 'field__hint', 'data-key': 'diag-status', 'aria-live': 'polite', hidden: true });
+  const say = (text) => {
+    status.textContent = text;
+    status.hidden = false;
+  };
+  const busy = async (btn, job) => {
+    btn.disabled = true;
+    try {
+      await job();
+    } catch (e) {
+      say(t('Couldn’t make the diagnostics: {0}', String(e?.message ?? e)));
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  return h(
+    'section',
+    { class: 'settings__section', 'aria-labelledby': 'set-diag' },
+    h('h2', { class: 'settings__heading', id: 'set-diag', text: 'Diagnostics' }),
+    h('p', {
+      class: 'field__hint',
+      text: 'If something goes wrong, attach a diagnostics file to your report. It lists CloverEye’s and the system’s versions, recent WebKit crashes and what the post helper did this session and the one before. It has no posts, captcha answers, cookies or passwords.',
+    }),
+    h(
+      'div',
+      { class: 'inline' },
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'btn',
+          'data-key': 'diag-save',
+          onclick: (e) =>
+            busy(e.currentTarget, async () => {
+              const path = await diag.save();
+              say(t('Saved to {0}', path));
+              toast('Diagnostics saved');
+            }),
+        },
+        icon('download'),
+        'Save diagnostics file',
+      ),
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'btn',
+          'data-key': 'diag-copy',
+          onclick: (e) =>
+            busy(e.currentTarget, async () => {
+              const ok = await copyText(await diag.text());
+              toast(ok ? 'Diagnostics copied' : 'Couldn’t copy. Save the file instead.');
+            }),
+        },
+        icon('copy'),
+        'Copy diagnostics',
+      ),
+    ),
+    status,
   );
 }

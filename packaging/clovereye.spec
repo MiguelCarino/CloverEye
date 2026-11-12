@@ -59,6 +59,9 @@ install -Dm0644 %{_sourcedir}/README.md %{buildroot}%{_docdir}/%{name}/README.md
   hidden on that error. On WebKitGTK older than 2.54.1, WebKit's DMA-BUF
   renderer is off, avoiding an upstream crash as the app closes. A helper
   page that keeps crashing is closed instead of reloaded without end.
+  Settings > Diagnostics saves a report to attach to bug reports. Ask (off
+  by default): a model server on this computer answers questions about the
+  threads and catalogs loaded, citing the posts.
 
 * Wed Nov 11 2026 MiguelCarino <miguel.carino1994@outlook.com> - 0.1.2-1
 - Test build: filters, hiding with stubs, inline quotes and previews, poster IDs,

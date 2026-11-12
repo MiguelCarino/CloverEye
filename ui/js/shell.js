@@ -26,6 +26,8 @@ import { postFlag } from './bridge.js';
 import * as SM from './stats-model.js';
 import { createStats } from './stats.js';
 import { statsView, statusText, FOURSTATS_URL } from './stats-view.js';
+import { askView, newAsk, stopAsk } from './ai-view.js';
+import { idleDetect, runDetect } from './ai-setup-view.js';
 
 /** A catalog is fetched again on its own after this long (manual Refresh
  *  any time; the queue still keeps ≤ 1 request/s). */
@@ -64,7 +66,7 @@ export function openShell({
   const root = document.getElementById('shell');
   const titleOf = (code) => boards?.find((b) => b.board === code)?.title || '';
   let paneSeq = 0;
-  const newPane = (view) => ({ id: ++paneSeq, view, catView: { query: '', sort: 'bump' }, statsView: { tab: 'boards', sort: 'ppm', dir: 'desc', metric: 'time' } });
+  const newPane = (view) => ({ id: ++paneSeq, view, catView: { query: '', sort: 'bump' }, statsView: { tab: 'boards', sort: 'ppm', dir: 'desc', metric: 'time' }, ask: newAsk() });
   const st = {
     panes: (initialPanes?.length ? initialPanes : [M.firstDestination(settings, boards)]).slice(0, MAX_PANES).map(newPane),
     focus: 0,
@@ -85,6 +87,7 @@ export function openShell({
     saved: { status: 'idle', list: [], error: '' }, // saved threads (offline-model.js savedEntries)
     offline: {}, // "board/no" → a saved thread read from disk: { status, posts, have, folder, savedAt, error }
     jobs: new Map(), // "board/no" → a save or download running: { kind, done, total, cancelled }
+    aiDetect: idleDetect(), // model servers on this computer, for Settings → Assistant (ai-setup-view.js)
   };
   const ac = new AbortController();
   let closed = false;
@@ -473,6 +476,7 @@ export function openShell({
 
   function closePane(i) {
     if (st.panes.length <= 1) return;
+    stopAsk(st.panes[i].ask, bridge); // an answer under way ends with its pane
     st.panes.splice(i, 1);
     st.focus = Math.max(0, Math.min(st.focus >= i ? st.focus - 1 : st.focus, st.panes.length - 1));
     render();
@@ -1028,6 +1032,84 @@ export function openShell({
   }
 
   /** Title, body and window title for the view in pane i. */
+  // -------------------------------------------------------------------- ask
+
+  /** The thread "This thread" means for the Ask pane `i`: the nearest pane
+   *  showing a thread (live or saved), left first. */
+  function askThread(i) {
+    const order = [...st.panes.keys()].filter((j) => j !== i).sort((a, b) => (a < i ? i - a : 100 + a) - (b < i ? i - b : 100 + b));
+    for (const j of order) {
+      const v = st.panes[j].view;
+      if (v?.kind !== 'thread' && v?.kind !== 'offline') continue;
+      const e = v.kind === 'offline' ? st.offline[tkey(v.board, v.no)] : st.threads[tkey(v.board, v.no)];
+      if (!e?.posts?.length) continue;
+      return { kind: v.kind, board: v.board, no: v.no, title: B.threadTitle(e.posts[0], 60) };
+    }
+    return null;
+  }
+
+  /** What a question reads (ai-model.js corpus): loaded threads, catalogs
+   *  and saved threads; never a hidden board, a hidden or filtered post. */
+  function aiSources(scope, target) {
+    const out = [];
+    const shownBoard = (b) => !M.boardHidden(settings, b, boards);
+    const addThread = (board, no, posts, saved) => {
+      if (!posts?.length || !shownBoard(board)) return;
+      const c = threadMarks(board, posts);
+      out.push({ board, thread: no, posts, hidden: new Set(c.why.keys()), saved });
+    };
+    if (scope === 'thread' && target) {
+      const k = tkey(target.board, target.no);
+      const e = target.kind === 'offline' ? st.offline[k] : st.threads[k];
+      addThread(target.board, target.no, e?.posts, target.kind === 'offline');
+      return out;
+    }
+    for (const [k, e] of Object.entries(st.threads)) {
+      const [board, no] = k.split('/');
+      addThread(board, Number(no), e?.posts, false);
+    }
+    for (const [k, e] of Object.entries(st.offline)) {
+      const [board, no] = k.split('/');
+      addThread(board, Number(no), e?.posts, true);
+    }
+    const hiddenOf = (board, list) => new Set([...postMarks(board, list).marks].filter(([, m]) => F.isHiddenMark(m)).map(([no]) => no));
+    for (const [board, e] of Object.entries(st.cats)) {
+      if (!e?.threads?.length || !shownBoard(board)) continue;
+      const hidden = hiddenOf(board, e.threads);
+      out.push({ board, catalog: true, posts: e.threads, hidden });
+      // the replies a catalog shows under each thread, unless their thread is hidden
+      for (const t of e.threads) {
+        if (!Array.isArray(t?.last_replies) || !t.last_replies.length || hidden.has(t.no)) continue;
+        const why = threadMarks(board, [t, ...t.last_replies]).why;
+        out.push({ board, thread: t.no, posts: t.last_replies, hidden: new Set(why.keys()) });
+      }
+    }
+    return out;
+  }
+
+  /** A post an answer cites: shown in its thread (open already, or opened
+   *  beside the Ask pane), scrolled to and flashed. */
+  function showCited(ref, from) {
+    const j = st.panes.findIndex((p) => (p.view?.kind === 'thread' || p.view?.kind === 'offline') && p.view.board === ref.board && p.view.no === ref.thread);
+    if (j >= 0) {
+      st.focus = j;
+      if (st.panes[j].view.kind === 'thread') st.jumpTo = { paneId: st.panes[j].id, board: ref.board, no: ref.thread, post: ref.no };
+      render();
+      return;
+    }
+    const saved = st.offline[tkey(ref.board, ref.thread)]?.posts && !st.threads[tkey(ref.board, ref.thread)];
+    if (saved) {
+      openBeside({ kind: 'offline', board: ref.board, no: ref.thread }, from);
+      return;
+    }
+    openCross({ board: ref.board, thread: ref.thread, no: ref.no }, from);
+  }
+
+  function openAssistantSettings(i) {
+    goto({ kind: 'settings' }, i);
+    root.querySelector('#set-ai')?.scrollIntoView({ block: 'start' });
+  }
+
   function paneContent(i) {
     const pane = st.panes[i];
     const v = pane.view;
@@ -1041,6 +1123,7 @@ export function openShell({
     let title;
     let windowTitle;
     if (v.kind === 'settings') {
+      if (st.aiDetect.status === 'idle') queueMicrotask(() => runDetect(bridge, st.aiDetect, settings.ai?.kind === 'custom' ? settings.ai.port : 0, () => views().some((x) => x?.kind === 'settings') && render()));
       title = [h('span', { class: 'centre__title-text', text: 'Settings' })];
       windowTitle = 'Settings';
       body.append(
@@ -1049,6 +1132,14 @@ export function openShell({
           boards,
           onRunSetup,
           onDeleteMyStats: (opener) => deleteMyStats(opener),
+          assistant: {
+            detect: st.aiDetect,
+            onDetect: (port) => runDetect(bridge, st.aiDetect, port, () => views().some((x) => x?.kind === 'settings') && render()),
+          },
+          diagnostics: {
+            text: () => bridge.diagnosticsText(),
+            save: () => bridge.saveDiagnostics(settings.files?.downloadDir || ''),
+          },
           onChange: (next, { redraw = true, focus = null } = {}) => {
             const moved = (next.files?.savedDir || '') !== savedDir();
             save(next, { now: true });
@@ -1225,6 +1316,23 @@ export function openShell({
           links: { ...postLinks(), embeds: 'off' },
           display: settings.display,
           offline: { savedAt: saved?.savedAt || listed?.savedAt || 0, onLive: () => goto({ kind: 'thread', board: v.board, no: v.no }, i) },
+        }),
+      );
+    } else if (v.kind === 'ask') {
+      title = [icon('sparkle'), h('span', { class: 'centre__title-text', text: 'Ask' })];
+      windowTitle = 'Ask';
+      const target = askThread(i);
+      body.append(
+        askView({
+          ask: pane.ask,
+          ai: settings.ai,
+          bridge,
+          keyPrefix: prefix,
+          thread: target,
+          sources: (scope) => aiSources(scope, target),
+          onCite: (ref) => showCited(ref, i),
+          onSettings: () => openAssistantSettings(i),
+          redraw: () => render(),
         }),
       );
     } else if (v.kind === 'stats') {
@@ -1557,6 +1665,22 @@ export function openShell({
               key: 'stats',
               onclick: () => goto({ kind: 'stats' }),
             }),
+            settings.ai?.enabled
+              ? railItem([icon('sparkle'), h('span', { text: 'Ask' })], {
+                  current: shown((x) => x.kind === 'ask'),
+                  key: 'ask',
+                  // beside what is being read, so "This thread" has a thread
+                  onclick: () => {
+                    const j = st.panes.findIndex((p) => p.view?.kind === 'ask');
+                    if (j >= 0) {
+                      st.focus = j;
+                      st.rail = false;
+                      render();
+                    } else if (['thread', 'offline', 'board'].includes(focused()?.view?.kind)) openBeside({ kind: 'ask' });
+                    else goto({ kind: 'ask' });
+                  },
+                })
+              : null,
           ),
         ),
         h('section', {}, h('h2', { class: 'rail__heading', text: 'Watched threads' }), watchedRail()),
@@ -1816,6 +1940,7 @@ export function openShell({
   loadSaved();
   return {
     close() {
+      for (const p of st.panes) stopAsk(p.ask, bridge);
       closed = true;
       stats.close();
       clearTimeout(statsTimer);

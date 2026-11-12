@@ -16,6 +16,8 @@ use clovereye_ffcheck::FfmpegCheck;
 use serde_json::Value;
 use tauri::{Emitter, Manager};
 
+mod ai;
+mod diag;
 mod extra;
 mod links;
 mod offline;
@@ -221,7 +223,7 @@ pub(crate) fn post_window_allows(url: &tauri::Url) -> bool {
         .any(|d| host == *d || host.ends_with(&format!(".{d}")))
         || host == "challenges.cloudflare.com";
     if !ok {
-        eprintln!("clovereye post helper: kept the site window from opening {host}");
+        diag::note(&format!("post helper: kept the site window from opening {host}"));
     }
     ok
 }
@@ -333,6 +335,7 @@ fn webkit_exit_crash_guard() {
         return;
     }
     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    diag::DMABUF_GUARD_SET.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[cfg(target_os = "linux")]
@@ -360,12 +363,15 @@ fn main() {
         .manage(extra::AgentState::default())
         .manage(offline::OfflineState::default())
         .manage(stats::StatsState::default())
+        .manage(ai::AiState::default())
         // saved threads' files, for CloverEye's own windows only (offline.rs)
         .register_asynchronous_uri_scheme_protocol(offline::SCHEME, offline::protocol)
         // CLOVEREYE_TRY_CAPTCHA=<board>: asks for one captcha at start and
         // prints what came back. For finding out why a captcha does not
         // arrive, from a terminal; it never posts.
         .setup(|app| {
+            diag::init(app.handle());
+            diag::note(&format!("started CloverEye {}", app.package_info().version));
             if let Ok(board) = std::env::var("CLOVEREYE_TRY_CAPTCHA") {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -377,10 +383,10 @@ fn main() {
                         Ok(v) if std::env::var_os("CLOVEREYE_TRY_CAPTCHA_FILE").is_some() => {
                             let path = std::env::var_os("CLOVEREYE_TRY_CAPTCHA_FILE").unwrap_or_default();
                             let _ = std::fs::write(&path, v.to_string());
-                            eprintln!("clovereye post helper: try-captcha saved to {}", std::path::Path::new(&path).display());
+                            diag::note(&format!("post helper: try-captcha saved to {}", std::path::Path::new(&path).display()));
                         }
-                        Ok(v) => eprintln!("clovereye post helper: try-captcha answered: {}", v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default()),
-                        Err(e) => eprintln!("clovereye post helper: try-captcha failed: {e}"),
+                        Ok(v) => diag::note(&format!("post helper: try-captcha answered: {}", v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default())),
+                        Err(e) => diag::note(&format!("post helper: try-captcha failed: {e}")),
                     }
                 });
             }
@@ -425,7 +431,13 @@ fn main() {
             offline::download_file,
             links::open_link,
             stats::stats_read,
-            stats::stats_write
+            stats::stats_write,
+            diag::diagnostics_text,
+            diag::diagnostics_save,
+            diag::diagnostics_note,
+            ai::ai_detect,
+            ai::ai_chat,
+            ai::ai_stop
         ])
         .run(tauri::generate_context!())
         .expect("error while running CloverEye");

@@ -1653,6 +1653,12 @@ dialog[open] {
     display: none;
   }
 
+  /* only the bar shows: the button around it stays tappable */
+  .progress__step {
+    padding-block: 10px;
+    margin-block: -10px;
+  }
+
   .progress__count {
     display: block;
   }
@@ -4378,4 +4384,227 @@ button.post__id:hover {
   .stats-table__sort {
     transition: none;
   }
+}
+
+/* Ask: questions about what is loaded, answered by a local model (ai-view.js) */
+
+.ask {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  min-width: 0;
+  width: 100%;
+  max-width: 820px;
+}
+
+.ask__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.ask__model {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+
+.ask__model span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.ask__empty {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.ask__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.ask .chip {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  text-align: start;
+  max-width: 100%;
+}
+
+.ask .chip:hover {
+  border-color: var(--accent);
+}
+
+.ask__turns {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+}
+
+.ask__turn {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.ask__q {
+  justify-self: end;
+  max-width: min(85%, 640px);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft, var(--surface));
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ask__read {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--fs-xs, 0.8rem);
+  color: var(--text-muted);
+}
+
+.ask__a {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+  color: var(--text);
+  min-width: 0;
+}
+
+.ask__a[aria-busy='true']::after {
+  content: '▍';
+  color: var(--accent);
+  animation: ask-caret 1s steps(1) infinite;
+}
+
+@keyframes ask-caret {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ask__a[aria-busy='true']::after {
+    animation: none;
+  }
+}
+
+.ask__cite {
+  display: inline;
+  padding: 0 5px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--quotelink-bg);
+  color: var(--quotelink);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ask__cite:hover,
+.ask__cite:focus-visible {
+  text-decoration: underline;
+}
+
+.ask__sources {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+}
+
+.ask__source {
+  display: flex;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: start;
+  cursor: pointer;
+}
+
+.ask__source:hover {
+  border-color: var(--accent);
+}
+
+.ask__source-no {
+  flex: none;
+  font-family: var(--font-mono);
+  color: var(--quotelink);
+}
+
+.ask__source-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ask__composer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  background: var(--bg);
+}
+
+.ask__input {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  min-height: 2.6em;
+  max-height: 40vh;
+}
+
+.ask__note {
+  font-size: var(--fs-xs, 0.8rem);
+  color: var(--text-muted);
+}
+
+.ai-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.ai-controls .callout p {
+  margin-top: var(--space-1);
+}
+
+.ai-port {
+  max-width: 10em;
 }

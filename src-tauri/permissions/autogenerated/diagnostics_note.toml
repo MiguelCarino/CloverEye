@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-diagnostics-note"
+description = "Enables the diagnostics_note command without any pre-configured scope."
+commands.allow = ["diagnostics_note"]
+
+[[permission]]
+identifier = "deny-diagnostics-note"
+description = "Denies the diagnostics_note command without any pre-configured scope."
+commands.deny = ["diagnostics_note"]

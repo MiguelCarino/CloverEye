@@ -26,6 +26,12 @@ fn main() {
             "fetch_busy",
             "stats_read",
             "stats_write",
+            "diagnostics_text",
+            "diagnostics_save",
+            "diagnostics_note",
+            "ai_detect",
+            "ai_chat",
+            "ai_stop",
         ])),
     )
     .expect("failed to run tauri-build");
