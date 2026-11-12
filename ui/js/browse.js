@@ -73,6 +73,33 @@ function errorBox(entry, what, onRetry, keyPrefix, extra = null) {
  * @param {Map<number, string>} [o.marks]  thread No. → 'hidden' | 'hide' | 'highlight' (filter-model.js)
  * @param {(no: number) => void} [o.onHide]  hides a thread by hand, or shows it again
  */
+// Things appear with a little motion the first time a pane shows them: a
+// catalog's or a thread's opening batch floats in one after another (the
+// first 16), and what comes later (new threads, a thread's new posts) pops
+// in; your own reply pops with the accent. Redraws of what is already shown
+// stay still. No motion with reduced motion (app.css).
+const shownIn = new Map(); // pane key prefix + kind → { key, seen }
+function appearing(slot, key) {
+  let s = shownIn.get(slot);
+  const opening = !s || s.key !== key;
+  if (opening) {
+    s = { key, seen: new Set() };
+    shownIn.set(slot, s);
+  }
+  let n = 0;
+  return (el, id, you = false) => {
+    if (s.seen.has(id)) return;
+    s.seen.add(id);
+    if (opening) {
+      if (n < 16) {
+        el.classList.add('appear');
+        el.style.setProperty('--appear-delay', `${n * 30}ms`);
+      }
+      n++;
+    } else el.classList.add(you ? 'appear--you' : 'appear--new');
+  };
+}
+
 export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSplit = false, onOpen, onRefresh, onNewThread = null, onView, marks = new Map(), onHide = null, display = null }) {
   const out = h('div', { class: 'browse' });
   const tools = h(
@@ -140,6 +167,7 @@ export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSpl
     out.append(h('p', { class: 'rail__empty', text: hiddenCount ? 'Every thread here is hidden.' : view.query ? 'No thread matches that search.' : 'This catalog is empty.' }));
     return out;
   }
+  const appear = appearing(`${keyPrefix}catalog`, board);
   out.append(
     h(
       'ul',
@@ -247,6 +275,8 @@ export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSpl
       }),
     ),
   );
+  const items = out.querySelectorAll('.catalog > .catalog__item');
+  list.forEach((t, i) => items[i] && appear(items[i], t.no));
   return out;
 }
 
@@ -473,6 +503,7 @@ export function threadView({
     return out;
   }
   const refs = backlinks(entry.posts);
+  const appear = appearing(`${keyPrefix}thread`, `${board}/${no}`);
   const list = h('div', { class: 'thread', 'aria-label': `Thread ${no}` });
   const jump = (target) => {
     const el = list.querySelector(`[data-no="${target}"]`);
@@ -539,6 +570,7 @@ export function threadView({
       continue;
     }
     const card = draw(p, `${keyPrefix}p`);
+    appear(card, p.no, isYou(p.no));
     if (entry.fresh?.has(p.no)) card.classList.add('post--new');
     if (mark === 'highlight') card.classList.add('post--highlight');
     if (why) card.classList.add('post--revealed');

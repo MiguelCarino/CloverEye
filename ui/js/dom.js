@@ -115,7 +115,20 @@ export function toast(message) {
   toastTimer = setTimeout(() => delete el.dataset.show, 1800);
 }
 
+// `text` may be a promise (text still coming from the app): the copy then
+// starts inside the click and the text follows. WebKitGTK 2.50 (the
+// AppImage's) refuses a copy made after a wait (NotAllowedError).
 export async function copyText(text) {
+  if (typeof text !== 'string' && typeof ClipboardItem === 'function' && navigator.clipboard?.write) {
+    try {
+      const blob = Promise.resolve(text).then((s) => new Blob([s], { type: 'text/plain' }));
+      await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+      return true;
+    } catch {
+      // the ways below
+    }
+  }
+  text = await text;
   try {
     await navigator.clipboard.writeText(text);
     return true;

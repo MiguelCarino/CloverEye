@@ -814,5 +814,8 @@
  "{0} is in memory: {1} GB.": "{0} está na memória: {1} GB.",
  "{0} keeps its models itself: unload it there.": "{0} gerencia os próprios modelos: descarregue por lá.",
  "{0} keeps the model in memory. To free it, unload the model in {1}.": "{0} mantém o modelo na memória. Para liberá-la, descarregue o modelo no {1}.",
- "{0} was not in memory.": "{0} não estava na memória."
+ "{0} was not in memory.": "{0} não estava na memória.",
+ "Settings sections": "Seções das Configurações",
+ "Drag to move · arrow keys · double-click: back to the corner": "Arraste para mover · setas · clique duplo: de volta ao canto",
+ "Move the reply form: drag, or arrow keys (double-click: back to the corner)": "Mover o formulário de resposta: arraste ou use as setas (clique duplo: de volta ao canto)"
 }

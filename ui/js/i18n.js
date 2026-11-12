@@ -3,7 +3,7 @@
 // (ui/i18n/<code>.json), so anything without an entry stays English.
 //
 // The UI is drawn by many small renderers, so translation happens on the
-// drawn page: text nodes and the aria-label, title, placeholder and alt
+// drawn page: text nodes and the aria-label, aria-description, title, placeholder and alt
 // attributes are looked up as they appear (a MutationObserver), and a
 // language change redraws nothing: every translated node keeps its English
 // original and is translated again. Keys may hold {0}, {1}… for parts that
@@ -22,7 +22,7 @@ export const LANGS = [
 ];
 
 const CODES = new Set(LANGS.map((l) => l.code));
-const ATTRS = ['aria-label', 'title', 'placeholder', 'alt'];
+const ATTRS = ['aria-label', 'aria-description', 'title', 'placeholder', 'alt'];
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'TEXTAREA', 'CODE', 'PRE']);
 
 let lang = 'en';

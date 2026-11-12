@@ -1847,6 +1847,114 @@ dialog[open] {
   border-bottom: 1px solid var(--border);
 }
 
+/* The sections listed beside them, as the About window lists its tabs: the
+   one being read is marked; a narrow pane shows them as a row on top. */
+.settings-layout {
+  container-type: inline-size;
+}
+
+.settings-layout__grid {
+  display: grid;
+  grid-template-columns: 11rem minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: start;
+  max-width: calc(760px + 11rem + var(--space-6));
+}
+
+.settings-nav {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
+  padding-right: var(--space-3);
+  border-right: 1px solid var(--border);
+  scrollbar-width: thin;
+}
+
+.settings-nav__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-nav__link {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-left: 3px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: start;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.settings-nav__link:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.settings-nav__link[aria-current='true'] {
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+}
+
+.settings-nav__link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+@container (max-width: 640px) {
+  .settings-layout__grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+
+  /* a row on top that stays while scrolling; the shadow covers the pane's
+     padding above it so the sections do not show through there */
+  .settings-nav {
+    max-height: none;
+    overflow: visible;
+    padding: var(--space-2) 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    box-shadow: 0 calc(-1 * var(--space-5)) 0 var(--bg);
+  }
+
+  .settings-nav__list {
+    flex-direction: row;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .settings-nav__list::-webkit-scrollbar {
+    display: none;
+  }
+
+  .settings-nav__link {
+    flex: none;
+    width: auto;
+    white-space: nowrap;
+    border-left: 0;
+    border-bottom: 3px solid transparent;
+    border-radius: var(--radius-sm);
+  }
+
+  .settings-nav__link[aria-current='true'] {
+    border-bottom-color: var(--accent);
+  }
+}
+
 /* browsing: catalog grid and thread (C1) */
 
 .browse {
@@ -2027,6 +2135,65 @@ dialog[open] {
 
 .post--flash {
   animation: post-flash 1.2s var(--ease);
+}
+
+/* Appearing (browse.js appearing): a catalog's or thread's opening batch
+   floats in one after another; later threads and posts pop in; your own
+   reply pops with the accent. "backwards" only: once done, nothing stays
+   on the element (no transform or stacking left behind). */
+.appear {
+  animation: appear-float 380ms var(--ease) backwards;
+  animation-delay: var(--appear-delay, 0ms);
+}
+
+.appear--new {
+  animation: appear-pop 460ms var(--ease) backwards;
+}
+
+.appear--you {
+  animation: appear-you 1100ms var(--ease) backwards;
+}
+
+@keyframes appear-float {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+}
+
+@keyframes appear-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.012);
+  }
+}
+
+@keyframes appear-you {
+  0% {
+    opacity: 0;
+    transform: translateY(18px) scale(0.95);
+    box-shadow: 0 0 0 0 var(--accent-soft);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1.02);
+    box-shadow: 0 0 0 6px var(--accent-soft);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .appear,
+  .appear--new,
+  .appear--you {
+    animation: none;
+  }
 }
 
 @keyframes post-flash {
@@ -2660,6 +2827,33 @@ video.post__media {
 
 .composer--resizing {
   user-select: none;
+}
+
+/* the title bar moves the form (compose.js startMove) */
+.composer__head {
+  cursor: grab;
+  touch-action: none;
+  /* a double-click puts the form back; it should not select the title */
+  user-select: none;
+}
+
+.composer__head :is(button, input) {
+  cursor: pointer;
+}
+
+.composer--moving {
+  user-select: none;
+  box-shadow: var(--shadow-3, var(--shadow-2));
+}
+
+.composer--moving .composer__head {
+  cursor: grabbing;
+}
+
+.composer__title:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
 }
 
 .composer__title {

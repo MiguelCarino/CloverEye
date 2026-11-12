@@ -48,6 +48,28 @@ function fitSize(size) {
 }
 const MAX_DRAFTS = 50;
 
+// Where the person moved the form: how far from its corner, as a translate
+// ({ x, y }, negative = left / up), kept like the size.
+const POS_KEY = 'clovereye-composer-pos';
+
+function loadPos() {
+  try {
+    const p = JSON.parse(localStorage.getItem(POS_KEY) || 'null');
+    return p && Number.isFinite(p.x) && Number.isFinite(p.y) ? { x: p.x, y: p.y } : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function savePos(pos) {
+  try {
+    if (pos) localStorage.setItem(POS_KEY, JSON.stringify(pos));
+    else localStorage.removeItem(POS_KEY);
+  } catch (_) {
+    /* no storage: the place lasts until the app closes */
+  }
+}
+
 /** Drafts saved by an earlier run (see persistDrafts). */
 function loadDrafts() {
   const out = new Map();
@@ -111,6 +133,81 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     node.style.maxHeight = 'none';
   }
 
+  let pos = loadPos(); // set by dragging the title bar
+
+  /** Moves the form to `pos`, kept inside the window (8 px clear; where the
+   *  form spans the width, on a narrow window, only up and down). */
+  function applyPos(node) {
+    if (!node) return;
+    node.style.translate = '';
+    if (!pos) return;
+    const base = node.getBoundingClientRect(); // where its corner puts it
+    const wide = base.width < innerWidth - 24;
+    const x = wide ? Math.min(innerWidth - 8 - base.right, Math.max(8 - base.left, pos.x)) : 0;
+    const y = Math.min(innerHeight - 8 - base.bottom, Math.max(8 - base.top, pos.y));
+    node.style.translate = `${Math.round(x)}px ${Math.round(y)}px`;
+  }
+
+  // Drag the title bar to move the form (a click on its buttons still
+  // clicks); arrow keys on the title move it too; double-click: back to
+  // the corner.
+  function startMove(e) {
+    if (e.button !== 0 || !el) return;
+    if (e.target.closest('button:not(.composer__title--btn), input, textarea, select, a, .composer__grip')) return;
+    const from = pos || { x: 0, y: 0 };
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    let moved = false;
+    const move = (ev) => {
+      const dx = ev.clientX - x0;
+      const dy = ev.clientY - y0;
+      if (!moved && Math.hypot(dx, dy) < 4) return;
+      if (!moved) el?.classList.add('composer--moving');
+      moved = true;
+      pos = { x: from.x + dx, y: from.y + dy };
+      applyPos(el);
+    };
+    const up = () => {
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', up);
+      if (!moved) return;
+      el?.classList.remove('composer--moving');
+      pos = currentPos();
+      savePos(pos);
+      // the press that moved the form is not also a click on its title
+      addEventListener('click', (ev) => ev.stopPropagation(), { capture: true, once: true });
+    };
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+  }
+
+  /** The translate actually applied (after keeping it inside the window). */
+  function currentPos() {
+    const [x = '0', y = '0'] = (el?.style.translate || '').split(' ');
+    return { x: parseFloat(x) || 0, y: parseFloat(y) || 0 };
+  }
+
+  function moveKeys(e) {
+    const step = e.shiftKey ? 60 : 20;
+    const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+    if (!d) return;
+    e.preventDefault();
+    const from = pos || { x: 0, y: 0 };
+    pos = { x: from.x + d[0], y: from.y + d[1] };
+    applyPos(el);
+    pos = currentPos();
+    savePos(pos);
+  }
+
+  function resetPos(e) {
+    if (e.target.closest('button:not(.composer__title--btn), input, .composer__grip')) return;
+    pos = null;
+    savePos(null);
+    applyPos(el);
+  }
+
+  addEventListener('resize', () => applyPos(el));
+
   // The grip in the top-left corner (the form is anchored bottom-right):
   // drag it, or use the arrow keys on it; double-click puts the size back.
   function grip() {
@@ -123,6 +220,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       const move = (ev) => {
         size = fitSize({ w: box.width - (ev.clientX - x0), h: box.height - (ev.clientY - y0) });
         applySize(el);
+        applyPos(el);
       };
       const up = () => {
         removeEventListener('pointermove', move);
@@ -142,6 +240,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       e.preventDefault();
       size = fitSize({ w: box.width + d[0], h: box.height + d[1] });
       applySize(el);
+      applyPos(el);
       saveSize(size);
     };
     const reset = () => {
@@ -528,7 +627,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       },
       h(
         'div',
-        { class: 'composer__head' },
+        { class: 'composer__head', onpointerdown: startMove, ondblclick: resetPos },
         st.min ? null : grip(),
         st.min
           ? h(
@@ -536,7 +635,15 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
               { type: 'button', class: 'composer__title composer__title--btn', 'data-key': 'compose-restore', 'aria-expanded': 'false', onclick: () => setMin(false) },
               h('strong', { text: isThread ? `New thread on /${st.board}/` : `Reply to /${st.board}/ No. ${st.thread}` }),
             )
-          : h('strong', { class: 'composer__title', text: isThread ? `New thread on /${st.board}/` : `Reply to /${st.board}/ No. ${st.thread}` }),
+          : h('strong', {
+              class: 'composer__title',
+              tabindex: '0',
+              title: 'Drag to move · arrow keys · double-click: back to the corner',
+              'aria-description': 'Move the reply form: drag, or arrow keys (double-click: back to the corner)',
+              'data-key': 'compose-move',
+              onkeydown: moveKeys,
+              text: isThread ? `New thread on /${st.board}/` : `Reply to /${st.board}/ No. ${st.thread}`,
+            }),
         st.min ? h('span', { class: 'composer__note', 'data-compose-note': '', text: headNote() }) : null,
         h(
           'button',
@@ -666,6 +773,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     if (el) el.replaceWith(next);
     else document.body.append(next);
     el = next;
+    applyPos(el);
     const ta = el.querySelector('[data-key="compose-com"]');
     if (ta) {
       ta.value = st.com;

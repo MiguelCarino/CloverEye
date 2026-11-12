@@ -814,5 +814,8 @@
  "{0} is in memory: {1} GB.": "{0} はメモリ上にあります: {1} GB。",
  "{0} keeps its models itself: unload it there.": "{0} はモデルを自分で管理しています。そちらで解放してください。",
  "{0} keeps the model in memory. To free it, unload the model in {1}.": "{0} はモデルをメモリに保持します。解放するには {1} でモデルを解放してください。",
- "{0} was not in memory.": "{0} はメモリにありませんでした。"
+ "{0} was not in memory.": "{0} はメモリにありませんでした。",
+ "Settings sections": "設定のセクション",
+ "Drag to move · arrow keys · double-click: back to the corner": "ドラッグで移動 · 矢印キー · ダブルクリック: 隅に戻す",
+ "Move the reply form: drag, or arrow keys (double-click: back to the corner)": "返信フォームを移動: ドラッグまたは矢印キー（ダブルクリック: 隅に戻す）"
 }

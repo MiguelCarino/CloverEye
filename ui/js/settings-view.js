@@ -16,6 +16,105 @@ import { normalizeDisplay } from './display-model.js';
 import { normalizeStatsSettings, SAMPLE_INTERVALS } from './stats-model.js';
 import { assistantControls } from './ai-setup-view.js';
 
+// Settings' sections by heading id, for the section list beside them. The
+// English names are the translation keys (the headings use the same).
+const SECTION_NAMES = {
+  'set-look': 'Look',
+  'set-posts': 'Posts',
+  'set-reply': 'Replying',
+  'set-files': 'Files',
+  'set-content': 'Content',
+  'set-stats': 'Stats',
+  'set-sauce': 'Reverse image search',
+  'set-archives': 'Archives',
+  'set-filters': 'Filters',
+  'set-setup': 'Setup',
+  'set-ai': 'Assistant',
+  'set-diag': 'Diagnostics',
+  'set-about': 'About',
+};
+
+/** What covers the top of the pane: its padding, plus the section list
+ *  when a narrow pane shows it as a row above the sections. */
+function topInset(sc, layout) {
+  const pad = parseFloat(getComputedStyle(sc).paddingTop) || 0;
+  const list = layout?.querySelector('.settings-nav__list');
+  const row = list && getComputedStyle(list).flexDirection === 'row';
+  return pad + (row ? layout.querySelector('.settings-nav').offsetHeight : 0);
+}
+
+/** Scrolls the Settings pane (only the pane: scrollIntoView also moved the
+ *  whole window) so the heading is at its top, and focuses it. */
+export function showSection(hd) {
+  if (!hd) return;
+  const sc = hd.closest('.centre__body');
+  if (sc) {
+    const inset = topInset(sc, hd.closest('.settings-layout'));
+    sc.scrollTop += hd.getBoundingClientRect().top - sc.getBoundingClientRect().top - inset;
+  }
+  hd.setAttribute('tabindex', '-1');
+  hd.focus({ preventScroll: true });
+}
+
+/** The sections, listed beside them (a row above them in a narrow pane), as
+ *  the About window lists its tabs: the one being read is marked while
+ *  scrolling, and picking one goes there. */
+function withSectionList(content) {
+  const heads = [...content.querySelectorAll('.settings__heading')];
+  let picked = null; // the section picked from the list, kept marked while it shows
+  const links = heads.map((hd) =>
+    h('button', {
+      type: 'button',
+      class: 'settings-nav__link',
+      'data-key': `settings-nav-${hd.id}`,
+      'data-target': hd.id,
+      onclick: () => {
+        picked = hd.id;
+        mark(hd.id);
+        showSection(hd);
+      },
+      text: SECTION_NAMES[hd.id] || hd.textContent,
+    }),
+  );
+  const list = h('div', { class: 'settings-nav__list' }, links);
+  const nav = h('nav', { class: 'settings-nav', 'aria-label': 'Settings sections' }, list);
+  const layout = h('div', { class: 'settings-layout' }, h('div', { class: 'settings-layout__grid' }, nav, content));
+
+  function mark(id) {
+    for (const l of links) {
+      const on = l.dataset.target === id;
+      if (on) l.setAttribute('aria-current', 'true');
+      else l.removeAttribute('aria-current');
+      // in the row, keep the marked one in sight (scrolling the row only)
+      if (on && list.scrollWidth > list.clientWidth) {
+        if (l.offsetLeft < list.scrollLeft) list.scrollLeft = l.offsetLeft - 8;
+        else if (l.offsetLeft + l.offsetWidth > list.scrollLeft + list.clientWidth) list.scrollLeft = l.offsetLeft + l.offsetWidth - list.clientWidth + 8;
+      }
+    }
+  }
+  function follow() {
+    const sc = layout.closest('.centre__body');
+    if (!sc || !heads.length) return;
+    const box = sc.getBoundingClientRect();
+    const line = box.top + topInset(sc, layout) + 24;
+    if (picked) {
+      const r = content.querySelector(`#${CSS.escape(picked)}`)?.getBoundingClientRect();
+      if (r && r.top < box.bottom && r.bottom > box.top) return mark(picked);
+      picked = null;
+    }
+    let cur = heads[0];
+    for (const hd of heads) if (hd.getBoundingClientRect().top <= line) cur = hd;
+    if (sc.scrollTop > 0 && sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 2) cur = heads[heads.length - 1];
+    mark(cur.id);
+  }
+  mark(heads[0]?.id);
+  requestAnimationFrame(() => {
+    layout.closest('.centre__body')?.addEventListener('scroll', follow, { passive: true });
+    follow();
+  });
+  return layout;
+}
+
 function segmented(key, label, options, value, onChange) {
   const id = `set-seg-${key}`;
   return h(
@@ -54,7 +153,11 @@ function segmented(key, label, options, value, onChange) {
  * @param {{detect: object, onDetect: (port?: number) => void, onUnload: (ai: object) => void}|null} [o.assistant]  Settings → Assistant (ai-setup-view.js)
  * @param {{text: () => Promise<string>, save: () => Promise<string>, show: (opener: Element) => void}|null} [o.diagnostics]
  */
-export function renderSettings({ settings, boards, onChange, onRunSetup, onDeleteMyStats = null, assistant = null, diagnostics = null }) {
+export function renderSettings(o) {
+  return withSectionList(settingsContent(o));
+}
+
+function settingsContent({ settings, boards, onChange, onRunSetup, onDeleteMyStats = null, assistant = null, diagnostics = null }) {
   const s = settings;
   const look = (mutate) => {
     const next = structuredClone(s);
@@ -796,7 +899,8 @@ function diagnosticsSection(diag) {
           'data-key': 'diag-copy',
           onclick: (e) =>
             busy(e.currentTarget, async () => {
-              const ok = await copyText(await diag.text());
+              // the promise, not its text: the copy must start inside the click
+              const ok = await copyText(diag.text());
               toast(ok ? 'Diagnostics copied' : 'Couldn’t copy. Save the file instead.');
             }),
         },

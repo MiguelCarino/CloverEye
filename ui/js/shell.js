@@ -8,7 +8,7 @@ import * as M from './setup-model.js';
 import * as B from './browse-model.js';
 import * as C from './compose-model.js';
 import { h, clear, icon, toast } from './dom.js';
-import { renderSettings } from './settings-view.js';
+import { renderSettings, showSection } from './settings-view.js';
 import { catalogView, threadView } from './browse.js';
 import { createComposer } from './compose.js';
 import { galleryItems } from './gallery-model.js';
@@ -1119,7 +1119,7 @@ export function openShell({
 
   function openAssistantSettings(i) {
     goto({ kind: 'settings' }, i);
-    root.querySelector('#set-ai')?.scrollIntoView({ block: 'start' });
+    showSection(root.querySelector('#set-ai'));
   }
 
   function paneContent(i) {

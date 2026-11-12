@@ -814,5 +814,8 @@
  "{0} is in memory: {1} GB.": "{0} в памяти: {1} ГБ.",
  "{0} keeps its models itself: unload it there.": "{0} сам управляет моделями: выгрузите её там.",
  "{0} keeps the model in memory. To free it, unload the model in {1}.": "{0} держит модель в памяти. Чтобы освободить её, выгрузите модель в {1}.",
- "{0} was not in memory.": "{0} не было в памяти."
+ "{0} was not in memory.": "{0} не было в памяти.",
+ "Settings sections": "Разделы настроек",
+ "Drag to move · arrow keys · double-click: back to the corner": "Перетащите, чтобы переместить · клавиши со стрелками · двойной щелчок: обратно в угол",
+ "Move the reply form: drag, or arrow keys (double-click: back to the corner)": "Переместить форму ответа: перетащите или используйте клавиши со стрелками (двойной щелчок: обратно в угол)"
 }
