@@ -429,6 +429,9 @@ fn main() {
         .setup(|app| {
             diag::init(app.handle());
             diag::note(&format!("started CloverEye {}", app.package_info().version));
+            if let Some(w) = app.get_webview_window("main") {
+                extra::side_buttons(&w);
+            }
             if let Ok(board) = std::env::var("CLOVEREYE_TRY_CAPTCHA") {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {

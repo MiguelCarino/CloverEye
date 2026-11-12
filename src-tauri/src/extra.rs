@@ -298,6 +298,36 @@ fn log_check_loads(view: &webkit2gtk::WebView) {
 #[cfg(not(target_os = "linux"))]
 fn watch_crashes(_win: &tauri::WebviewWindow) {}
 
+/// The mouse's back and forward side buttons. WebKitGTK does not pass them
+/// to the page (X buttons 8 and 9 reach GTK, but no DOM event follows), so
+/// they are caught on the web view and handed to the UI's own back and
+/// forward (shell.js, window.__cloverEyeNav), in the pane under the
+/// pointer. WebView2 (Windows) gives the page DOM buttons 3 and 4 itself.
+#[cfg(target_os = "linux")]
+pub fn side_buttons(win: &tauri::WebviewWindow) {
+    let _ = win.with_webview(|wv| {
+        use gtk::prelude::WidgetExt;
+        use webkit2gtk::WebViewExt;
+        let view = wv.inner();
+        view.connect_button_press_event(|v, ev| {
+            let dir = match ev.button() {
+                8 => "back",
+                9 => "forward",
+                _ => return gtk::glib::Propagation::Proceed,
+            };
+            // run_javascript: deprecated since 2.40 for evaluate_javascript,
+            // which this crate offers only behind a newer feature; works on
+            // every WebKitGTK the packages use (2.50 to 2.54)
+            #[allow(deprecated)]
+            v.run_javascript(&format!("window.__cloverEyeNav && window.__cloverEyeNav('{dir}')"), None::<&gtk::gio::Cancellable>, |_| {});
+            gtk::glib::Propagation::Stop
+        });
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn side_buttons(_win: &tauri::WebviewWindow) {}
+
 /// The one command the helper page may call (capabilities/post-agent.json):
 /// "ready" when a board page has loaded, "show" when the site wants its human
 /// check, "log" for the terminal, or the answer to a request.
@@ -377,7 +407,8 @@ pub async fn open_window(app: tauri::AppHandle, panes: String) -> Result<String,
         .traffic_light_position(tauri::LogicalPosition::new(14.0, 21.0));
     #[cfg(not(target_os = "macos"))]
     let builder = builder.decorations(false);
-    builder.build().map_err(|e| e.to_string())?;
+    let win = builder.build().map_err(|e| e.to_string())?;
+    side_buttons(&win);
     Ok(label)
 }
 

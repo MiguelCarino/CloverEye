@@ -27,6 +27,8 @@ ureq = { version = "2.12", default-features = false, features = ["tls"] }
 webkit2gtk = { version = "2.0", features = ["v2_20"] }
 # libsoup's version (main.rs http1_guard); already in the tree through webkit2gtk
 soup3-sys = "0.5"
+# the web view's mouse side buttons (extra.rs side_buttons); same crate wry uses
+gtk = "0.18"
 
 [profile.release]
 codegen-units = 1

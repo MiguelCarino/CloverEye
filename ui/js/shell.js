@@ -67,7 +67,9 @@ export function openShell({
   const root = document.getElementById('shell');
   const titleOf = (code) => boards?.find((b) => b.board === code)?.title || '';
   let paneSeq = 0;
-  const newPane = (view) => ({ id: ++paneSeq, view, catView: { query: '', sort: 'bump' }, statsView: { tab: 'boards', sort: 'ppm', dir: 'desc', metric: 'time' }, ask: newAsk() });
+  // past / ahead: the pane's own back and forward (mouse side buttons,
+  // Alt+←/→); motion: how its next draws move in (see paneMotion)
+  const newPane = (view) => ({ id: ++paneSeq, view, catView: { query: '', sort: 'bump' }, statsView: { tab: 'boards', sort: 'ppm', dir: 'desc', metric: 'time' }, ask: newAsk(), past: [], ahead: [], motion: null });
   const st = {
     panes: (initialPanes?.length ? initialPanes : [M.firstDestination(settings, boards)]).slice(0, MAX_PANES).map(newPane),
     focus: 0,
@@ -449,15 +451,79 @@ export function openShell({
     scheduleOpen();
   }
 
-  /** Shows a view in a pane (default: the focused one). */
-  function goto(view, paneIndex = st.focus) {
+  const sameView = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const MOTION_MS = { forward: 260, back: 260, enter: 280, closing: 180 };
+  const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /** Starts a pane's motion: its next draws (the shell redraws often, as a
+   *  thread loads) carry the same animation, picked up where it was. */
+  function setMotion(pane, kind) {
+    pane.motion = kind && !reducedMotion() ? { kind, at: performance.now() } : null;
+  }
+
+  /** The motion class and how far along it is, for a pane being drawn. */
+  function paneMotion(pane) {
+    const m = pane.motion;
+    if (!m) return null;
+    const done = performance.now() - m.at;
+    if (done >= MOTION_MS[m.kind]) {
+      if (m.kind !== 'closing') pane.motion = null;
+      return m.kind === 'closing' ? { kind: m.kind, delay: -MOTION_MS[m.kind] } : null;
+    }
+    return { kind: m.kind, delay: -Math.round(done) };
+  }
+
+  /** Shows a view in a pane (default: the focused one). `motion`: how it
+   *  comes in (forward, or back); `record`: kept in the pane's history. */
+  function goto(view, paneIndex = st.focus, { motion = 'forward', record = true } = {}) {
     const i = Math.max(0, Math.min(paneIndex, st.panes.length - 1));
-    st.panes[i].view = view;
+    const pane = st.panes[i];
+    if (!sameView(pane.view, view)) {
+      if (record) {
+        pane.past.push(pane.view);
+        if (pane.past.length > 50) pane.past.shift();
+        pane.ahead = [];
+      }
+      setMotion(pane, motion);
+    }
+    pane.view = view;
     st.focus = i;
     st.rail = false;
     startLine(view);
     render();
     enter(view);
+  }
+
+  /** Back in a pane's own history (mouse back button, Alt+←); a thread
+   *  opened with no history goes back to its catalog. */
+  function back(i = st.focus) {
+    const pane = st.panes[i];
+    if (!pane) return;
+    const prev = pane.past.pop();
+    const to = prev || (pane.view.kind === 'thread' ? { kind: 'board', board: pane.view.board } : null);
+    if (!to) return;
+    pane.ahead.push(pane.view);
+    goto(to, i, { motion: 'back', record: false });
+  }
+
+  /** A thread's ← and Esc: back to its catalog, as back() when that is
+   *  where the pane came from. */
+  function backToCatalog(i = st.focus) {
+    const pane = st.panes[i];
+    const v = pane?.view;
+    if (v?.kind !== 'thread') return;
+    const cat = { kind: 'board', board: v.board };
+    if (!pane.past.length || sameView(pane.past[pane.past.length - 1], cat)) return back(i);
+    goto(cat, i, { motion: 'back' });
+  }
+
+  /** Forward again after going back (mouse forward button, Alt+→). */
+  function forward(i = st.focus) {
+    const pane = st.panes[i];
+    const next = pane?.ahead.pop();
+    if (!next) return;
+    pane.past.push(pane.view);
+    goto(next, i, { motion: 'forward', record: false });
   }
 
   /** Opens a view in a new pane next to `after`; with five panes already,
@@ -468,16 +534,31 @@ export function openShell({
       return;
     }
     const at = Math.min(after + 1, st.panes.length);
-    st.panes.splice(at, 0, newPane(view));
+    const pane = newPane(view);
+    setMotion(pane, 'enter');
+    st.panes.splice(at, 0, pane);
     st.focus = at;
     startLine(view);
     render();
     enter(view);
   }
 
+  /** Closes a pane: it fades out first (redraws meanwhile keep it fading),
+   *  then goes. */
   function closePane(i) {
     if (st.panes.length <= 1) return;
-    stopAsk(st.panes[i].ask, bridge); // an answer under way ends with its pane
+    const pane = st.panes[i];
+    if (pane.motion?.kind === 'closing') return;
+    stopAsk(pane.ask, bridge); // an answer under way ends with its pane
+    if (reducedMotion()) return removePane(pane);
+    setMotion(pane, 'closing');
+    render();
+    setTimeout(() => removePane(pane), MOTION_MS.closing);
+  }
+
+  function removePane(pane) {
+    const i = st.panes.indexOf(pane);
+    if (i < 0 || st.panes.length <= 1) return;
     st.panes.splice(i, 1);
     st.focus = Math.max(0, Math.min(st.focus >= i ? st.focus - 1 : st.focus, st.panes.length - 1));
     render();
@@ -765,6 +846,13 @@ export function openShell({
   }
 
   // ---------------------------------------------------------------- pieces
+
+  /** Which of the five drawn patterns a board's card gets (stable). */
+  function artOf(code) {
+    let n = 0;
+    for (const ch of code) n = (n * 31 + ch.charCodeAt(0)) >>> 0;
+    return n % 5;
+  }
 
   function tag(code) {
     return h('span', { class: 'board-tag', style: { '--hue': M.boardHue(code) }, text: `/${code}/` });
@@ -1206,7 +1294,7 @@ export function openShell({
             class: 'icon-btn',
             'aria-label': `Back to the /${v.board}/ catalog`,
             'data-key': `${prefix}back-catalog`,
-            onclick: () => goto({ kind: 'board', board: v.board }, i),
+            onclick: () => backToCatalog(i),
           },
           icon('arrowLeft'),
         ),
@@ -1486,25 +1574,27 @@ export function openShell({
     const prefix = prefixOf(i);
     if (boards) {
       const list = M.visibleBoards(boards, settings);
+      // A card per board with a drawn background (its own hue, one of five
+      // patterns and its name as a watermark): nothing is fetched for it.
       return h(
         'ul',
-        { class: 'board-list', 'aria-label': 'All boards' },
+        { class: 'board-list board-list--cards', 'aria-label': 'All boards' },
         list.map((b) => {
           const fav = settings.favourites.includes(b.board);
           return h(
             'li',
-            { class: 'board-list__row' },
+            { class: 'board-card', style: { '--hue': M.boardHue(b.board) }, 'data-art': String(artOf(b.board)), 'data-code': b.board, translate: 'no' },
             h(
               'button',
-              { type: 'button', class: 'rail__item', 'data-key': `${prefix}list-${b.board}`, onclick: () => goto({ kind: 'board', board: b.board }, i) },
+              { type: 'button', class: 'board-card__open', 'data-key': `${prefix}list-${b.board}`, onclick: () => goto({ kind: 'board', board: b.board }, i) },
               tag(b.board),
-              h('span', { class: 'rail__label', translate: 'no', text: b.title }),
+              h('span', { class: 'board-card__title', translate: 'no', text: b.title }),
             ),
             h(
               'button',
               {
                 type: 'button',
-                class: `icon-btn star${fav ? ' star--on' : ''}`,
+                class: `icon-btn star board-card__star${fav ? ' star--on' : ''}`,
                 'aria-pressed': String(fav),
                 'aria-label': fav ? `Remove /${b.board}/ from favourites` : `Add /${b.board}/ to favourites`,
                 'data-key': `${prefix}fav-toggle-${b.board}`,
@@ -1560,15 +1650,22 @@ export function openShell({
         : null,
     );
     void narrow;
-    return {
-      el: h(
-        'section',
-        { class: 'pane', 'data-pane': String(i), 'aria-label': `Pane ${i + 1}: ${c.windowTitle}`, 'aria-current': many && i === st.focus ? 'true' : null },
-        head,
-        c.body,
-      ),
-      windowTitle: c.windowTitle,
-    };
+    // opening (forward), going back, a new pane, a pane closing: picked up
+    // where it was when the shell redraws during it
+    const m = paneMotion(pane);
+    const el = h(
+      'section',
+      {
+        class: `pane${m ? ` pane--${m.kind}` : ''}`,
+        'data-pane': String(i),
+        'aria-label': `Pane ${i + 1}: ${c.windowTitle}`,
+        'aria-current': many && i === st.focus ? 'true' : null,
+        style: m ? { '--motion-delay': `${m.delay}ms` } : null,
+      },
+      head,
+      c.body,
+    );
+    return { el, windowTitle: c.windowTitle };
   }
 
   // ---------------------------------------------------------------- render
@@ -1929,7 +2026,7 @@ export function openShell({
           return;
         }
         if (v.kind === 'thread' && !typing() && document.activeElement?.tagName !== 'VIDEO' && !document.activeElement?.closest?.('.composer')) {
-          goto({ kind: 'board', board: v.board });
+          backToCatalog(st.focus);
         }
         return;
       }
@@ -1950,6 +2047,51 @@ export function openShell({
     { signal: ac.signal },
   );
   window.addEventListener('resize', () => !closed && render(), { signal: ac.signal });
+
+  // The mouse's side buttons (DOM buttons 3 and 4) and Alt+← / Alt+→: back
+  // and forward in the pane under the pointer (or the focused pane). The
+  // press is kept from the webview, which would otherwise try its own
+  // history.
+  const sideButton = (e) => {
+    if (closed || root.hidden || (e.button !== 3 && e.button !== 4)) return;
+    e.preventDefault();
+    if (e.type !== 'mouseup' || document.querySelector('dialog[open], .gallery')) return;
+    const at = Number(e.target?.closest?.('[data-pane]')?.dataset.pane);
+    const i = Number.isInteger(at) ? at : st.focus;
+    if (e.button === 3) back(i);
+    else forward(i);
+  };
+  for (const type of ['mousedown', 'mouseup', 'auxclick']) window.addEventListener(type, sideButton, { capture: true, signal: ac.signal });
+  // Linux: WebKitGTK keeps the side buttons from the page, so the app
+  // catches them on the web view and calls this (extra.rs side_buttons),
+  // for the pane last under the pointer.
+  let pointerPane = null;
+  root.addEventListener(
+    'pointerover',
+    (e) => {
+      const at = Number(e.target?.closest?.('[data-pane]')?.dataset.pane);
+      pointerPane = Number.isInteger(at) ? at : null;
+    },
+    { signal: ac.signal },
+  );
+  window.__cloverEyeNav = (dir) => {
+    if (closed || root.hidden || document.querySelector('dialog[open], .gallery')) return;
+    const i = pointerPane !== null && pointerPane < st.panes.length ? pointerPane : st.focus;
+    if (dir === 'back') back(i);
+    else if (dir === 'forward') forward(i);
+  };
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (closed || root.hidden || !e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || typing()) return;
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      if (document.querySelector('dialog[open], .gallery')) return;
+      e.preventDefault();
+      if (e.key === 'ArrowLeft') back(st.focus);
+      else forward(st.focus);
+    },
+    { signal: ac.signal },
+  );
   // Back to the window: what is on screen now counts as read.
   window.addEventListener('focus', trackAllRead, { signal: ac.signal });
   document.addEventListener('visibilitychange', trackAllRead, { signal: ac.signal });

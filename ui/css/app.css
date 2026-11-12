@@ -2456,6 +2456,157 @@ video.post__media {
   flex: 1;
 }
 
+/* All boards: a card per board with a drawn background, from its hue only
+   (shell.js boardListBody): a two-tone wash, one of five patterns
+   (data-art) and the board's name as a large watermark. Nothing fetched. */
+.board-list--cards {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--space-3);
+}
+
+.board-card {
+  --art: hsl(var(--hue) 70% 55%);
+  --art-2: hsl(calc(var(--hue) + 40) 65% 50%);
+  --ink: hsl(var(--hue) 60% 50% / 0.16);
+  position: relative;
+  isolation: isolate;
+  min-height: 104px;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklab, var(--art) 30%, var(--border));
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(120% 90% at 100% 0%, color-mix(in oklab, var(--art-2) 34%, transparent), transparent 70%),
+    linear-gradient(135deg, color-mix(in oklab, var(--art) 26%, var(--surface)), color-mix(in oklab, var(--art-2) 12%, var(--surface)));
+  transition:
+    transform var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+/* the pattern */
+.board-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.board-card[data-art='0']::before {
+  background: radial-gradient(circle, var(--ink) 1.6px, transparent 2px) 0 0 / 14px 14px;
+}
+
+.board-card[data-art='1']::before {
+  background: repeating-linear-gradient(135deg, var(--ink) 0 2px, transparent 2px 12px);
+}
+
+.board-card[data-art='2']::before {
+  background:
+    linear-gradient(var(--ink) 1px, transparent 1px) 0 0 / 18px 18px,
+    linear-gradient(90deg, var(--ink) 1px, transparent 1px) 0 0 / 18px 18px;
+}
+
+.board-card[data-art='3']::before {
+  background: repeating-radial-gradient(circle at 100% 100%, transparent 0 10px, var(--ink) 10px 12px);
+}
+
+.board-card[data-art='4']::before {
+  background:
+    linear-gradient(135deg, var(--ink) 25%, transparent 25%) 0 0 / 22px 22px,
+    linear-gradient(225deg, var(--ink) 25%, transparent 25%) 0 0 / 22px 22px;
+}
+
+/* the watermark: the board's name, large, in its colour */
+.board-card::after {
+  content: '/' attr(data-code) '/';
+  position: absolute;
+  right: -6px;
+  bottom: -14px;
+  z-index: -1;
+  font-family: var(--font-mono);
+  font-size: 54px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: hsl(var(--hue) 65% 50% / 0.2);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.board-card__open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 104px;
+  padding: var(--space-3) var(--space-4);
+  padding-right: 44px;
+  border: 0;
+  border-radius: inherit;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.board-card__title {
+  font-weight: var(--fw-semibold);
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.board-card__star {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+/* two across on a phone */
+@media (max-width: 720px) {
+  .board-list--cards {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: var(--space-2);
+  }
+
+  .board-card,
+  .board-card__open {
+    min-height: 92px;
+  }
+
+  .board-card__open {
+    padding: var(--space-3);
+    padding-right: 40px;
+  }
+
+  .board-card::after {
+    font-size: 42px;
+  }
+}
+
+.board-card:hover,
+.board-card:focus-within {
+  transform: translateY(-2px);
+  border-color: color-mix(in oklab, var(--art) 60%, var(--border));
+  box-shadow: var(--shadow-2);
+}
+
+.board-card__open:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .board-card,
+  .board-card:hover,
+  .board-card:focus-within {
+    transition: none;
+    transform: none;
+  }
+}
+
 .star .icon {
   fill: none;
 }
@@ -2648,6 +2799,75 @@ video.post__media {
 
 .pane + .pane {
   border-left: 1px solid var(--border-strong);
+}
+
+/* A pane's motion (shell.js setMotion / paneMotion): opening something
+   slides its content in from the right, going back from the left; a new
+   pane grows in; a closing pane fades out. --motion-delay (negative) picks
+   an animation up where it was when the shell redraws during it. Only the
+   content moves on forward/back, so the title bar stays put. */
+/* the sliding content stays inside its pane (no page scroll meanwhile) */
+.pane--forward,
+.pane--back {
+  overflow: clip;
+}
+
+.pane--forward > .centre__body {
+  animation: pane-forward 260ms var(--ease) backwards;
+  animation-delay: var(--motion-delay, 0ms);
+}
+
+.pane--back > .centre__body {
+  animation: pane-back 260ms var(--ease) backwards;
+  animation-delay: var(--motion-delay, 0ms);
+}
+
+.pane--enter {
+  animation: pane-enter 280ms var(--ease) backwards;
+  animation-delay: var(--motion-delay, 0ms);
+}
+
+.pane--closing {
+  animation: pane-closing 180ms ease-in forwards;
+  animation-delay: var(--motion-delay, 0ms);
+  pointer-events: none;
+}
+
+@keyframes pane-forward {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+}
+
+@keyframes pane-back {
+  from {
+    opacity: 0;
+    transform: translateX(-28px);
+  }
+}
+
+@keyframes pane-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+
+@keyframes pane-closing {
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pane--forward > .centre__body,
+  .pane--back > .centre__body,
+  .pane--enter,
+  .pane--closing {
+    animation: none;
+  }
 }
 
 .pane[aria-current='true'] .pane__head {
