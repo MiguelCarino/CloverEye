@@ -9,7 +9,7 @@ site's rules apply to everything read and posted through it.
 
 Licence: [AGPL-3.0](LICENSE). Scope and phases: [docs/SCOPE.md](docs/SCOPE.md).
 
-**Download:** [CloverEye 0.1.1](https://github.com/MiguelCarino/CloverEye/releases/tag/v0.1.1): Fedora 44/45 RPMs, a .deb for Ubuntu 22.04+ and Debian 12+, an AppImage for other Linux, Windows installer and MSI, macOS (Apple silicon). Website: <https://clover.carino.systems>.
+**Download:** [CloverEye 0.1.3](https://github.com/MiguelCarino/CloverEye/releases/tag/v0.1.3) (test build): Fedora 44/45 RPMs and a .deb for Ubuntu 22.04+ and Debian 12+ (x86_64 and aarch64), an AppImage for other Linux, Windows installer and MSI, macOS (Apple silicon and Intel). Website: <https://clover.carino.systems>.
 
 ![Three panes: a board's catalog and two threads side by side](web/screens/split.webp)
 
@@ -17,10 +17,11 @@ Licence: [AGPL-3.0](LICENSE). Scope and phases: [docs/SCOPE.md](docs/SCOPE.md).
 |---|---|
 | ![A board's catalog: thumbnails, titles, reply counts, search and sort](web/screens/catalog.webp) | ![A thread in the classic Yotsuba colours, with posters' flags](web/screens/classic.webp) |
 | ![The reply form with the site's captcha: a choice and the object to find](web/screens/reply.webp) | ![The gallery: one file as large as the window allows, the thread's files below](web/screens/gallery.webp) |
+| ![All boards: a card per board, drawn from its own colour, with its name as a watermark](web/screens/boards.webp) | ![Settings: its sections listed on the left, the Look section on the right](web/screens/settings.webp) |
 
 <sub>Screenshots of the app showing sample posts made up for testing.</sub>
 
-## Status: 0.1.1 (reading, watching, panes, gallery, replying)
+## Status: 0.1.3 (reading, watching, panes, gallery, replying, diagnostics, Ask)
 
 | Part | State |
 |---|---|
@@ -181,11 +182,12 @@ Notes for the first test builds:
 Test builds are attached to the GitHub releases:
 
 ```sh
-sudo dnf install ./clovereye-0.1.1-1.fc45.x86_64.rpm   # Fedora 45 (or .fc44)
-chmod +x CloverEye-0.1.1-x86_64.AppImage && ./CloverEye-0.1.1-x86_64.AppImage   # other x86-64 Linux
+sudo dnf install ./clovereye-0.1.3-1.fc45.x86_64.rpm   # Fedora 45 (or .fc44)
+sudo apt install ./clovereye_0.1.3_amd64.deb   # Ubuntu 22.04+ or Debian 12+ (arm64 too)
+chmod +x CloverEye-0.1.3-x86_64.AppImage && ./CloverEye-0.1.3-x86_64.AppImage   # other x86-64 Linux
 ```
 
-`CloverEye-0.1.1-appimage-sources.tar` next to it is the Corresponding Source
+`CloverEye-0.1.3-appimage-sources.tar` next to it is the Corresponding Source
 for the AppImage: CloverEye's own source and the Ubuntu 22.04 source package
 of every library it bundles (WebKitGTK, GTK 3, GStreamer and their
 dependencies, LGPL and others), traced file by file (`files.tsv` inside).

@@ -69,22 +69,22 @@
         <li>Want to post? Reply opens the site’s own form in its own window, with the site’s own captcha. CloverEye never touches it.</li>
       </ul>
 
-      <p class="version">Version <strong>0.1.1</strong> · Linux · Windows · macOS · AGPL-3.0</p>
+      <p class="version">Version <strong>0.1.3</strong> · Linux · Windows · macOS · AGPL-3.0</p>
 
       <!-- Linux: the href is the no-JS path (the release page); a click opens
            the choice between Fedora's RPMs and the AppImage. Windows and
            macOS link straight to their files. -->
       <div class="downloads">
-        <a class="dl-btn recommended" href="https://github.com/MiguelCarino/CloverEye/releases/latest" data-dialog="linuxDialog" aria-haspopup="dialog" aria-controls="linuxDialog">
-          <b>🐧 Linux</b><span class="fmt">Fedora .rpm · AppImage</span></a>
-        <a class="dl-btn" href="https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.1/CloverEye-0.1.1-x64-setup.exe">
+        <a class="dl-btn recommended" href="https://github.com/MiguelCarino/CloverEye/releases/tag/v0.1.3" data-dialog="linuxDialog" aria-haspopup="dialog" aria-controls="linuxDialog">
+          <b>🐧 Linux</b><span class="fmt">.rpm · .deb · AppImage</span></a>
+        <a class="dl-btn" href="https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.3/CloverEye-0.1.3-x64-setup.exe">
           <b>⊞ Windows</b><span class="fmt">10 · 11 · x64 installer</span></a>
-        <a class="dl-btn" href="https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.1/CloverEye-0.1.1-aarch64.dmg">
+        <a class="dl-btn" href="https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.3/CloverEye-0.1.3-aarch64.dmg">
           <b>⌘ macOS</b><span class="fmt">Apple silicon · .dmg</span></a>
         <a class="dl-btn" href="ui/">
           <b>▶ Try it here</b><span class="fmt">in your browser · sample data</span></a>
       </div>
-      <p class="dl-note">Fedora 44 and 45 get RPMs; any other x86-64 Linux gets one AppImage. Windows also has an <a href="https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.1/CloverEye-0.1.1-x64.msi">MSI</a>; both Windows installers add WebView2 if it is missing. Posting from the AppImage does not work yet: use the RPM, or the site's own page. The in-browser version runs on made-up sample posts and never contacts the site.</p>
+      <p class="dl-note">Fedora 44 and 45 get RPMs, Ubuntu 22.04+ and Debian 12+ a .deb, and any other x86-64 Linux one AppImage; Fedora and the .deb also come for ARM (aarch64). Windows also has an <a href="https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.3/CloverEye-0.1.3-x64.msi">MSI</a>; both Windows installers add WebView2 if it is missing. Intel Macs get their own <a href="https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.3/CloverEye-0.1.3-x86_64.dmg">.dmg</a>. Posting from the AppImage does not work yet: use the RPM, or the site's own page. The in-browser version runs on made-up sample posts and never contacts the site.</p>
       <p class="dl-all"><a href="https://github.com/MiguelCarino/CloverEye/releases">All versions and changelogs →</a></p>
 
       <p class="info-chips">
@@ -124,6 +124,16 @@
         <figcaption>G opens a thread's gallery: arrows or the wheel move, D saves.</figcaption>
       </figure>
     </div>
+    <div class="shot-row">
+      <figure class="shot">
+        <img src="web/screens/boards.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="All boards in CloverEye: a grid of cards, one per board, each with its own colour, a pattern and the board's name as a large watermark, and a star to add it to favourites.">
+        <figcaption>All boards: a card per board, drawn from its own colour; star the ones you follow.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="web/screens/settings.webp" width="1600" height="1000" loading="lazy" decoding="async" alt="CloverEye's Settings: a list of sections on the left (Look, Posts, Replying, Files and more) and the Look section on the right with the language and the theme cards.">
+        <figcaption>Settings lists its sections beside them; the one you are reading is marked.</figcaption>
+      </figure>
+    </div>
     <p class="shots-note">Screenshots of CloverEye showing sample posts made up for testing.</p>
   </section>
 
@@ -139,15 +149,16 @@
         <button type="button" role="radio" data-fedora="fc45" aria-checked="true">Fedora 45</button>
         <button type="button" role="radio" data-fedora="fc44" aria-checked="false">Fedora 44</button>
       </div>
-      <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">$</span> <span class="cmd" id="dnfCmd">sudo dnf install https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.1/clovereye-0.1.1-1.fc45.x86_64.rpm</span></code></div><button type="button" class="copy-btn term-copy" data-copy="dnfCmd" aria-label="Copy the install command">Copy</button></div>
+      <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">$</span> <span class="cmd" id="dnfCmd">sudo dnf install https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.3/clovereye-0.1.3-1.fc45.x86_64.rpm</span></code></div><button type="button" class="copy-btn term-copy" data-copy="dnfCmd" aria-label="Copy the install command">Copy</button></div>
       <p class="small">For Clip (coming), add an ffmpeg: Fedora’s <code>ffmpeg-free</code> or RPM Fusion’s <code>ffmpeg</code>. CloverEye checks which one you have.</p>
       <p><strong>Any other Linux (x86-64):</strong> one AppImage, nothing to install. It needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later).</p>
       <div class="picks">
-        <a class="pick" href="https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.1/CloverEye-0.1.1-x86_64.AppImage"><b>AppImage</b><span class="fmt">94 MB · x86-64</span></a>
-        <a class="pick" href="https://github.com/MiguelCarino/CloverEye/releases/tag/v0.1.1"><b>All files</b><span class="fmt">checksums · sources</span></a>
+        <a class="pick" href="https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.3/CloverEye-0.1.3-x86_64.AppImage"><b>AppImage</b><span class="fmt">134 MB · x86-64</span></a>
+        <a class="pick" href="https://github.com/MiguelCarino/CloverEye/releases/download/v0.1.3/clovereye_0.1.3_amd64.deb"><b>.deb</b><span class="fmt">Ubuntu · Debian · x86-64</span></a>
+        <a class="pick" href="https://github.com/MiguelCarino/CloverEye/releases/tag/v0.1.3"><b>All files</b><span class="fmt">checksums · sources</span></a>
       </div>
-      <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">$</span> <span class="cmd" id="appCmd">chmod +x CloverEye-0.1.1-x86_64.AppImage
-./CloverEye-0.1.1-x86_64.AppImage</span></code></div><button type="button" class="copy-btn term-copy" data-copy="appCmd" aria-label="Copy the AppImage commands">Copy</button></div>
+      <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">$</span> <span class="cmd" id="appCmd">chmod +x CloverEye-0.1.3-x86_64.AppImage
+./CloverEye-0.1.3-x86_64.AppImage</span></code></div><button type="button" class="copy-btn term-copy" data-copy="appCmd" aria-label="Copy the AppImage commands">Copy</button></div>
       <p class="small">Check downloads against <code>SHA256SUMS</code> on the release page. The AppImage’s sources tar holds the source of everything inside it.</p>
     </div>
   </dialog>
@@ -210,7 +221,7 @@
       <form method="dialog"><button class="modal-x" aria-label="Close">✕</button></form>
     </div>
     <div class="modal-body" data-carino-about>
-      <p>CloverEye 0.1.1 · free software under the <a href="https://github.com/MiguelCarino/CloverEye/blob/main/LICENSE">AGPL-3.0</a> · <a href="https://github.com/MiguelCarino/CloverEye">source code</a>.</p>
+      <p>CloverEye 0.1.3 · free software under the <a href="https://github.com/MiguelCarino/CloverEye/blob/main/LICENSE">AGPL-3.0</a> · <a href="https://github.com/MiguelCarino/CloverEye">source code</a>.</p>
       <p>Not affiliated with, endorsed by or connected to 4chan. Names of boards and of the classic styles belong to their owners.</p>
       <p>Fonts: Inter and Noto Sans Mono, both under the SIL Open Font License 1.1, served from this site.</p>
       <p>This page loads nothing from anywhere else and keeps no record of your visit.</p>
