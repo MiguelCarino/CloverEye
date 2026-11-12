@@ -30,7 +30,10 @@
 # clovereye-appimage-cargo and clovereye-appimage-rustup. The AppImage bundles
 # WebKitGTK and GStreamer (tauri.conf.json bundleMediaFramework), so video
 # plays without the host's codecs: -good for WebM (VP8, VP9, Opus, Vorbis),
-# -bad for AV1 (dav1d), H.264 (OpenH264) and AAC (faad).
+# gst-libav for MP4 (H.264, AAC). Ubuntu 22.04 has no AV1 decoder WebKit
+# 2.50 can use (no dav1d plugin; libav's av1 needs hardware), so AV1 WebM
+# does not play in the AppImage; the RPM and .deb play it. -bad was tried:
+# WebKit 2.50 ignores its OpenH264 decoder, and it added 35 MB.
 # On an Apple silicon Mac, set PLATFORM=linux/amd64 (podman machine with
 # Rosetta): the AppImage is x86_64 only.
 set -euo pipefail
@@ -70,7 +73,7 @@ apt-get upgrade -y -qq </dev/null >/tmp/upgrade.log 2>&1 || { cat /tmp/upgrade.l
 apt-get install -y -qq --no-install-recommends \
     ca-certificates curl file build-essential pkg-config xdg-utils patchelf python3 \
     libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev \
-    gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav \
     </dev/null >/tmp/apt.log 2>&1 || { cat /tmp/apt.log >&2; exit 1; }
 if ! command -v cargo >/dev/null; then
   curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain stable
