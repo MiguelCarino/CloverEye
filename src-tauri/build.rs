@@ -32,6 +32,8 @@ fn main() {
             "ai_detect",
             "ai_chat",
             "ai_stop",
+            "ai_loaded",
+            "ai_unload",
         ])),
     )
     .expect("failed to run tauri-build");

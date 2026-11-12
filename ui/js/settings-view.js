@@ -51,8 +51,8 @@ function segmented(key, label, options, value, onChange) {
  * @param {(next: object, how?: {redraw?: boolean, focus?: string}) => void} o.onChange  saves and keeps the new settings
  * @param {() => void} o.onRunSetup
  * @param {(opener: Element) => void} [o.onDeleteMyStats]  asks, then deletes your own stats
- * @param {{detect: object, onDetect: (port?: number) => void}|null} [o.assistant]  Settings → Assistant (ai-setup-view.js)
- * @param {{text: () => Promise<string>, save: () => Promise<string>}|null} [o.diagnostics]
+ * @param {{detect: object, onDetect: (port?: number) => void, onUnload: (ai: object) => void}|null} [o.assistant]  Settings → Assistant (ai-setup-view.js)
+ * @param {{text: () => Promise<string>, save: () => Promise<string>, show: (opener: Element) => void}|null} [o.diagnostics]
  */
 export function renderSettings({ settings, boards, onChange, onRunSetup, onDeleteMyStats = null, assistant = null, diagnostics = null }) {
   const s = settings;
@@ -295,6 +295,7 @@ export function renderSettings({ settings, boards, onChange, onRunSetup, onDelet
               onChange(next, { focus: document.activeElement?.dataset?.key || null });
             },
             onDetect: (port) => assistant.onDetect(port),
+            onUnload: (ai) => assistant.onUnload(ai),
           }),
         )
       : null,
@@ -770,6 +771,7 @@ function diagnosticsSection(diag) {
     h(
       'div',
       { class: 'inline' },
+      h('button', { type: 'button', class: 'btn', 'data-key': 'diag-show', onclick: (e) => diag.show(e.currentTarget) }, icon('eye'), 'Show log'),
       h(
         'button',
         {

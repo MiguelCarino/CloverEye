@@ -331,6 +331,82 @@ pub async fn ai_chat(
     Ok(())
 }
 
+/// Ollama's name for a model: "llama3.1" is "llama3.1:latest".
+fn same_model(a: &str, b: &str) -> bool {
+    let full = |s: &str| if s.contains(':') { s.to_string() } else { format!("{s}:latest") };
+    full(a) == full(b)
+}
+
+/// The models Ollama holds in memory now (/api/ps): name, GB in all and GB
+/// on the graphics card. Other servers do not say, so None.
+fn loaded_models(kind: &str, port: u16) -> Result<Option<Vec<Value>>, String> {
+    if kind != "ollama" {
+        return Ok(None);
+    }
+    let r = agent(Duration::from_secs(3)).get(&format!("{}/api/ps", base(port))).call().map_err(|e| match e {
+        ureq::Error::Status(code, r) => status_error(code, &r.into_string().unwrap_or_default()),
+        ureq::Error::Transport(t) => format!("connection refused or failed: {t}"),
+    })?;
+    let v: Value = serde_json::from_str(&r.into_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let list = v.get("models").and_then(Value::as_array).cloned().unwrap_or_default();
+    Ok(Some(
+        list.iter()
+            .filter_map(|m| {
+                let name = m.get("name").or_else(|| m.get("model")).and_then(Value::as_str)?;
+                Some(json!({
+                    "name": name,
+                    "gb": gb(m.get("size").and_then(Value::as_u64).unwrap_or(0)),
+                    "vramGb": gb(m.get("size_vram").and_then(Value::as_u64).unwrap_or(0)),
+                }))
+            })
+            .collect(),
+    ))
+}
+
+/// What the model server holds in memory: { supported, models }.
+/// `supported` is false for servers that cannot be asked (all but Ollama).
+#[tauri::command]
+pub async fn ai_loaded(kind: String, port: u16) -> Result<Value, String> {
+    if !KINDS.contains(&kind.as_str()) || port == 0 {
+        return Err("Choose a model server and a model in Settings → Assistant.".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(match loaded_models(&kind, port)? {
+            Some(models) => json!({ "supported": true, "models": models }),
+            None => json!({ "supported": false, "models": [] }),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Frees the memory a model holds (Ollama: keep_alive 0). Only a model that
+/// is loaded is touched, so this never loads one to unload it. Returns
+/// { supported, unloaded }: unloaded is false when it was not in memory.
+fn unload(kind: &str, port: u16, model: &str) -> Result<Value, String> {
+    let Some(models) = loaded_models(kind, port)? else {
+        return Ok(json!({ "supported": false, "unloaded": false }));
+    };
+    let Some(name) = models.iter().filter_map(|m| m["name"].as_str()).find(|n| same_model(n, model)).map(str::to_string) else {
+        return Ok(json!({ "supported": true, "unloaded": false }));
+    };
+    let body = json!({ "model": name, "keep_alive": 0, "stream": false });
+    agent(Duration::from_secs(30)).post(&format!("{}/api/generate", base(port))).set("Content-Type", "application/json").send_string(&body.to_string()).map_err(|e| match e {
+        ureq::Error::Status(code, r) => status_error(code, &r.into_string().unwrap_or_default()),
+        ureq::Error::Transport(t) => format!("connection refused or failed: {t}"),
+    })?;
+    crate::diag::quiet(&format!("assistant: unloaded {name} from {kind} on port {port}"), false);
+    Ok(json!({ "supported": true, "unloaded": true, "name": name }))
+}
+
+#[tauri::command]
+pub async fn ai_unload(kind: String, port: u16, model: String) -> Result<Value, String> {
+    if !KINDS.contains(&kind.as_str()) || port == 0 || model.trim().is_empty() || model.len() > 200 {
+        return Err("Choose a model server and a model in Settings → Assistant.".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || unload(&kind, port, &model)).await.map_err(|e| e.to_string())?
+}
+
 /// Stops an answer under way.
 #[tauri::command]
 pub fn ai_stop(state: tauri::State<'_, AiState>, id: String) {
@@ -442,6 +518,77 @@ mod tests {
         let port = serve("HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"model 'nope' not found\"}");
         let err = stream("ollama", port, &json!({}), &AtomicBool::new(false), &|_| {}).unwrap_err();
         assert_eq!(err, "404 model 'nope' not found");
+    }
+
+    /// A server on 127.0.0.1 answering `replies` in turn, one a connection;
+    /// what each request was (method, path, body) is kept.
+    fn serve_seq(replies: Vec<&'static str>) -> (u16, Arc<Mutex<Vec<String>>>) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for reply in replies {
+                let Ok((mut s, _)) = l.accept() else { return };
+                let mut req = Vec::new();
+                let mut buf = [0u8; 8192];
+                loop {
+                    let Ok(n) = s.read(&mut buf) else { break };
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&req);
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let len = text.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0))).unwrap_or(0);
+                        if req.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&req).to_string();
+                let first = text.lines().next().unwrap_or_default().to_string();
+                let body = text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+                log.lock().unwrap().push(format!("{first} {body}"));
+                let (head, b) = reply.split_once("\r\n\r\n").unwrap();
+                let _ = write!(s, "{head}\r\nContent-Length: {}\r\n\r\n{b}", b.len());
+                let _ = s.flush();
+            }
+        });
+        (port, seen)
+    }
+
+    const PS: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"models\":[{\"name\":\"llama3.1:8b\",\"size\":6000000000,\"size_vram\":5500000000}]}";
+    const OK: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"done\":true,\"done_reason\":\"unload\"}";
+
+    #[test]
+    fn unloading_frees_a_loaded_model() {
+        let (port, seen) = serve_seq(vec![PS, OK]);
+        let r = unload("ollama", port, "llama3.1:8b").unwrap();
+        assert_eq!(r["unloaded"], true);
+        let seen = seen.lock().unwrap();
+        assert!(seen[0].starts_with("GET /api/ps"), "{seen:?}");
+        assert!(seen[1].starts_with("POST /api/generate") && seen[1].contains("\"keep_alive\":0") && seen[1].contains("llama3.1:8b"), "{seen:?}");
+    }
+
+    #[test]
+    fn a_model_not_in_memory_is_left_alone() {
+        // only /api/ps is asked: nothing is loaded to be unloaded
+        let (port, seen) = serve_seq(vec![PS]);
+        let r = unload("ollama", port, "qwen2.5:7b").unwrap();
+        assert_eq!(r["unloaded"], false);
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn loaded_models_read_size_and_graphics_memory() {
+        let (port, _) = serve_seq(vec![PS]);
+        let list = loaded_models("ollama", port).unwrap().unwrap();
+        assert_eq!(list[0]["name"], "llama3.1:8b");
+        assert_eq!(list[0]["vramGb"], 5.1);
+        assert!(loaded_models("lmstudio", port).unwrap().is_none(), "other servers cannot be asked");
+        assert!(same_model("llama3.1", "llama3.1:latest"));
+        assert!(!same_model("llama3.1:8b", "llama3.1:70b"));
     }
 
     #[test]

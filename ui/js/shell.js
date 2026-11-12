@@ -27,7 +27,8 @@ import * as SM from './stats-model.js';
 import { createStats } from './stats.js';
 import { statsView, statusText, FOURSTATS_URL } from './stats-view.js';
 import { askView, newAsk, stopAsk } from './ai-view.js';
-import { idleDetect, runDetect } from './ai-setup-view.js';
+import { idleDetect, runDetect, runMemory, unloadModel } from './ai-setup-view.js';
+import { openLogDialog } from './log-dialog.js';
 
 /** A catalog is fetched again on its own after this long (manual Refresh
  *  any time; the queue still keeps ≤ 1 request/s). */
@@ -1105,6 +1106,17 @@ export function openShell({
     openCross({ board: ref.board, thread: ref.thread, no: ref.no }, from);
   }
 
+  /** Frees the model's memory, says what happened, and checks again. */
+  async function unloadAi(ai = settings.ai) {
+    const r = await unloadModel(bridge, ai);
+    if (r.text) toast(r.text);
+    runMemory(bridge, st.aiDetect, settings.ai?.kind ? settings.ai : ai, () => views().some((x) => x?.kind === 'settings') && render());
+  }
+
+  function showLog(opener = null) {
+    openLogDialog({ load: () => bridge.diagnosticsText(), save: () => bridge.saveDiagnostics(settings.files?.downloadDir || ''), opener });
+  }
+
   function openAssistantSettings(i) {
     goto({ kind: 'settings' }, i);
     root.querySelector('#set-ai')?.scrollIntoView({ block: 'start' });
@@ -1123,7 +1135,10 @@ export function openShell({
     let title;
     let windowTitle;
     if (v.kind === 'settings') {
-      if (st.aiDetect.status === 'idle') queueMicrotask(() => runDetect(bridge, st.aiDetect, settings.ai?.kind === 'custom' ? settings.ai.port : 0, () => views().some((x) => x?.kind === 'settings') && render()));
+      if (st.aiDetect.status === 'idle') {
+        const redraw = () => views().some((x) => x?.kind === 'settings') && render();
+        queueMicrotask(() => runDetect(bridge, st.aiDetect, settings.ai?.kind === 'custom' ? settings.ai.port : 0, redraw).then(() => runMemory(bridge, st.aiDetect, settings.ai, redraw)));
+      }
       title = [h('span', { class: 'centre__title-text', text: 'Settings' })];
       windowTitle = 'Settings';
       body.append(
@@ -1134,11 +1149,16 @@ export function openShell({
           onDeleteMyStats: (opener) => deleteMyStats(opener),
           assistant: {
             detect: st.aiDetect,
-            onDetect: (port) => runDetect(bridge, st.aiDetect, port, () => views().some((x) => x?.kind === 'settings') && render()),
+            onDetect: (port) =>
+              runDetect(bridge, st.aiDetect, port, () => views().some((x) => x?.kind === 'settings') && render()).then(() =>
+                runMemory(bridge, st.aiDetect, settings.ai, () => views().some((x) => x?.kind === 'settings') && render()),
+              ),
+            onUnload: (ai) => unloadAi(ai),
           },
           diagnostics: {
             text: () => bridge.diagnosticsText(),
             save: () => bridge.saveDiagnostics(settings.files?.downloadDir || ''),
+            show: (opener) => showLog(opener),
           },
           onChange: (next, { redraw = true, focus = null } = {}) => {
             const moved = (next.files?.savedDir || '') !== savedDir();
@@ -1332,6 +1352,8 @@ export function openShell({
           sources: (scope) => aiSources(scope, target),
           onCite: (ref) => showCited(ref, i),
           onSettings: () => openAssistantSettings(i),
+          onUnload: () => unloadAi(),
+          onShowLog: (opener) => showLog(opener),
           redraw: () => render(),
         }),
       );

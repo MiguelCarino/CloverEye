@@ -187,3 +187,14 @@ test('the browser preview streams an answer that cites, and Stop stops it', asyn
   const err = await new Promise((done) => fail.aiChat({ id: 'b', messages: [] }, (e) => e.type !== 'text' && done(e)));
   assert.equal(err.type, 'error');
 });
+
+test('the browser preview holds a model once asked, and unloads only what it holds', async () => {
+  const b = createBridge({ mock: { delayMs: 0 } });
+  assert.deepEqual((await b.aiLoaded('ollama', 11434)).models, []);
+  await new Promise((done) => b.aiChat({ id: 'c', model: 'llama3.1:8b', messages: [] }, (e) => e.type !== 'text' && done()));
+  assert.equal((await b.aiLoaded('ollama', 11434)).models[0].name, 'llama3.1:8b');
+  assert.equal((await b.aiUnload('ollama', 11434, 'llama3.1:8b')).unloaded, true);
+  assert.equal((await b.aiUnload('ollama', 11434, 'llama3.1:8b')).unloaded, false, 'not in memory any more');
+  assert.equal((await b.aiLoaded('lmstudio', 1234)).supported, false, 'only Ollama can be asked');
+  assert.equal((await b.aiUnload('lmstudio', 1234, 'x')).supported, false);
+});

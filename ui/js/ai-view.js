@@ -28,6 +28,8 @@ const busy = (ask) => ask.turns.some((t) => t.status === 'streaming');
  * @param {(scope: 'thread'|'all') => Array} o.sources  what a question reads (ai-model.js corpus input)
  * @param {(ref: {board: string, thread: number, no: number}) => void} o.onCite
  * @param {() => void} o.onSettings   opens Settings at Assistant
+ * @param {(opener: Element) => void} [o.onUnload]  frees the model's memory (stops answers first)
+ * @param {(opener: Element) => void} [o.onShowLog] the diagnostics report
  * @param {() => void} o.redraw       draws the pane again
  */
 export function askView(o) {
@@ -139,6 +141,23 @@ export function askView(o) {
         icon('sparkle'),
         h('span', { translate: 'no', text: ai.model }),
       ),
+      ai.kind === 'ollama' && o.onUnload
+        ? h(
+            'button',
+            {
+              type: 'button',
+              class: 'btn btn--sm',
+              'data-key': `${k}ask-unload`,
+              title: 'Free the memory the model holds. It loads again with the next question.',
+              onclick: (e) => {
+                stopAsk(ask, o.bridge);
+                o.onUnload(e.currentTarget);
+              },
+            },
+            icon('x'),
+            'Unload',
+          )
+        : null,
     ),
     suggestions,
     list,
@@ -259,7 +278,19 @@ function turnEl(turn, i, o) {
     ),
     turn.status === 'streaming' && !turn.answer ? h('p', { class: 'state-line', role: 'status' }, icon('refresh'), 'Waiting for the model… (the first answer can take a while as it loads)') : null,
     turn.status === 'stopped' ? h('p', { class: 'field__hint', text: 'Stopped.' }) : null,
-    turn.status === 'error' ? h('div', { class: 'callout callout--warn', role: 'alert' }, icon('info'), h('div', { text: turn.error })) : null,
+    turn.status === 'error'
+      ? h(
+          'div',
+          { class: 'callout callout--warn', role: 'alert' },
+          icon('info'),
+          h(
+            'div',
+            {},
+            h('p', { text: turn.error }),
+            o.onShowLog ? h('button', { type: 'button', class: 'link-btn', 'data-key': `${k}ask-log-${i}`, onclick: (e) => o.onShowLog(e.currentTarget), text: 'Show log' }) : null,
+          ),
+        )
+      : null,
     turn.status === 'done' && !sources.length && turn.answer
       ? h('p', { class: 'field__hint', text: 'This answer cites no post: treat it with care.' })
       : null,

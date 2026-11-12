@@ -6,11 +6,73 @@
 
 import { h, icon, toast, copyText } from './dom.js';
 import * as A from './ai-model.js';
+import { t } from './i18n.js';
 
 const PULL = 'ollama pull llama3.1:8b';
 
-/** The detection state both places keep: { status, servers, specs, error }. */
-export const idleDetect = () => ({ status: 'idle', servers: [], specs: null, error: '' });
+/** The detection state both places keep: { status, servers, specs, error,
+ *  memory }; memory is what the chosen server holds now ({ status,
+ *  supported, models }). */
+export const idleDetect = () => ({ status: 'idle', servers: [], specs: null, error: '', memory: { status: 'idle', supported: false, models: [] } });
+
+/** Asks the chosen server what it holds in memory (Ollama only can say). */
+export async function runMemory(bridge, detect, ai, after) {
+  if (!bridge?.aiLoaded || !ai?.kind || !ai.port) return;
+  detect.memory = { ...detect.memory, status: 'checking' };
+  try {
+    const r = await bridge.aiLoaded(ai.kind, ai.port);
+    detect.memory = { status: 'done', supported: Boolean(r?.supported), models: Array.isArray(r?.models) ? r.models : [] };
+  } catch {
+    detect.memory = { status: 'error', supported: false, models: [] };
+  }
+  after();
+}
+
+const sameModel = (a, b) => (a.includes(':') ? a : `${a}:latest`) === (b.includes(':') ? b : `${b}:latest`);
+
+/** Frees the memory the chosen model holds. Only Ollama can be asked; the
+ *  others are unloaded in their own app. { result: 'unloaded' | 'absent' |
+ *  'unsupported' | 'error' | 'none', text } */
+export async function unloadModel(bridge, ai) {
+  const label = A.AI_KIND_LABELS[ai?.kind] || 'The model server';
+  if (!bridge?.aiUnload || !ai?.kind || !ai.port || !ai.model) return { result: 'none', text: '' };
+  try {
+    const r = await bridge.aiUnload(ai.kind, ai.port, ai.model);
+    if (!r?.supported) return { result: 'unsupported', text: t('{0} keeps its models itself: unload it there.', label) };
+    return r.unloaded
+      ? { result: 'unloaded', text: t('Unloaded {0}: its memory is free again.', r.name || ai.model) }
+      : { result: 'absent', text: t('{0} was not in memory.', ai.model) };
+  } catch (e) {
+    return { result: 'error', text: A.aiErrorText(e?.message ?? e, ai) };
+  }
+}
+
+function memoryEl(ai, detect, onUnload) {
+  if (!ai.kind || !ai.model) return null;
+  const label = A.AI_KIND_LABELS[ai.kind] || ai.kind;
+  const m = detect.memory || {};
+  if (ai.kind !== 'ollama') {
+    return h('p', { class: 'field__hint', 'data-key': 'ai-memory', text: ai.kind === 'llamacpp' ? 'llama.cpp’s server keeps its model in memory until the server is stopped.' : `${label} keeps the model in memory. To free it, unload the model in ${label}.` });
+  }
+  const here = (m.models || []).find((x) => sameModel(x.name, ai.model));
+  const line =
+    m.status === 'checking' || m.status === 'idle'
+      ? 'Checking what Ollama holds in memory…'
+      : m.status === 'error'
+        ? 'Couldn’t ask Ollama what it holds in memory.'
+        : here
+          ? here.vramGb
+            ? `${here.name} is in memory: ${here.gb} GB, ${here.vramGb} GB of it on the graphics card.`
+            : `${here.name} is in memory: ${here.gb} GB.`
+          : 'The model is not in memory. Ollama loads it when you ask, and frees it by itself after 5 minutes unused.';
+  return h(
+    'div',
+    { class: 'field' },
+    h('div', { class: 'field__label', text: 'Memory' }),
+    h('p', { class: 'field__hint', 'data-key': 'ai-memory', role: 'status', text: line }),
+    h('div', { class: 'inline' }, h('button', { type: 'button', class: 'btn', 'data-key': 'ai-unload', disabled: !here, onclick: () => onUnload(ai) }, icon('x'), 'Unload the model')),
+  );
+}
 
 /** Runs ai_detect into `detect` (changed in place); `after` redraws. */
 export async function runDetect(bridge, detect, port, after) {
@@ -81,9 +143,10 @@ function verdictEl(detect, servers) {
  * @param {object} o.detect         idleDetect() state
  * @param {(next: object) => void} o.onChange  a new settings.ai
  * @param {(port?: number) => void} o.onDetect  look again
- * @param {boolean} [o.full]        Settings: how much a question reads, another port
+ * @param {(ai: object) => void} [o.onUnload]  frees the model's memory (also when switched off)
+ * @param {boolean} [o.full]        Settings: how much a question reads, another port, memory
  */
-export function assistantControls({ ai, detect, onChange, onDetect, full = false }) {
+export function assistantControls({ ai, detect, onChange, onDetect, onUnload = null, full = false }) {
   const servers = detect.status === 'done' ? detect.servers : [];
   const options = servers.flatMap((s) => A.chatModels(s.models).map((model) => ({ kind: s.kind, port: s.port, model })));
   const current = options.find((x) => x.kind === ai.kind && x.port === ai.port && x.model === ai.model);
@@ -138,7 +201,12 @@ export function assistantControls({ ai, detect, onChange, onDetect, full = false
         'data-key': 'switch-ai',
         disabled: !canTurnOn,
         onclick: () => {
-          if (ai.enabled) return set({ enabled: false });
+          if (ai.enabled) {
+            // switched off: the model's memory is freed too
+            set({ enabled: false });
+            onUnload?.(ai);
+            return;
+          }
           const pick = current || A.pickModel(ai, servers);
           set(pick ? { enabled: true, kind: pick.kind, port: pick.port, model: pick.model } : { enabled: true });
         },
@@ -201,6 +269,7 @@ export function assistantControls({ ai, detect, onChange, onDetect, full = false
           h('p', { class: 'field__hint', text: 'Ollama, LM Studio, llama.cpp and Jan are found on their usual ports. A server elsewhere on this computer that speaks the OpenAI API: enter its port and press Look again.' }),
         )
       : null,
+    full && ai.enabled && onUnload ? memoryEl(ai, detect, onUnload) : null,
     h('div', { class: 'inline' }, h('button', { type: 'button', class: 'btn', 'data-key': 'ai-detect', disabled: detect.status === 'checking', onclick: lookAgain }, icon('refresh'), 'Look again')),
     h(
       'div',

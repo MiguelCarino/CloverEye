@@ -34,6 +34,8 @@
     "allow-ai-detect",
     "allow-ai-chat",
     "allow-ai-stop",
+    "allow-ai-loaded",
+    "allow-ai-unload",
     "core:event:default",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",

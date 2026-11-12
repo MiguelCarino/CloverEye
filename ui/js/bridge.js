@@ -316,6 +316,10 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
         return invoke('ai_chat', { id, kind, port, model, messages, numCtx, onEvent: ch });
       },
       aiStop: (id) => invoke('ai_stop', { id }).catch(() => {}),
+      /** What the server holds in memory ({ supported, models }), and
+       *  freeing a model's memory ({ supported, unloaded, name }). */
+      aiLoaded: (kind, port) => invoke('ai_loaded', { kind, port }),
+      aiUnload: (kind, port, model) => invoke('ai_unload', { kind, port, model }),
       window: {
         available: Boolean(tauri.window?.getCurrentWindow),
         minimize: () => win()?.minimize(),
@@ -346,6 +350,7 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
   };
   let statsMemory = {};
   const aiJobs = new Map(); // mock answers under way → stopped
+  const aiLoadedModels = new Set(); // models the mock Ollama holds in memory
   const seeded = new Set();
   const readStats = (kind) => {
     try {
@@ -702,7 +707,8 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       const servers = mock.ai === 'none' || mock.ai === 'below' ? [] : [{ kind: 'ollama', port: 11434, models: ['llama3.1:8b', 'qwen2.5:7b', 'nomic-embed-text'] }];
       return { servers, specs };
     },
-    aiChat({ id, messages }, onEvent) {
+    aiChat({ id, model, messages }, onEvent) {
+      if (model) aiLoadedModels.add(model);
       const asked = String(messages?.at?.(-1)?.content ?? '');
       const nos = [...asked.matchAll(/No\.(\d+)/g)].map((m) => m[1]).slice(0, 3);
       const answer = mockAnswer(nos);
@@ -722,6 +728,17 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
     },
     aiStop(id) {
       if (aiJobs.has(id)) aiJobs.set(id, true);
+    },
+    // Ollama holds a model in memory once asked; the others cannot be asked
+    async aiLoaded(kind) {
+      await sleep(Math.min(delay, 100));
+      return kind === 'ollama' ? { supported: true, models: [...aiLoadedModels].map((name) => ({ name, gb: 5.6, vramGb: 5.1 })) } : { supported: false, models: [] };
+    },
+    async aiUnload(kind, _port, model) {
+      await sleep(Math.min(delay, 100));
+      if (kind !== 'ollama') return { supported: false, unloaded: false };
+      const was = aiLoadedModels.delete(model);
+      return { supported: true, unloaded: was, name: model };
     },
     window: { available: false, minimize() {}, toggleMaximize() {}, close() {}, setTitle() {} },
   };

@@ -61,7 +61,8 @@ install -Dm0644 %{_sourcedir}/README.md %{buildroot}%{_docdir}/%{name}/README.md
   page that keeps crashing is closed instead of reloaded without end.
   Settings > Diagnostics saves a report to attach to bug reports. Ask (off
   by default): a model server on this computer answers questions about the
-  threads and catalogs loaded, citing the posts.
+  threads and catalogs loaded, citing the posts; Unload (and switching it
+  off) frees an Ollama model's memory. Show log reads the report in place.
 
 * Wed Nov 11 2026 MiguelCarino <miguel.carino1994@outlook.com> - 0.1.2-1
 - Test build: filters, hiding with stubs, inline quotes and previews, poster IDs,

@@ -12,7 +12,7 @@ import { tr } from './i18n.js';
 import { embedTitle } from './embeds.js';
 import { ago } from './browse-model.js';
 import { displayDefaults, postTime, posterName, fileView, autoExpands } from './display-model.js';
-import { assistantControls, idleDetect, runDetect } from './ai-setup-view.js';
+import { assistantControls, idleDetect, runDetect, unloadModel } from './ai-setup-view.js';
 
 export const RULES_URL = 'https://www.4chan.org/rules';
 
@@ -1378,6 +1378,7 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
               return s;
             }),
           onDetect: (port) => detectAi(port),
+          onUnload: (ai) => unloadModel(bridge, ai).then((r) => r.result === 'unloaded' && toast(r.text)),
         }),
       );
     },

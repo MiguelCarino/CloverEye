@@ -357,10 +357,22 @@
           "markdownDescription": "Enables the ai_detect command without any pre-configured scope."
         },
         {
+          "description": "Enables the ai_loaded command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ai-loaded",
+          "markdownDescription": "Enables the ai_loaded command without any pre-configured scope."
+        },
+        {
           "description": "Enables the ai_stop command without any pre-configured scope.",
           "type": "string",
           "const": "allow-ai-stop",
           "markdownDescription": "Enables the ai_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ai_unload command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ai-unload",
+          "markdownDescription": "Enables the ai_unload command without any pre-configured scope."
         },
         {
           "description": "Enables the check_ffmpeg command without any pre-configured scope.",
@@ -525,10 +537,22 @@
           "markdownDescription": "Denies the ai_detect command without any pre-configured scope."
         },
         {
+          "description": "Denies the ai_loaded command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ai-loaded",
+          "markdownDescription": "Denies the ai_loaded command without any pre-configured scope."
+        },
+        {
           "description": "Denies the ai_stop command without any pre-configured scope.",
           "type": "string",
           "const": "deny-ai-stop",
           "markdownDescription": "Denies the ai_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ai_unload command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ai-unload",
+          "markdownDescription": "Denies the ai_unload command without any pre-configured scope."
         },
         {
           "description": "Denies the check_ffmpeg command without any pre-configured scope.",

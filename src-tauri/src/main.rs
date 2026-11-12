@@ -437,7 +437,9 @@ fn main() {
             diag::diagnostics_note,
             ai::ai_detect,
             ai::ai_chat,
-            ai::ai_stop
+            ai::ai_stop,
+            ai::ai_loaded,
+            ai::ai_unload
         ])
         .run(tauri::generate_context!())
         .expect("error while running CloverEye");

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ai-unload"
+description = "Enables the ai_unload command without any pre-configured scope."
+commands.allow = ["ai_unload"]
+
+[[permission]]
+identifier = "deny-ai-unload"
+description = "Denies the ai_unload command without any pre-configured scope."
+commands.deny = ["ai_unload"]
