@@ -166,3 +166,23 @@ test('tauri config: neutral id, custom title bar, UI from ../ui, CSP set', () =>
   for (const c of ['get_settings', 'set_settings', 'check_ffmpeg', 'fetch_boards', 'fetch_catalog', 'fetch_thread', 'open_post_window']) assert.match(main, new RegExp(`fn ${c}\\(`), c);
   assert.ok(!/Command::new\("(sudo|pkexec|dnf|apt|apt-get|brew|winget|pacman|zypper)"/.test(main), 'never runs a package manager');
 });
+
+test("every module that calls one of dom.js's helpers imports it", () => {
+  // A missing import only fails when that line runs (the gallery's videos
+  // once threw "Can't find variable: autoplay"), so it is checked here.
+  const dom = readFileSync(join(UI, 'js/dom.js'), 'utf8');
+  const helpers = [...dom.matchAll(/^export function (\w+)/gm)].map((m) => m[1]);
+  const missing = [];
+  for (const file of walk(join(UI, 'js')).filter((p) => p.endsWith('.js') && !p.endsWith('/dom.js'))) {
+    const src = readFileSync(file, 'utf8').replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    const imported = new Set(
+      [...src.matchAll(/import\s*\{([^}]*)\}\s*from\s*'\.\/dom\.js'/g)].flatMap((m) => m[1].split(',').map((s) => s.trim().split(/\s+as\s+/).pop())),
+    );
+    for (const name of helpers) {
+      const called = new RegExp(`(^|[^\\w.$'"])${name}\\(`).test(src);
+      const local = new RegExp(`(function|const|let|var)\\s+${name}\\b|[(,]\\s*${name}\\s*[,)=]`).test(src);
+      if (called && !local && !imported.has(name)) missing.push(`${relative(ROOT, file)}: ${name}`);
+    }
+  }
+  assert.deepEqual(missing, []);
+});

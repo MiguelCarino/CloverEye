@@ -4,7 +4,7 @@
 
 import { step, saveName } from './gallery-model.js';
 import { preloadIndices } from './display-model.js';
-import { h, icon, toast } from './dom.js';
+import { autoplay, h, icon, toast } from './dom.js';
 import { formatBytes } from './render.js';
 
 const WHEEL_GAP_MS = 180;
