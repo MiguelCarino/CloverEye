@@ -28,8 +28,9 @@
 # installs the Tauri CLI, whose AppImage bundler downloads linuxdeploy and its
 # GTK and GStreamer plugins; all of that is cached in the podman volumes
 # clovereye-appimage-cargo and clovereye-appimage-rustup. The AppImage bundles
-# WebKitGTK and GStreamer (tauri.conf.json bundleMediaFramework), so WebM
-# should play without the host's codecs.
+# WebKitGTK and GStreamer (tauri.conf.json bundleMediaFramework), so video
+# plays without the host's codecs: -good for WebM (VP8, VP9, Opus, Vorbis),
+# -bad for AV1 (dav1d), H.264 (OpenH264) and AAC (faad).
 # On an Apple silicon Mac, set PLATFORM=linux/amd64 (podman machine with
 # Rosetta): the AppImage is x86_64 only.
 set -euo pipefail
@@ -69,7 +70,7 @@ apt-get upgrade -y -qq </dev/null >/tmp/upgrade.log 2>&1 || { cat /tmp/upgrade.l
 apt-get install -y -qq --no-install-recommends \
     ca-certificates curl file build-essential pkg-config xdg-utils patchelf python3 \
     libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev \
-    gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
     </dev/null >/tmp/apt.log 2>&1 || { cat /tmp/apt.log >&2; exit 1; }
 if ! command -v cargo >/dev/null; then
   curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain stable

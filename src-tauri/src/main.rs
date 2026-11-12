@@ -338,6 +338,28 @@ fn webkit_exit_crash_guard() {
     diag::DMABUF_GUARD_SET.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// GStreamer prefers NVIDIA's decoders (nvcodec, in gst-plugins-bad) over
+/// the software ones when they are installed. When CUDA cannot open the
+/// device (a sandbox, a container, a driver and CUDA that do not match),
+/// the decoder fails on the first frame and WebKit does not fall back: the
+/// video shows "Failed to decode data" and never plays. 4chan's WebM, AV1
+/// and MP4 decode easily in software, so those decoders are ranked out.
+/// GST_PLUGIN_FEATURE_RANK set by hand wins; CLOVEREYE_HW_VIDEO=1 keeps them.
+#[cfg(target_os = "linux")]
+const NVIDIA_DECODERS: [&str; 14] = [
+    "nvh264dec", "nvh265dec", "nvvp8dec", "nvvp9dec", "nvav1dec", "nvmpegvideodec", "nvmpeg2videodec", "nvmpeg4videodec", "nvjpegdec",
+    "nvh264sldec", "nvh265sldec", "nvvp8sldec", "nvvp9sldec", "nvav1sldec",
+];
+
+#[cfg(target_os = "linux")]
+fn video_decoder_ranks() {
+    if std::env::var_os("GST_PLUGIN_FEATURE_RANK").is_some() || std::env::var_os("CLOVEREYE_HW_VIDEO").is_some_and(|v| v != "0" && !v.is_empty()) {
+        return;
+    }
+    let ranks: Vec<String> = NVIDIA_DECODERS.iter().map(|d| format!("{d}:NONE")).collect();
+    std::env::set_var("GST_PLUGIN_FEATURE_RANK", ranks.join(","));
+}
+
 #[cfg(target_os = "linux")]
 fn needs_dmabuf_guard((major, minor, micro): (u32, u32, u32)) -> bool {
     (major, minor, micro) < (2, 54, 1)
@@ -353,6 +375,7 @@ fn main() {
     {
         appimage_fonts();
         webkit_exit_crash_guard();
+        video_decoder_ranks();
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

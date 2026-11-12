@@ -19,6 +19,9 @@ Requires:       hicolor-icon-theme
 # ffmpeg-free or RPM Fusion's ffmpeg, either provides the file); the app checks it
 # at run time and still reads boards without it.
 Recommends:     /usr/bin/ffmpeg
+# Video: WebM (VP8, VP9) needs -good and AV1 -bad-free, which WebKitGTK
+# already pulls in; MP4 (H.264) needs OpenH264 (fedora-cisco-openh264 repo).
+Recommends:     gstreamer1-plugin-openh264
 
 %global debug_package %{nil}
 %global __strip /bin/true

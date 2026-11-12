@@ -1,7 +1,8 @@
 //! Parsing against ffmpeg output captured on the build machine
 //! (Fedora 44 with ffmpeg 8.1.3 and Fedora 45 with ffmpeg 9.0.2, both from
-//! RPM Fusion), plus one live check of the
-//! local ffmpeg that passes whether or not ffmpeg is installed.
+//! RPM Fusion), Fedora 44's own ffmpeg-free, and Ubuntu 24.04 and 26.04's
+//! ffmpeg (whose -filters table has no "------" line), plus one live check
+//! of the local ffmpeg that passes whether or not ffmpeg is installed.
 
 use clovereye_ffcheck::{check, parse_encoders, parse_filters, parse_version, table_names, Encoders, Filters};
 
@@ -76,4 +77,23 @@ fn live_check_of_the_local_ffmpeg_is_well_formed() {
     }
     assert!(json["encoders"].get("libvpx_vp9").is_some());
     assert!(json["filters"].get("libplacebo").is_some());
+}
+
+/// Other packagings, captured in clean containers on 11 November 2026.
+const OTHERS: [(&str, &str); 3] = [("ubuntu2404", "6.1.1-3ubuntu5"), ("ubuntu2604", "8.0.1-3ubuntu2"), ("fedora44-ffmpeg-free", "8.1.3")];
+
+#[test]
+fn ubuntu_and_fedora_ffmpeg_free_read_right() {
+    for (rel, version) in OTHERS {
+        assert_eq!(parse_version(&fx(&format!("{rel}-version.txt"))).as_deref(), Some(version), "{rel}");
+        assert_eq!(parse_encoders(&fx(&format!("{rel}-encoders.txt"))), Encoders { libvpx_vp9: true, libsvtav1: true, libopus: true }, "{rel}");
+        // Ubuntu's -filters has no separator: the rows must still be found
+        assert_eq!(parse_filters(&fx(&format!("{rel}-filters.txt"))), Filters { ass: true, subtitles: true, libplacebo: true }, "{rel}");
+    }
+}
+
+#[test]
+fn a_table_without_a_separator_skips_the_legend() {
+    let t = "Filters:\n  T.. = Timeline support\n  A = Audio input/output\n  | = Source or sink filter\n TS aap   AA->A  Apply.\n ... ass  V->V  Render.\n";
+    assert_eq!(table_names(t), vec!["aap", "ass"]);
 }

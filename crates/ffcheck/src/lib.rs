@@ -99,13 +99,23 @@ fn rpm_package() -> Option<Package> {
 }
 
 /// Names from the table `ffmpeg -encoders` or `-filters` prints: the second
-/// column of every row after the `------` separator.
+/// column of every row after the `------` separator. Some builds print no
+/// separator under the legend (Ubuntu's 6.1 and 8.0 `-filters`); then the
+/// rows are the lines that start with a column of flags (`TS`, `..`,
+/// `V....D`) and are not legend lines (`T.. = Timeline support`).
 pub fn table_names(output: &str) -> Vec<String> {
+    let second = |l: &str| l.split_whitespace().nth(1).map(str::to_string);
+    if output.lines().any(|l| l.trim_start().starts_with("------")) {
+        return output.lines().skip_while(|l| !l.trim_start().starts_with("------")).skip(1).filter_map(second).collect();
+    }
     output
         .lines()
-        .skip_while(|l| !l.trim_start().starts_with("------"))
-        .skip(1)
-        .filter_map(|l| l.split_whitespace().nth(1).map(str::to_string))
+        .filter(|l| {
+            let mut t = l.split_whitespace();
+            let (Some(flags), Some(name)) = (t.next(), t.next()) else { return false };
+            name != "=" && flags.len() <= 8 && flags.chars().all(|c| c == '.' || c == '|' || c.is_ascii_uppercase())
+        })
+        .filter_map(second)
         .collect()
 }
 

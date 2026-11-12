@@ -26,6 +26,29 @@ function append(el, children) {
   }
 }
 
+/** Starts a video that should play by itself. WebKit lets a video with
+ *  sound start on its own only right after a click: without one (a thread
+ *  that expands its files by itself) the video starts muted rather than not
+ *  at all, and its controls unmute it. Call before `src` is set. */
+export function autoplay(v) {
+  const act = globalThis.navigator?.userActivation;
+  if (act && !act.isActive) v.muted = true;
+  // where userActivation is missing: try with sound, then muted
+  v.addEventListener(
+    'loadeddata',
+    () => {
+      if (!v.paused || !v.isConnected) return;
+      Promise.resolve(v.play()).catch((e) => {
+        if (e?.name !== 'NotAllowedError') return;
+        v.muted = true;
+        Promise.resolve(v.play()).catch(() => {});
+      });
+    },
+    { once: true },
+  );
+  return v;
+}
+
 export function clear(el) {
   while (el.firstChild) el.firstChild.remove();
   return el;

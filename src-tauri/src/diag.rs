@@ -163,6 +163,12 @@ fn webkit_lines(out: &mut String) {
         Err(_) => "on".to_string(),
     };
     out.push_str(&format!("DMA-BUF renderer: {dmabuf}\n"));
+    let hw = match std::env::var("GST_PLUGIN_FEATURE_RANK") {
+        Ok(v) if v.contains("nvvp9dec:NONE") && std::env::var_os("CLOVEREYE_HW_VIDEO").is_none() => "NVIDIA decoders off (CloverEye; CLOVEREYE_HW_VIDEO=1 keeps them)".to_string(),
+        Ok(v) => format!("GST_PLUGIN_FEATURE_RANK={} (set outside CloverEye)", v.chars().take(120).collect::<String>()),
+        Err(_) => "GStreamer's own choice".to_string(),
+    };
+    out.push_str(&format!("Video decoders: {hw}\n"));
 }
 
 #[cfg(not(target_os = "linux"))]

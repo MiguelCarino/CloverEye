@@ -76,7 +76,7 @@ export function openGallery({ items, start = 0, title = '', onSave, preload = tr
     for (const v of stage.querySelectorAll('video')) v.pause();
     stage.replaceChildren(
       it.video
-        ? h('video', { class: 'gallery__media', src: it.full, controls: true, autoplay: true, loop: true, playsinline: true })
+        ? Object.assign(autoplay(h('video', { class: 'gallery__media', controls: true, autoplay: true, loop: true, playsinline: true })), { src: it.full })
         : h('img', { class: 'gallery__media', src: it.full, alt: it.name, decoding: 'async' }),
     );
     counter.textContent = `${index + 1} / ${items.length}`;

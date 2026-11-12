@@ -2,7 +2,7 @@
 // setup-model.js; this file only draws them and handles input.
 
 import * as M from './setup-model.js';
-import { h, clear, icon, toast, copyText } from './dom.js';
+import { h, clear, icon, toast, copyText, autoplay } from './dom.js';
 import { applyLook } from './look.js';
 import { parseComment, formatBytes, backlinks, decodeEntities } from './render.js';
 import { themePicker } from './theme-picker.js';
@@ -296,7 +296,7 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
     // Stats → You counts files viewed (stats.js; nothing while that is off)
     if (!auto) document.dispatchEvent(new CustomEvent('clovereye:file-view', { detail: { how: 'expand' } }));
     const media = isVideo
-      ? h('video', { class: 'post__media', src: full, controls: true, autoplay: true, loop: true, preload: 'metadata' })
+      ? Object.assign(autoplay(h('video', { class: 'post__media', controls: true, autoplay: true, loop: true, preload: 'metadata' })), { src: full })
       : h('img', {
           class: `post__media${auto ? ' post__media--auto' : ''}`,
           // lazy before src: an image opened by itself loads only near the view
