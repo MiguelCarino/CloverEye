@@ -99,6 +99,7 @@
     },
   };
 
+  const boxes = {}; // dialog key → { pick(platform, arch) }, for the detection below
   for (const box of document.querySelectorAll('[data-pkg]')) {
     const pkg = PKG[box.dataset.pkg];
     if (!pkg) continue;
@@ -150,7 +151,70 @@
       }
     }
     update();
+    boxes[box.dataset.pkg] = {
+      pick(platform, arch) {
+        if (platform && segs.platform.querySelector(`[data-val="${platform}"]`)) set('platform', platform);
+        update();
+        const btn = arch && segs.arch.querySelector(`[data-val="${arch}"]`);
+        if (btn && !btn.disabled) set('arch', arch);
+        update();
+      },
+    };
   }
+
+  // This computer: its system (and Linux distribution) and architecture,
+  // from what the browser tells; nothing leaves the page. Its download
+  // button gets the highlight, and its dialog starts on the right choices.
+  // Phones and tablets get no highlight: the app is for desktops.
+  (async () => {
+    const ua = navigator.userAgent || '';
+    const uad = navigator.userAgentData;
+    const plat = (uad?.platform || navigator.platform || '').toLowerCase();
+    if (/android|iphone|ipad|ipod/i.test(ua) || uad?.mobile || (/mac/.test(plat) && navigator.maxTouchPoints > 1)) return;
+    const os = /win/.test(plat) || /Windows/.test(ua) ? 'windows' : /mac/.test(plat) || /Mac OS X/.test(ua) ? 'mac' : /linux|x11|bsd/.test(plat) || /Linux|X11/.test(ua) ? 'linux' : null;
+    if (!os) return;
+    // the architecture: Chromium says it outright; others in their user agent
+    let arch = null;
+    try {
+      const hi = await uad?.getHighEntropyValues?.(['architecture', 'bitness']);
+      if (hi?.architecture) arch = /arm/i.test(hi.architecture) ? 'arm' : 'x86';
+    } catch {
+      /* not given */
+    }
+    if (!arch) {
+      if (/aarch64|arm64|armv8|ARM;/i.test(ua) || /aarch64|arm/.test(plat)) arch = 'arm';
+      else if (/x86_64|x64|Win64|WOW64|amd64|i686/i.test(ua + plat)) arch = 'x86';
+    }
+    // every Mac's browser says "Intel": its graphics name the chip instead
+    if (os === 'mac' && arch !== 'arm') {
+      try {
+        const gl = document.createElement('canvas').getContext('webgl');
+        const info = gl?.getExtension('WEBGL_debug_renderer_info');
+        const gpu = String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl?.getParameter(gl.RENDERER) || '');
+        if (/apple m\d|apple gpu/i.test(gpu)) arch = 'arm';
+        else if (/intel|amd|radeon|nvidia/i.test(gpu)) arch = 'x86';
+      } catch {
+        /* no graphics to ask */
+      }
+    }
+    const distro = /Fedora/i.test(ua) ? 'fc44' : /Ubuntu|Debian|Mint|Pop!_OS/i.test(ua) ? 'deb' : null;
+
+    const key = { linux: 'linuxDialog', windows: 'windowsDialog', mac: 'macDialog' }[os];
+    for (const b of document.querySelectorAll('.downloads .dl-btn')) b.classList.toggle('recommended', b.dataset.dialog === key);
+    const btn = document.querySelector(`.downloads [data-dialog="${key}"]`);
+    if (btn && !btn.querySelector('.rec')) {
+      const rec = document.createElement('span');
+      rec.className = 'rec';
+      rec.textContent = 'For this computer';
+      btn.prepend(rec);
+    }
+    const archOf = {
+      linux: arch === 'arm' ? 'aarch64' : 'x86_64',
+      windows: arch === 'arm' ? 'arm64' : 'x64',
+      mac: arch === 'x86' ? 'x86_64' : 'aarch64',
+    }[os];
+    boxes[{ windows: 'windows', mac: 'mac', linux: 'linux' }[os]]?.pick(os === 'linux' ? distro : null, arch ? archOf : null);
+  })();
 
   // Copy: the command text only, never the prompt.
   for (const btn of document.querySelectorAll('[data-copy]')) {
