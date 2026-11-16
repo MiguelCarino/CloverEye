@@ -2,7 +2,7 @@
 // metadata cleaning, the captcha's state, and reading the site's answer.
 // No DOM, so it runs under `node --test`.
 
-import { decodeEntities } from './render.js';
+import { decodeEntities, commentHtml, escapeHtml } from './render.js';
 
 // ------------------------------------------------------------ pre-flight
 
@@ -325,3 +325,73 @@ export function addYou(s, board, no) {
 }
 
 export const isYou = (s, board, no) => (s?.yous || []).some((y) => y.board === board && y.no === no);
+
+// ------------------------------------------------------- the pending post
+
+/** A comment as typed, in the site's HTML (render.js commentHtml): for
+ *  the copy of a post shown in the thread while it goes out. */
+export const previewHtml = commentHtml;
+
+/** The post as the thread draws it while it goes out (No. 0 until the
+ *  site gives it one). `at` in ms. */
+export function pendingPost({ thread = 0, name = '', sub = '', com = '', at = Date.now(), no = 0 } = {}) {
+  const p = { no, resto: thread, time: Math.floor(at / 1000), name: String(name || '').trim() || 'Anonymous', com: previewHtml(com) };
+  if (sub) p.sub = escapeHtml(sub);
+  return p;
+}
+
+// ------------------------------------------------------- saved replies
+
+/** Replies kept for later, several per thread (or per board, for a new
+ *  thread: thread 0), the newest first. */
+export const MAX_SAVED_REPLIES = 100;
+
+/** A kept file's details (its bytes are kept apart: reply-files.js). */
+export function fileMeta(f) {
+  if (!f || typeof f !== 'object' || typeof f.name !== 'string' || !f.name) return null;
+  return { name: f.name.slice(0, 255), size: Number(f.size) || 0, type: String(f.type || '').slice(0, 100), randomName: String(f.randomName || '').slice(0, 255) };
+}
+
+/** Whether a reply has anything in it: words, a subject or a file. */
+export const hasContent = (r) => Boolean(String(r?.com || '').trim() || String(r?.sub || '').trim() || r?.file);
+
+const fit = (e) =>
+  e && typeof e === 'object' && /^[a-z0-9]{1,10}$/.test(String(e.board)) && Number.isSafeInteger(Number(e.thread)) && Number(e.thread) >= 0
+    ? { id: String(e.id || ''), board: String(e.board), thread: Number(e.thread), com: String(e.com || ''), sub: String(e.sub || ''), email: String(e.email || ''), file: fileMeta(e.file), at: Number(e.at) || 0 }
+    : null;
+
+/** A stored list, cleaned (anything malformed left out). */
+export function normalizeSaved(raw) {
+  return (Array.isArray(raw) ? raw : [])
+    .map(fit)
+    .filter((e) => e && e.id && hasContent(e))
+    .slice(0, MAX_SAVED_REPLIES);
+}
+
+/** This thread's saved replies, the newest first. */
+export const savedFor = (list, board, thread) => list.filter((e) => e.board === board && e.thread === (thread || 0)).sort((a, b) => b.at - a.at);
+
+/** Keeps a reply for later. Nothing to keep (empty), or the same text and
+ *  file already kept for this thread: the list as it was (that one moves up). */
+export function saveReply(list, { board, thread = 0, com = '', sub = '', email = '', file = null }, { now = Date.now(), id = `r${now.toString(36)}` } = {}) {
+  const meta = fileMeta(file);
+  if (!hasContent({ com, sub, file: meta })) return list;
+  const same = list.find((e) => e.board === board && e.thread === (thread || 0) && e.com === com && e.sub === sub && (e.file?.name || '') === (meta?.name || ''));
+  const rest = list.filter((e) => e !== same);
+  const entry = same ? { ...same, email, at: now } : { id, board, thread: thread || 0, com, sub, email, file: meta, at: now };
+  return [entry, ...rest].slice(0, MAX_SAVED_REPLIES);
+}
+
+/** Takes one out of the list: { entry, list } (entry null when not there). */
+export function takeSaved(list, id) {
+  const entry = list.find((e) => e.id === id) || null;
+  return { entry, list: entry ? list.filter((e) => e !== entry) : list };
+}
+
+/** A saved reply's label: its first line with words ("> quoted" lines
+ *  and bare >>N skipped when there is more), cut to `max` characters. */
+export function savedLabel(e, max = 40) {
+  const lines = String(e?.com || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const words = lines.find((l) => !/^>/.test(l)) || lines[0] || String(e?.sub || '').trim() || e?.file?.name || '(empty)';
+  return words.length > max ? `${words.slice(0, max - 1)}…` : words;
+}

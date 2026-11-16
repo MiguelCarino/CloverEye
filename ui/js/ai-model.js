@@ -33,7 +33,7 @@ export const MIN_VRAM_GB = 6;
 export const MIN_RAM_GB = 16;
 
 export function aiDefaults() {
-  return { enabled: false, kind: '', port: 0, model: '', reach: 'normal' };
+  return { enabled: false, kind: '', port: 0, model: '', vision: '', reach: 'normal' };
 }
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -41,12 +41,14 @@ const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 export function normalizeAi(raw) {
   const d = aiDefaults();
   if (!isObj(raw)) return d;
-  const model = typeof raw.model === 'string' && raw.model.length <= 200 && !/[\0\n]/.test(raw.model) ? raw.model.trim() : '';
+  const name = (v) => (typeof v === 'string' && v.length <= 200 && !/[\0\n]/.test(v) ? v.trim() : '');
+  const model = name(raw.model);
   return {
     enabled: raw.enabled === true,
     kind: AI_KINDS.includes(raw.kind) ? raw.kind : '',
     port: Number.isInteger(raw.port) && raw.port > 0 && raw.port < 65536 ? raw.port : 0,
     model,
+    vision: name(raw.vision), // the model that looks at pictures (library tags)
     reach: AI_REACHES.includes(raw.reach) ? raw.reach : d.reach,
   };
 }

@@ -56,6 +56,18 @@ install -Dm0644 %{_sourcedir}/README.md %{buildroot}%{_docdir}/%{name}/README.md
 %{_datadir}/icons/hicolor/*/apps/clovereye.png
 
 %changelog
+* Mon Nov 16 2026 MiguelCarino <miguel.carino1994@outlook.com> - 0.1.4-1
+- Library: files saved from threads keep their board, thread and post; tags,
+  collections, look-alike finder, folder import with rescan, opt-in tags from
+  a local AI model, and "From library" in the reply form.
+- Tags beside the catalog search: show or hide what they find (words or
+  flags), on one board or every active board, with a Stats tab.
+- Filters: Discard action, flag (with a picker), capcode, file type, 4chan
+  Pass year and /f/ category; a hidden post can delete what hid it.
+- Reply form: written replies stay as a pile of pills until posted or
+  deleted, files included; Later section; animations. Resizable sidebar,
+  closing animation.
+
 * Wed Nov 11 2026 MiguelCarino <miguel.carino1994@outlook.com> - 0.1.3-1
 - Test build: when the site's abuse check (spur.us) refuses, New captcha waits
   a minute instead of retrying at once; the captcha page is no longer reloaded

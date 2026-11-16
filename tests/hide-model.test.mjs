@@ -48,8 +48,9 @@ test('hiddenPosts: a post quoting itself or a later hidden post', () => {
 
 test('hiddenCounts', () => {
   const m = new Map([[1, { reason: 'hidden' }], [2, { reason: 'reply', via: 1 }], [3, { reason: 'reply', via: 1 }], [4, { reason: 'filter' }]]);
-  assert.deepEqual(H.hiddenCounts(m), { hidden: 1, filter: 1, reply: 2, total: 4 });
-  assert.deepEqual(H.hiddenCounts(new Map()), { hidden: 0, filter: 0, reply: 0, total: 0 });
+  assert.deepEqual(H.hiddenCounts(m), { hidden: 1, filter: 1, discard: 0, reply: 2, total: 4 });
+  assert.deepEqual(H.hiddenCounts(new Map()), { hidden: 0, filter: 0, discard: 0, reply: 0, total: 0 });
   assert.deepEqual(H.hiddenCounts(null).total, 0);
-  assert.deepEqual(H.HIDE_REASONS, ['hidden', 'filter', 'reply']);
+  assert.deepEqual(H.HIDE_REASONS, ['hidden', 'filter', 'discard', 'reply']);
+  assert.deepEqual([...H.hiddenPosts([{ no: 1 }, { no: 2 }], new Map([[2, 'discard']]))], [[2, { reason: 'discard' }]]);
 });

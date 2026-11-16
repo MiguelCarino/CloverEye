@@ -253,6 +253,23 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       /** A saved file's URL on the app's own scheme (offline-model.js savedFilePath). */
       savedFileUrl: (path) =>
         typeof tauri.core?.convertFileSrc === 'function' ? tauri.core.convertFileSrc(path, 'cesaved') : `cesaved://localhost/${encodeURIComponent(path)}`,
+      // The library (src-tauri/src/library.rs): `dir` is Settings → Files →
+      // Library ('' = Downloads/CloverEye/Library).
+      libraryLoad: (dir = '') => invoke('library_load', { dir: dir || null }),
+      librarySave: (dir, index) => invoke('library_save', { dir: dir || null, index }),
+      async libraryFetch(dir, url, board, name) {
+        siteRequests += 1;
+        return invoke('library_fetch', { dir: dir || null, url, board, name });
+      },
+      /** A file from the disk: its bytes go as the request's body. */
+      libraryImport: (dir, name, bytes) => invoke('library_import', bytes, { headers: { 'x-name': encodeURIComponent(name), 'x-dir': encodeURIComponent(dir || '') } }),
+      libraryDelete: (dir, rel) => invoke('library_delete', { dir: dir || null, rel }),
+      /** A folder of the computer, for the in-app folder browser ('' = home). */
+      libraryBrowse: (path = '') => invoke('library_browse', { path: path || null }),
+      /** Copies a folder's pictures and videos into the library. */
+      libraryImportDir: (dir, src, deep, skip = []) => invoke('library_import_dir', { dir: dir || null, src, deep, skip }),
+      libraryFileUrl: (rel) =>
+        typeof tauri.core?.convertFileSrc === 'function' ? tauri.core.convertFileSrc(rel, 'celib') : `celib://localhost/${encodeURIComponent(rel)}`,
       /** Download all files: one file, through the same ≥ 1 s gate. */
       async downloadFile(url, name, dir = '', size = 0) {
         siteRequests += 1;
@@ -333,6 +350,20 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
   }
 
   // ------------------------------------------------------------ browser mock
+  const LIBRARY_KEY = 'clovereye.library';
+  const libraryFiles = new Map(); // rel → URL
+  const libraryBlobs = new Map(); // rel → Blob (imports)
+  const MOCK_HOME = '/Users/anon';
+  const MOCK_TREE = {
+    '/': { dirs: ['Users'], files: [] },
+    '/Users': { dirs: ['anon'], files: [] },
+    [MOCK_HOME]: { dirs: ['Desktop', 'Pictures'], files: [] },
+    [`${MOCK_HOME}/Desktop`]: { dirs: [], files: [['screenshot.png', '#888']] },
+    [`${MOCK_HOME}/Pictures`]: { dirs: ['memes'], files: [['holiday.jpg', '#3a7']] },
+    [`${MOCK_HOME}/Pictures/memes`]: { dirs: ['reactions', 'wojaks'], files: [['pepe.png', '#4b4'], ['doge.png', '#c93']] },
+    [`${MOCK_HOME}/Pictures/memes/reactions`]: { dirs: [], files: [['shocked.png', '#e55'], ['smug.png', '#5ae']] },
+    [`${MOCK_HOME}/Pictures/memes/wojaks`]: { dirs: [], files: [['feels.png', '#ddd'], ['doomer.png', '#222']] },
+  };
   let memory = null; // used when storage is missing or throws
   const delay = Number.isFinite(mock.delayMs) ? mock.delayMs : 350;
   let boardAttempts = 0;
@@ -622,6 +653,85 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       const tim = Number(/\/(\d+)s?\.\w+$/.exec(String(path))?.[1] || 0);
       return MOCK_THUMBS[tim % MOCK_THUMBS.length];
     },
+    // The library: the index in storage; files brought in live as blob URLs
+    // until the page closes (then the sample pictures stand in).
+    async libraryLoad() {
+      await sleep(Math.min(delay, 100));
+      let index = null;
+      try {
+        index = JSON.parse(storage?.getItem(LIBRARY_KEY) || 'null');
+      } catch {
+        index = null;
+      }
+      return { root: 'Downloads/CloverEye/Library', index };
+    },
+    async librarySave(_dir, index) {
+      try {
+        storage?.setItem(LIBRARY_KEY, JSON.stringify(index));
+      } catch {
+        /* no storage */
+      }
+    },
+    async libraryFetch(_dir, url, board, name) {
+      siteRequests += 1;
+      await sleep(Math.min(delay, 150));
+      const rel = `${board}/${name}`;
+      libraryFiles.set(rel, url);
+      return { rel, bytes: 1000 };
+    },
+    async libraryImport(_dir, name, bytes) {
+      await sleep(Math.min(delay, 50));
+      let rel = `imported/${name}`;
+      for (let i = 2; libraryFiles.has(rel); i++) rel = `imported/${name.replace(/(\.[^.]+)?$/, `-${i}$1`)}`;
+      const type = /\.png$/i.test(name) ? 'image/png' : /\.gif$/i.test(name) ? 'image/gif' : /\.(webm|mp4)$/i.test(name) ? `video/${name.split('.').pop().toLowerCase()}` : 'image/jpeg';
+      const blob = new Blob([bytes], { type });
+      libraryBlobs.set(rel, blob);
+      libraryFiles.set(rel, URL.createObjectURL(blob));
+      return { rel, bytes: bytes.length };
+    },
+    async libraryDelete(_dir, rel) {
+      libraryFiles.delete(rel);
+      libraryBlobs.delete(rel);
+    },
+    /** The page's own policy allows no fetch of a blob URL: the file itself. */
+    libraryRead: async (rel) => libraryBlobs.get(rel) || null,
+    // a made-up home folder to browse and import from
+    async libraryBrowse(path = '') {
+      await sleep(Math.min(delay, 60));
+      const p = path || MOCK_HOME;
+      const node = MOCK_TREE[p];
+      if (!node) throw new Error(`${p} is not a folder.`);
+      const parent = p === '/' ? null : p.replace(/\/[^/]+$/, '') || '/';
+      return {
+        path: p,
+        parent,
+        dirs: node.dirs.map((d) => ({ name: d, path: `${p === '/' ? '' : p}/${d}` })),
+        media: node.files.length,
+        places: [{ name: 'Home', path: MOCK_HOME }, { name: 'Pictures', path: `${MOCK_HOME}/Pictures` }],
+      };
+    },
+    async libraryImportDir(_dir, src, deep, skip = []) {
+      await sleep(Math.min(delay, 150));
+      const items = [];
+      const walk = (p, inside) => {
+        const node = MOCK_TREE[p];
+        if (!node) return;
+        for (const [name, colour] of node.files) {
+          if (skip.includes(inside ? `${inside}/${name}` : name)) continue;
+          let rel = `imported/${name}`;
+          for (let i = 2; libraryFiles.has(rel); i++) rel = `imported/${name.replace(/(\.[^.]+)$/, `-${i}$1`)}`;
+          const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="90"><rect width="120" height="90" fill="${colour}"/><circle cx="60" cy="45" r="25" fill="#000"/></svg>`;
+          const blob = new Blob([svg], { type: 'image/svg+xml' });
+          libraryBlobs.set(rel, blob);
+          libraryFiles.set(rel, URL.createObjectURL(blob));
+          items.push({ rel, name, from: inside ? `${inside}/${name}` : name, bytes: svg.length });
+        }
+        if (deep) for (const d of node.dirs) walk(`${p}/${d}`, inside ? `${inside}/${d}` : d);
+      };
+      walk(src, '');
+      return { items, more: false };
+    },
+    libraryFileUrl: (rel) => libraryFiles.get(rel) || MOCK_THUMBS[[...String(rel)].reduce((a, c) => a + c.charCodeAt(0), 0) % MOCK_THUMBS.length],
     downloads: [],
     async downloadFile(url, name, _dir = '', size = 0) {
       if (this.downloads.some((d) => d.name === name && d.size === size)) return { status: 'skipped', path: `Downloads/${name}` };
@@ -704,11 +814,19 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
     async aiDetect() {
       await sleep(delay);
       const specs = mock.ai === 'below' ? { ramGb: 8, vramGb: 0, gpu: '', unified: false } : { ramGb: 32, vramGb: 12, gpu: MOCK_GPU, unified: false };
-      const servers = mock.ai === 'none' || mock.ai === 'below' ? [] : [{ kind: 'ollama', port: 11434, models: ['llama3.1:8b', 'qwen2.5:7b', 'nomic-embed-text'] }];
+      const servers = mock.ai === 'none' || mock.ai === 'below' ? [] : [{ kind: 'ollama', port: 11434, models: ['llama3.1:8b', 'qwen2.5:7b', 'llava:7b', 'nomic-embed-text'] }];
       return { servers, specs };
     },
     aiChat({ id, model, messages }, onEvent) {
       if (model) aiLoadedModels.add(model);
+      if (messages?.at?.(-1)?.images || Array.isArray(messages?.at?.(-1)?.content)) {
+        (async () => {
+          await sleep(Math.min(delay, 300));
+          onEvent({ type: 'text', text: ['smug', 'frog', 'reaction', 'green'].join(', ') });
+          onEvent({ type: 'done' });
+        })();
+        return Promise.resolve();
+      }
       const asked = String(messages?.at?.(-1)?.content ?? '');
       const nos = [...asked.matchAll(/No\.(\d+)/g)].map((m) => m[1]).slice(0, 3);
       const answer = mockAnswer(nos);

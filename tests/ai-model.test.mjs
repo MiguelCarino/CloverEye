@@ -12,10 +12,10 @@ import { normalizeSettings, defaults } from '../ui/js/setup-model.js';
 const post = (no, com, extra = {}) => ({ no, com, time: 1_794_000_000 + no, ...extra });
 
 test('settings: off by default, kept only when sound', () => {
-  assert.deepEqual(A.aiDefaults(), { enabled: false, kind: '', port: 0, model: '', reach: 'normal' });
+  assert.deepEqual(A.aiDefaults(), { enabled: false, kind: '', port: 0, model: '', vision: '', reach: 'normal' });
   assert.deepEqual(defaults().ai, A.aiDefaults());
-  const ok = { enabled: true, kind: 'ollama', port: 11434, model: ' llama3.1:8b ', reach: 'long' };
-  assert.deepEqual(A.normalizeAi(ok), { enabled: true, kind: 'ollama', port: 11434, model: 'llama3.1:8b', reach: 'long' });
+  const ok = { enabled: true, kind: 'ollama', port: 11434, model: ' llama3.1:8b ', vision: 'llava:7b', reach: 'long' };
+  assert.deepEqual(A.normalizeAi(ok), { enabled: true, kind: 'ollama', port: 11434, model: 'llama3.1:8b', vision: 'llava:7b', reach: 'long' });
   assert.deepEqual(A.normalizeAi({ enabled: 'yes', kind: 'openai', port: 70000, model: 'a\nb', reach: 'huge' }), A.aiDefaults());
   assert.equal(normalizeSettings({ ai: ok }).ai.model, 'llama3.1:8b');
   assert.deepEqual(normalizeSettings({}).ai, A.aiDefaults());

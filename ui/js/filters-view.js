@@ -5,6 +5,8 @@
 
 import * as F from './filter-model.js';
 import { h, icon, toast, copyText } from './dom.js';
+import { postFlag } from './bridge.js';
+import { currentLang } from './i18n.js';
 
 // What is being edited survives the redraws Settings goes through (a
 // thread in another pane updating redraws the whole window).
@@ -15,6 +17,7 @@ const ui = {
   importText: '',
   importMsg: '',
   importError: false,
+  flagQuery: '', // the flag picker's search
 };
 
 const blankDraft = () => ({ field: 'com', pattern: '', regex: false, matchCase: false, boardsText: '', action: 'hide' });
@@ -28,6 +31,16 @@ function draftProblem(d) {
   return bad.length ? `Not a board code: ${bad.join(' ')}` : '';
 }
 
+/** The app's language, for country names. */
+function langOf() {
+  try {
+    const l = currentLang?.();
+    return l && l !== 'system' ? l : navigator.language || 'en';
+  } catch {
+    return 'en';
+  }
+}
+
 function boardsLabel(f) {
   return f.boards.length ? f.boards.map((b) => `/${b}/`).join(' ') : 'Every board';
 }
@@ -37,7 +50,7 @@ function boardsLabel(f) {
  * @param {object} o.settings
  * @param {(next: object, how?: {redraw?: boolean, focus?: string}) => void} o.onChange
  */
-export function filtersSection({ settings, onChange }) {
+export function filtersSection({ settings, onChange, boards: boardList = null }) {
   const filters = settings.filters || [];
   const hiddenCount = (settings.hiddenPosts || []).length;
   const redraw = (focus) => onChange(settings, { focus });
@@ -143,7 +156,7 @@ export function filtersSection({ settings, onChange }) {
           h('label', { class: 'field__label', for: 'filter-field', text: 'Match on' }),
           h(
             'select',
-            { id: 'filter-field', class: 'input', 'data-key': 'filter-field', onchange: (e) => ((d.field = e.target.value), check()) },
+            { id: 'filter-field', class: 'input', 'data-key': 'filter-field', onchange: (e) => ((d.field = e.target.value), redraw('filter-field')) },
             F.FILTER_FIELDS.map((f) => h('option', { value: f.value, selected: f.value === d.field, text: f.label })),
           ),
         ),
@@ -159,6 +172,8 @@ export function filtersSection({ settings, onChange }) {
         { class: 'field__hint', id: 'filter-pattern-hint' },
         'Plain text matches anywhere in comments, subjects and file names, and the whole value of names, tripcodes, IDs and MD5s. Case is ignored unless Match case is on.',
       ),
+      d.field === 'flag' ? flagPicker(d, () => redraw('filter-pattern')) : null,
+      d.field === 'flag' || d.field === 'id' ? featuresLine() : null,
       h(
         'div',
         { class: 'filter-form__checks' },
@@ -199,6 +214,76 @@ export function filtersSection({ settings, onChange }) {
     );
   };
 
+  /** Every flag to pick from (country flags, and the chosen boards' own),
+   *  with its picture; a press puts it in the pattern. */
+  const flagPicker = (d, done) => {
+    const chosen = F.parseBoards(d.boardsText).boards;
+    const all = F.flagChoices(boardList, chosen, langOf());
+    const q = ui.flagQuery.trim().toLowerCase();
+    const list = q ? all.filter((c) => c.name.toLowerCase().includes(q) || c.code.toLowerCase() === q || (c.board && `/${c.board}/`.includes(q))) : all;
+    const grid = h(
+      'ul',
+      { class: 'flag-pick__list', 'aria-label': 'Flags' },
+      list.slice(0, 400).map((c) => {
+        const flag = postFlag(c.board || 'int', c.kind === 'country' ? { country: c.code, country_name: c.name } : { board_flag: c.code, flag_name: c.name }, true);
+        // a country by its code; a board's flag by its name (codes repeat across boards)
+        const value = c.kind === 'country' ? c.code : c.name;
+        return h(
+          'li',
+          null,
+          h(
+            'button',
+            {
+              type: 'button',
+              class: `flag-pick__item${d.pattern === value ? ' flag-pick__item--on' : ''}`,
+              title: c.board ? `/${c.board}/ · ${c.name}` : `${c.name} (${c.code})`,
+              'data-key': `filter-flag-${c.board || 'cc'}-${c.code}`,
+              onclick: () => {
+                d.pattern = value;
+                d.regex = false;
+                if (c.board && !d.boardsText.trim()) d.boardsText = c.board;
+                done();
+              },
+            },
+            flag?.src ? h('img', { src: flag.src, alt: '', width: 16, height: 11, loading: 'lazy', onerror: (e) => e.currentTarget.remove() }) : null,
+            h('span', { class: 'flag-pick__name', text: c.name }),
+            h('span', { class: 'flag-pick__code', translate: 'no', text: c.board ? `/${c.board}/` : c.code }),
+          ),
+        );
+      }),
+    );
+    return h(
+      'div',
+      { class: 'flag-pick' },
+      h('input', {
+        type: 'search',
+        class: 'input',
+        placeholder: 'Find a flag: country, code or /board/',
+        'aria-label': 'Find a flag',
+        value: ui.flagQuery,
+        'data-key': 'filter-flag-search',
+        oninput: (e) => {
+          ui.flagQuery = e.target.value;
+          redraw('filter-flag-search');
+        },
+      }),
+      list.length ? grid : h('p', { class: 'field__hint', text: 'No flag matches.' }),
+      h('p', { class: 'field__hint', text: chosen.length ? 'Flags of the boards chosen below.' : 'Every country flag and every board’s own flags; choose boards below to narrow the list.' }),
+    );
+  };
+
+  /** Which boards send flags or poster IDs (from the board list). */
+  const featuresLine = () => {
+    const fs = F.boardFeatures(boardList);
+    if (!fs.length) return null;
+    const names = (pred) => fs.filter(pred).map((f) => `/${f.board}/`).join(' ');
+    const parts = [];
+    if (fs.some((f) => f.countryFlags)) parts.push(`Country flags: ${names((f) => f.countryFlags)}`);
+    if (fs.some((f) => f.boardFlags)) parts.push(`Board flags: ${names((f) => f.boardFlags)}`);
+    if (fs.some((f) => f.ids)) parts.push(`Poster IDs: ${names((f) => f.ids)}`);
+    return h('p', { class: 'field__hint filter-form__features', text: parts.join(' · ') });
+  };
+
   const row = (f) => {
     if (ui.editing === f.id && ui.draft) return h('li', { class: 'filter-list__item filter-list__item--editing' }, form());
     const problem = F.filterProblem(f);
@@ -222,7 +307,7 @@ export function filtersSection({ settings, onChange }) {
         h(
           'div',
           { class: 'filter-list__head' },
-          h('span', { class: `pill${f.action === 'highlight' ? ' pill--hl' : ''}`, text: f.action === 'highlight' ? 'Highlight' : 'Hide' }),
+          h('span', { class: `pill${f.action === 'highlight' ? ' pill--hl' : f.action === 'discard' ? ' pill--dead' : ''}`, text: f.action === 'highlight' ? 'Highlight' : f.action === 'discard' ? 'Discard' : 'Hide' }),
           h('span', { class: 'filter-list__field', text: F.fieldLabel(f.field) }),
           h('code', { class: 'filter-list__pattern', translate: 'no', text: f.regex ? `/${f.pattern}/${f.matchCase ? '' : 'i'}` : f.pattern }),
         ),

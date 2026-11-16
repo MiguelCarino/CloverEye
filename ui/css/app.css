@@ -1350,6 +1350,7 @@ dialog[open] {
 }
 
 .rail {
+  position: relative;
   border-right: 1px solid var(--border);
   background: var(--bg-sunken);
   display: grid;
@@ -1984,6 +1985,18 @@ dialog[open] {
   transition:
     transform var(--dur) ease,
     opacity var(--dur) ease;
+}
+
+/* A catalog's (and the library's) search and tags stay in sight while
+   scrolling: never tucked, so a search is always one click away. */
+.browse__tools--sticky {
+  position: sticky;
+  top: calc(-1 * var(--space-5));
+  z-index: 6;
+  margin: calc(-1 * var(--space-5)) calc(-1 * var(--space-5)) 0;
+  padding: var(--space-3) var(--space-5);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
 }
 
 .browse__tools--thread.is-tucked {
@@ -2774,6 +2787,8 @@ video.post__media {
 }
 
 .workspace__grid {
+  /* the last row, the one that stretches, also when there are no tabs */
+  grid-row: -2;
   min-height: 0;
   display: grid;
   grid-auto-rows: minmax(0, 1fr);
@@ -3314,6 +3329,471 @@ video.post__media {
   gap: var(--space-2);
 }
 
+
+/* "Fill the pane" (compose.js placeOver sets left, top, width, height to
+   the thread's pane) and "Fill the window": no corner, no hand size */
+.composer--pane,
+.composer--full {
+  right: auto;
+  bottom: auto;
+  max-height: none;
+  translate: none;
+  border-radius: var(--radius-md);
+}
+
+.composer--full {
+  inset: calc(var(--titlebar-h) + 8px) 8px 8px 8px;
+  width: auto;
+  height: auto;
+}
+
+.composer--pane .composer__head,
+.composer--full .composer__head {
+  cursor: default;
+}
+
+.composer--pane .composer__body,
+.composer--full .composer__body {
+  /* the comment takes what the rest leaves (the body scrolls past that) */
+  display: flex;
+  flex-direction: column;
+}
+
+.composer--pane .composer__field:has(.composer__com),
+.composer--full .composer__field:has(.composer__com) {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 200px;
+}
+
+.composer--pane .composer__com,
+.composer--full .composer__com {
+  flex: 1 1 auto;
+  min-height: 160px;
+  resize: none;
+}
+
+.composer--pane .composer__count,
+.composer--full .composer__count {
+  align-self: flex-end;
+}
+
+.composer__mode--on {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* the footer's buttons: Save for later, Post */
+.composer__actions {
+  display: inline-flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+/* replies saved for later: pills at the bottom right, like a folded form
+   ("Reply to /g/ No. 12  Captcha to solve  ×"); compose.js drawTray */
+.reply-tray {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 799;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-height: calc(100vh - var(--titlebar-h) - 32px);
+  pointer-events: none;
+}
+
+.reply-tray > * {
+  flex: none;
+}
+
+.reply-tray > .reply-tray__list {
+  flex: 0 1 auto;
+}
+
+.reply-tray[hidden] {
+  display: none;
+}
+
+.reply-tray__list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  min-height: 0;
+  margin: 0;
+  padding: 2px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.reply-tray__more,
+.reply-pill,
+.composer--min {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2, var(--surface));
+  box-shadow: var(--shadow-1, 0 1px 3px rgb(0 0 0 / 0.12));
+}
+
+.reply-tray__more {
+  pointer-events: auto;
+  padding: 4px 12px;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.reply-tray__more:hover {
+  color: var(--text);
+}
+
+.reply-tray__later {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2, var(--surface));
+  box-shadow: var(--shadow-1, 0 1px 3px rgb(0 0 0 / 0.12));
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.reply-tray__later svg {
+  width: 14px;
+  height: 14px;
+}
+
+.reply-tray__later:hover,
+.reply-tray__later--open {
+  color: var(--text);
+}
+
+.reply-tray__later:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* the replies being written: a pile, one card on another, the newest in
+   front and the edges of the others showing above it (compose.js fan);
+   pointed at or focused, it fans out into a column */
+.reply-tray__list--stack > .reply-pill {
+  position: relative;
+  transform-origin: 50% 0;
+  transition:
+    margin 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 220ms ease;
+}
+
+.reply-tray:not(.reply-tray--open) .reply-tray__list--stack > .reply-pill:not(:last-child) {
+  /* 8 px is the list's gap; 7 px of the card stays in sight */
+  margin-bottom: calc(-1 * (var(--pill-h, 42px) + 8px - 7px));
+}
+
+.reply-tray:not(.reply-tray--open) .reply-tray__list--stack > .reply-pill:nth-last-child(2) {
+  transform: scale(0.95);
+}
+
+.reply-tray:not(.reply-tray--open) .reply-tray__list--stack > .reply-pill:nth-last-child(3) {
+  transform: scale(0.9);
+}
+
+.reply-tray:not(.reply-tray--open) .reply-tray__list--stack > .reply-pill:nth-last-child(n + 4) {
+  transform: scale(0.85);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* behind a folded form, which is then the front card: one step further back */
+.reply-tray--behind:not(.reply-tray--open) .reply-tray__list--stack > .reply-pill:last-child {
+  transform: scale(0.95);
+}
+
+.reply-tray--behind:not(.reply-tray--open) .reply-tray__list--stack > .reply-pill:nth-last-child(2) {
+  transform: scale(0.9);
+}
+
+.reply-tray--behind:not(.reply-tray--open) .reply-tray__list--stack > .reply-pill:nth-last-child(n + 3) {
+  transform: scale(0.85);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* only the front card's words show while piled (the others stay
+   reachable with Tab, which fans the pile out) */
+.reply-tray:not(.reply-tray--open) .reply-tray__list--stack > .reply-pill:not(:last-child) > *,
+.reply-tray--behind:not(.reply-tray--open) .reply-tray__list--stack > .reply-pill > * {
+  opacity: 0;
+}
+
+.reply-tray__list--stack > .reply-pill > * {
+  transition: opacity 160ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reply-tray__list--stack > .reply-pill {
+    transition: none;
+  }
+}
+
+/* saved for later: quieter than the replies being written */
+.reply-pill--later {
+  border-style: dashed;
+  opacity: 0.92;
+}
+
+.reply-pill--later .reply-pill__open > svg,
+.reply-pill__file svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  align-self: center;
+  color: var(--text-muted);
+}
+
+.reply-pill__file {
+  display: inline-flex;
+  align-self: center;
+}
+
+.reply-pill {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: min(340px, calc(100vw - 32px));
+  padding: 4px 6px 4px 0;
+  overflow: hidden;
+}
+
+.reply-pill--new {
+  animation: reply-pill-in 280ms cubic-bezier(.2, .8, .2, 1);
+}
+
+@keyframes reply-pill-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.94);
+  }
+}
+
+.reply-pill__open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 4px 4px 4px 16px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.reply-pill__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reply-pill__note {
+  flex: none;
+  margin-left: auto;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.reply-pill__open:hover .reply-pill__title {
+  color: var(--accent);
+}
+
+.reply-pill__open:focus-visible,
+.reply-tray__more:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  border-radius: var(--radius-pill);
+}
+
+/* the × in a ring, as in a folded form */
+.reply-pill__x,
+.composer--min [data-key="compose-close"] {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.reply-pill__x svg {
+  width: 14px;
+  height: 14px;
+}
+
+.reply-pill__x:hover,
+.composer--min [data-key="compose-close"]:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.reply-pill__x:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.composer--min .composer__head {
+  padding: 4px 6px 4px 16px;
+}
+
+.composer--min .composer__title strong {
+  font-weight: 400;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reply-pill--new {
+    animation: none;
+  }
+}
+
+/* the captcha: a larger slider (easier to catch), and the picture scrubs */
+.captcha__stage {
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.captcha__stage--drag {
+  cursor: grabbing;
+}
+
+.captcha__img {
+  pointer-events: none;
+}
+
+.captcha__slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 28px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.captcha__slider::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+}
+
+.captcha__slider::-moz-range-track {
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+}
+
+.captcha__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 26px;
+  height: 26px;
+  margin-top: -9px;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+  background: var(--accent);
+  box-shadow: var(--shadow-1, 0 1px 3px rgb(0 0 0 / 0.3));
+}
+
+.captcha__slider::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+  background: var(--accent);
+}
+
+.captcha__slider:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-pill);
+}
+
+/* A reply going out (shell.js pending): in the thread at once, grey; it
+   flies in from the reply form, and takes its colours when the site says
+   it is posted. */
+.post--pending {
+  filter: grayscale(1);
+  opacity: 0.6;
+  border-style: dashed;
+}
+
+.post--pending .post__no {
+  font-style: italic;
+}
+
+.post--sent {
+  filter: none;
+  opacity: 1;
+}
+
+.post--colouring {
+  animation: post-colour 900ms var(--ease) backwards;
+}
+
+@keyframes post-colour {
+  0% {
+    filter: grayscale(1);
+    opacity: 0.6;
+    box-shadow: 0 0 0 0 var(--accent-soft);
+  }
+  45% {
+    box-shadow: 0 0 0 6px var(--accent-soft);
+  }
+  100% {
+    filter: none;
+    opacity: 1;
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.post--failed {
+  filter: none;
+  opacity: 0.75;
+  border-color: var(--danger);
+  border-style: dashed;
+}
+
+.post--failed .post__no {
+  color: var(--danger);
+  font-style: normal;
+}
+
+.post__pending-file {
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .post--colouring {
+    animation: none;
+  }
+}
 
 @media (max-width: 720px) {
   .composer {
@@ -5053,4 +5533,956 @@ dialog.log-dialog {
 
 .log-dialog__actions {
   flex-wrap: wrap;
+}
+
+/* ============================================================= library */
+/* the meme gallery (library-view.js): a grid of kept files, tags, details */
+
+.library__bar .library__search {
+  flex: 1 1 220px;
+  min-width: 160px;
+}
+
+.library__select {
+  width: auto;
+  flex: none;
+}
+
+.library__actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.library__actions .btn--disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.library__vision {
+  display: inline-flex;
+  align-items: center;
+  max-width: 320px;
+}
+
+.library__tags,
+.library__suggest,
+.library__chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.library__tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.library__tag svg {
+  width: 12px;
+  height: 12px;
+}
+
+.library__tag:hover {
+  border-color: var(--border-strong);
+}
+
+.library__tag--on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.library__tag--ai {
+  border-style: dashed;
+  border-color: var(--accent);
+}
+
+.library__tag-n {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.library__status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.library__busy {
+  color: var(--accent);
+}
+
+.library__root {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.library__main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.library__main--detail {
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+}
+
+.library__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.library__tile {
+  min-width: 0;
+}
+
+.library__thumb {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.library__thumb img,
+.library__thumb video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.library__thumb:hover {
+  border-color: var(--border-strong);
+}
+
+.library__thumb:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.library__tile--on .library__thumb {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.library__badge {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: rgb(0 0 0 / 0.6);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.library__badge--untagged {
+  left: auto;
+  right: 6px;
+  padding: 3px;
+  opacity: 0.75;
+}
+
+.library__badge svg {
+  width: 12px;
+  height: 12px;
+}
+
+.library__more {
+  margin-top: var(--space-3);
+}
+
+.library__empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6, 48px) var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.library__empty > svg {
+  width: 40px;
+  height: 40px;
+}
+
+.library__empty p {
+  max-width: 460px;
+  margin: 0;
+}
+
+.library__detail {
+  position: sticky;
+  top: 0;
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  max-height: calc(100vh - var(--titlebar-h) - 120px);
+  overflow-y: auto;
+}
+
+.library__detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.library__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library__preview {
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.library__meta,
+.library__sub,
+.library__text {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.library__meta {
+  color: var(--text-muted);
+}
+
+.library__sub {
+  font-weight: 600;
+}
+
+.library__text {
+  max-height: 6.5em;
+  overflow: hidden;
+  color: var(--text-muted);
+  white-space: pre-line;
+}
+
+.library__source {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: start;
+}
+
+.library__h {
+  margin: var(--space-2) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.library__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  font-size: var(--fs-sm);
+}
+
+.library__chip-x {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.library__chip-x svg {
+  width: 12px;
+  height: 12px;
+}
+
+.library__chip-x:hover {
+  color: var(--text);
+}
+
+.library__collections {
+  display: grid;
+  gap: 4px;
+}
+
+.library__detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-2);
+}
+
+.library__group {
+  display: grid;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.library__group + .library__group {
+  margin-top: var(--space-3);
+}
+
+.library__group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+/* "From library" in the reply form */
+dialog.library-pick {
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(640px, calc(100vh - 64px));
+  display: none;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+dialog.library-pick[open] {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.library-pick__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.library-pick__grid {
+  overflow-y: auto;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+}
+
+/* a post's file already kept */
+.post__kept {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--accent);
+}
+
+.post__kept svg {
+  width: 14px;
+  height: 14px;
+}
+
+@media (max-width: 860px) {
+  .library__main--detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .library__detail {
+    position: static;
+    max-height: none;
+  }
+}
+
+/* the window closing (app.js __ceClosing): a short fade and shrink */
+html.is-closing body {
+  animation: app-out 220ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  pointer-events: none;
+}
+
+@keyframes app-out {
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.is-closing body {
+    animation-duration: 80ms;
+  }
+
+  @keyframes app-out {
+    to {
+      opacity: 0;
+    }
+  }
+}
+
+/* the library's folder browser (library-view.js browseFolders) */
+dialog.folder-pick {
+  width: min(620px, calc(100vw - 32px));
+  max-height: min(600px, calc(100vh - 64px));
+  padding: var(--space-3);
+}
+
+dialog.folder-pick[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.folder-pick__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.folder-pick__body {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  min-height: 0;
+}
+
+.folder-pick__places {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.folder-pick__path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--fs-sm);
+}
+
+.folder-pick__crumb {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: var(--radius-xs, 4px);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.folder-pick__crumb:hover {
+  background: var(--surface-2);
+}
+
+.folder-pick__crumb:last-child {
+  font-weight: 600;
+}
+
+.folder-pick__sep {
+  color: var(--text-muted);
+}
+
+.folder-pick__dirs {
+  display: grid;
+  gap: 2px;
+  min-height: 120px;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  list-style: none;
+}
+
+.folder-pick__dir {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.folder-pick__dir:hover,
+.folder-pick__dir:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.folder-pick__dir svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
+}
+
+.folder-pick__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.folder-pick__foot > .field__hint {
+  margin-right: auto;
+}
+
+.library__folder {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* ============================================================ tags */
+/* tags for lurking (tag-view.js): chips in a catalog's bar, labels on its
+   cards, the editor, and a tag's own page */
+
+/* next to the search box: one row that scrolls sideways when it is full */
+.browse__tools.browse__tools--catalog > .input[type='search'] {
+  flex: 0 1 240px;
+  width: auto;
+  min-width: 140px;
+}
+
+.catalog-tags {
+  flex: 1 1 160px;
+  min-width: 0;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding: 2px 0;
+}
+
+.catalog-tags > * {
+  flex: none;
+}
+
+.catalog-tags__tag svg {
+  width: 12px;
+  height: 12px;
+  color: var(--accent);
+}
+
+.catalog-card__tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.catalog-card__tag {
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+dialog.tag-dialog {
+  width: min(480px, calc(100vw - 32px));
+}
+
+.tag-dialog__form {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.tag-dialog__where {
+  display: grid;
+  gap: 6px;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.tag-dialog__delete {
+  margin-right: auto;
+}
+
+.tag-page__terms {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.tag-page__section {
+  display: grid;
+  gap: var(--space-2);
+}
+
+/* picking several library files (library-view.js pickBar) */
+.library__pickbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+}
+
+.library__pick-tag {
+  width: auto;
+  flex: 1 1 180px;
+}
+
+.library__pick {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 0.35);
+  color: #fff;
+}
+
+.library__pick--on {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.library__pick svg {
+  width: 14px;
+  height: 14px;
+}
+
+.library__tile--picked .library__thumb {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* the sidebar's edge, dragged to resize it (shell.js railGrip) */
+.rail__grip {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: 5;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.rail__grip::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background var(--dur) ease;
+}
+
+.rail__grip:hover::after,
+.rail__grip:focus-visible::after,
+.shell--resizing .rail__grip::after {
+  background: var(--accent);
+}
+
+.rail__grip:focus-visible {
+  outline: none;
+}
+
+.shell--resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.shell--resizing iframe,
+.shell--resizing video {
+  pointer-events: none;
+}
+
+@media (max-width: 900px) {
+  .rail__grip {
+    display: none;
+  }
+}
+
+/* a hide tag: on, it hides what it finds (tag-view.js tagChips) */
+.catalog-tags__tag--hide {
+  border-style: dashed;
+}
+
+.catalog-tags__tag--hide.library__tag--on {
+  border-style: solid;
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.catalog-tags__tag--hide.library__tag--on svg {
+  color: var(--danger);
+}
+
+.catalog-tags__tag--hide:not(.library__tag--on) {
+  color: var(--text-muted);
+}
+
+/* the tag editor: Show (green) or Hide (red), chosen at the top */
+dialog.tag-dialog {
+  --mode: var(--success, #3fb950);
+  --mode-soft: color-mix(in srgb, var(--mode) 14%, transparent);
+  border: 2px solid var(--mode);
+  background: linear-gradient(var(--mode-soft), var(--mode-soft)), var(--surface);
+  transition:
+    border-color var(--dur) ease,
+    background var(--dur) ease;
+}
+
+dialog.tag-dialog--hide {
+  --mode: var(--danger);
+}
+
+.tag-dialog__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.tag-dialog__mode {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+}
+
+.tag-dialog__mode-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 14px;
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background var(--dur) ease,
+    color var(--dur) ease;
+}
+
+.tag-dialog__mode-opt svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tag-dialog__mode-opt--show:has(input:checked) {
+  background: var(--success, #3fb950);
+  color: #fff;
+}
+
+.tag-dialog__mode-opt--hide:has(input:checked) {
+  background: var(--danger);
+  color: #fff;
+}
+
+.tag-dialog__mode-opt:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.tag-dialog__mode-hint {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--mode);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--mode-soft);
+  font-size: var(--fs-sm);
+}
+
+/* the flag picker in a filter (filters-view.js flagPicker) */
+.flag-pick {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.flag-pick__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 2px;
+  max-height: 220px;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  list-style: none;
+}
+
+.flag-pick__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.flag-pick__item:hover,
+.flag-pick__item:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.flag-pick__item--on {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.flag-pick__item img {
+  flex: none;
+  image-rendering: pixelated;
+}
+
+.flag-pick__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flag-pick__code {
+  flex: none;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* flags in the tag editor (tag-view.js editTag) */
+.tag-dialog__form {
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+}
+
+.tag-dialog__flags {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.tag-dialog__picked {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tag-dialog__picked svg {
+  width: 12px;
+  height: 12px;
+}
+
+.tag-dialog__picked img {
+  image-rendering: pixelated;
+}
+
+.tag-dialog .flag-pick__list {
+  max-height: 160px;
+}
+
+/* Stats → Tags (stats-view.js tagsPanel) */
+.tag-stats .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tag-stats__name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 6px;
+}
+
+.tag-stats__name svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tag-spark {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 22px;
+  vertical-align: middle;
+}
+
+.tag-spark__bar {
+  width: 5px;
+  min-height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0.85;
+}
+
+.tag-stats th:first-child,
+.tag-stats td:nth-child(2),
+.tag-stats thead th:nth-child(2) {
+  text-align: left;
 }

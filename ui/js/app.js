@@ -59,6 +59,18 @@ function wireWindowControls() {
   });
 }
 
+// Closing: the window fades and shrinks a little first. The app (main.rs)
+// holds the close request and calls this; the close that follows goes
+// through. Nothing is lost: the shell keeps its state on pagehide.
+let closingNow = false;
+window.__ceClosing = () => {
+  if (closingNow) return;
+  closingNow = true;
+  const quick = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  document.documentElement.classList.add('is-closing');
+  setTimeout(() => bridge.window?.close?.(), quick ? 80 : 230);
+};
+
 let shell = null;
 let boardsCache = null;
 let current = null; // settings the shell is running with

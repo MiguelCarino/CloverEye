@@ -10,6 +10,7 @@ import { EMBED_MODES } from './link-model.js';
 import { displayDefaults, normalizeDisplay } from './display-model.js';
 import { normalizeStatsSettings } from './stats-model.js';
 import { aiDefaults, normalizeAi, AI_KIND_LABELS } from './ai-model.js';
+import { normalizeTags } from './tag-model.js';
 
 /** 2: Your stats (opt-in, local only). 3: Assistant (opt-in, a model on
  *  this computer). */
@@ -102,6 +103,15 @@ export const isBoardCode = (b) => typeof b === 'string' && BOARD_RE.test(b);
 /** The language setting's values (ui/js/i18n.js has the names). */
 export const LANG_SETTINGS = ['system', 'en', 'es', 'pt-BR', 'ja', 'ru'];
 
+/** The sidebar's width, dragged by its edge (shell.js railGrip). */
+export const RAIL_MIN = 180;
+export const RAIL_MAX = 480;
+export const RAIL_DEFAULT = 248;
+export function fitRail(w) {
+  const n = Math.round(Number(w));
+  return Number.isFinite(n) ? Math.min(RAIL_MAX, Math.max(RAIL_MIN, n)) : RAIL_DEFAULT;
+}
+
 export function defaults() {
   return {
     schema: 1,
@@ -121,9 +131,9 @@ export function defaults() {
     watch: { notifyReplies: false, keepInTray: false, intervalSec: MIN_WATCH_INTERVAL },
     /** savedDir: where Save offline keeps threads ('' = the download
      *  folder's CloverEye/Saved threads; offline-model.js). */
-    files: { downloadDir: '', savedDir: '', stripMetadata: true, cache: 'memory', cacheCapMB: 256 },
+    files: { downloadDir: '', savedDir: '', libraryDir: '', toLibrary: true, stripMetadata: true, cache: 'memory', cacheCapMB: 256 },
     /** Layout choices made in the shell. */
-    ui: { railHidden: false, splitWidth: 520, hoverPreview: true, rows: 1 },
+    ui: { railHidden: false, railWidth: RAIL_DEFAULT, splitWidth: 520, hoverPreview: true, rows: 1 },
     /** Posts made from CloverEye: [{ board, no }]. */
     yous: [],
     /** The reply form's remembered name, the deletion password the site
@@ -136,6 +146,9 @@ export function defaults() {
     /** Filters (ui/js/filter-model.js): { id, field, pattern, regex,
      *  matchCase, boards ([] = every board), action, enabled }. */
     filters: [],
+    /** Tags for lurking (ui/js/tag-model.js): { id, name, terms, board
+     *  ('' = universal: every active board), library (also search it) }. */
+    tags: [],
     /** Posts and threads hidden by hand: [{ board, no }]. */
     hiddenPosts: [],
     /** Hiding (ui/js/hide-model.js): also hide replies whose quotes are all
@@ -248,6 +261,7 @@ export function normalizeSettings(raw) {
     const nsfw = new Set(out.nsfwBoards);
     out.favourites = out.favourites.filter((b) => !nsfw.has(b));
   }
+  out.tags = normalizeTags(raw.tags);
   if (isObj(raw.watch)) {
     out.watch = {
       notifyReplies: bool(raw.watch.notifyReplies, d.watch.notifyReplies),
@@ -260,6 +274,8 @@ export function normalizeSettings(raw) {
     out.files = {
       downloadDir: dir.length <= 1024 && !dir.includes('\0') ? dir.trim() : '',
       savedDir: normalizeFolder(raw.files.savedDir),
+      libraryDir: normalizeFolder(raw.files.libraryDir),
+      toLibrary: bool(raw.files.toLibrary, d.files.toLibrary),
       stripMetadata: bool(raw.files.stripMetadata, d.files.stripMetadata),
       cache: pick(raw.files.cache, CACHE_MODES, d.files.cache),
       cacheCapMB: pick(raw.files.cacheCapMB, CACHE_CAPS_MB, d.files.cacheCapMB),
@@ -269,6 +285,7 @@ export function normalizeSettings(raw) {
     const w = Math.round(Number(raw.ui.splitWidth));
     out.ui = {
       railHidden: bool(raw.ui.railHidden, d.ui.railHidden),
+      railWidth: fitRail(raw.ui.railWidth),
       splitWidth: Number.isFinite(w) ? Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, w)) : d.ui.splitWidth,
       hoverPreview: bool(raw.ui.hoverPreview, d.ui.hoverPreview),
       rows: [1, 2, 3].includes(raw.ui.rows) ? raw.ui.rows : d.ui.rows,

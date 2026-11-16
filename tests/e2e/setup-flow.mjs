@@ -667,7 +667,11 @@ const settled = (page) => page.waitForTimeout(300);
   const after = await page.locator('.composer').boundingBox();
   check('reply form: dragging the corner grip resizes it', after.width >= before.width + 100 && after.height >= before.height + 50, `${Math.round(before.width)}x${Math.round(before.height)} → ${Math.round(after.width)}x${Math.round(after.height)}`);
   check('reply form: the size is kept', await page.evaluate(() => Boolean(JSON.parse(localStorage.getItem('clovereye-composer-size') || 'null')?.w)));
+  // × on a reply with words in it asks first, and only then deletes it
   await page.locator('[data-key="compose-close"]').click(); await settled(page);
+  check('reply form: × asks before deleting a written reply', await page.locator('[data-key="confirm-ok"]').isVisible());
+  await page.locator('[data-key="confirm-ok"]').click(); await settled(page);
+  check('reply form: a deleted reply leaves no pill', (await page.locator('[data-active-key]').count()) === 0);
   // the thread's controls: tucked while scrolling down, back on the way up,
   // at the end, and when pointed at
   const body = page.locator('.centre__body').first();

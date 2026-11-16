@@ -51,6 +51,7 @@ test('the UI makes no outside requests: only allowed hosts appear', () => {
     'https://s.4cdn.org',
     'http://ipc.localhost', // Tauri IPC
     'http://cesaved.localhost', // saved threads' files, the app's own scheme (Windows form; offline.rs)
+    'http://celib.localhost', // library files, the app's own scheme (Windows form; library.rs)
     'http://www.w3.org/2000/svg', // SVG namespace
   ];
   for (const f of textFiles(UI)) {

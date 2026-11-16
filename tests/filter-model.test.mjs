@@ -217,7 +217,43 @@ test('repliesToYou: posts quoting yours, not your own; youSet per board', () => 
 test('fieldLabel names each field', () => {
   assert.equal(F.fieldLabel('md5'), 'File MD5');
   assert.equal(F.fieldLabel('nope'), 'nope');
-  assert.deepEqual(F.FILTER_ACTIONS.map((a) => a.value), ['hide', 'highlight']);
+  assert.deepEqual(F.FILTER_ACTIONS.map((a) => a.value), ['hide', 'discard', 'highlight']);
+});
+
+test('discard: wins over hide and highlight, and is a hidden mark that is gone', () => {
+  const posts = [{ no: 1, com: 'spam here' }, { no: 2, com: 'nice spam' }, { no: 3, com: 'fine' }];
+  const c = F.compileFilters(
+    [
+      { id: 'a', field: 'com', pattern: 'nice', regex: false, matchCase: false, boards: [], action: 'highlight', enabled: true },
+      { id: 'b', field: 'com', pattern: 'spam', regex: false, matchCase: false, boards: [], action: 'hide', enabled: true },
+      { id: 'c', field: 'com', pattern: 'nice spam', regex: false, matchCase: false, boards: [], action: 'discard', enabled: true },
+    ],
+    'g',
+  );
+  const marks = F.markPosts(posts, c);
+  assert.deepEqual([...marks], [[1, 'hide'], [2, 'discard']]);
+  assert.equal(F.isHiddenMark('discard'), true);
+  assert.equal(F.isGoneMark('discard'), true);
+  assert.equal(F.isGoneMark('hide'), false);
+  assert.equal(F.normalizeFilter({ field: 'com', pattern: 'x', action: 'discard' }).action, 'discard');
+  assert.equal(F.normalizeFilter({ field: 'com', pattern: 'x', action: 'nuke' }).action, 'hide');
+});
+
+test('flags, capcodes and file types can be filtered', () => {
+  const nz = { no: 1, country: 'NZ', country_name: 'New Zealand', com: 'a' };
+  const templar = { no: 2, board_flag: 'TM', flag_name: 'Templar', com: 'b' };
+  const mod = { no: 3, capcode: 'mod', com: 'c' };
+  const webm = { no: 4, ext: '.webm', com: 'd' };
+  const run = (field, pattern) => [...F.markPosts([nz, templar, mod, webm], F.compileFilters([{ id: 'x', field, pattern, regex: false, matchCase: false, boards: [], action: 'discard', enabled: true }], 'int')).keys()];
+  assert.deepEqual(run('flag', 'nz'), [1], 'by code, any case');
+  assert.deepEqual(run('flag', 'new zealand'), [1], 'or by name');
+  assert.deepEqual(run('flag', 'zealand'), [], 'whole, not a part');
+  assert.deepEqual(run('flag', 'Templar'), [2], 'board flags too');
+  assert.deepEqual(run('capcode', 'mod'), [3]);
+  assert.deepEqual(run('ext', '.WEBM'), [4], 'with or without the dot');
+  assert.deepEqual(run('ext', 'webm'), [4]);
+  assert.ok(F.quickFilters(nz).some((q) => q.field === 'flag' && q.value === 'NZ'));
+  assert.ok(F.quickFilters(templar).some((q) => q.field === 'flag' && q.value === 'TM'));
 });
 
 test('the filter list stays inside its share of the settings file', () => {
@@ -255,4 +291,41 @@ test('addProblem names why a filter is refused', () => {
   assert.equal(F.addProblemText('count'), `At most ${F.MAX_FILTERS} filters.`);
   assert.equal(F.addProblemText('duplicate'), 'That filter is already there.');
   assert.equal(F.addProblemText(''), '');
+});
+
+test('marks say which filter decided, to name it and delete it from a post', () => {
+  const c = F.compileFilters(
+    [
+      { id: 'hl', field: 'com', pattern: 'nice', regex: false, matchCase: false, boards: [], action: 'highlight', enabled: true },
+      { id: 'sp', field: 'com', pattern: 'spam', regex: false, matchCase: false, boards: [], action: 'hide', enabled: true },
+    ],
+    'g',
+  );
+  const by = new Map();
+  F.markPosts([{ no: 1, com: 'nice spam' }, { no: 2, com: 'nice' }, { no: 3, com: 'x' }], c, new Set([3]), by);
+  assert.deepEqual([...by], [[1, 'sp'], [2, 'hl']]);
+  assert.deepEqual(F.classifyPostBy(c, { com: 'spam' }), { action: 'hide', id: 'sp' });
+  assert.deepEqual(F.classifyPostBy(c, { com: 'ok' }), { action: null, id: '' });
+});
+
+test('board extras: 4chan Pass year, /f/ categories, and the flags to pick from', () => {
+  const post = { no: 1, since4pass: 2016, tag: 'Loop' };
+  const run = (field, pattern) => F.classifyPost(F.compileFilters([{ id: 'x', field, pattern, regex: false, matchCase: false, boards: [], action: 'hide', enabled: true }], 'f'), post);
+  assert.equal(run('pass', '2016'), 'hide');
+  assert.equal(run('pass', '2017'), null);
+  assert.equal(run('ftag', 'loop'), 'hide');
+  assert.ok(F.quickFilters(post).some((q) => q.field === 'ftag' && q.value === 'Loop'));
+  const countries = F.countryFlags('en');
+  assert.ok(countries.length > 200);
+  assert.ok(countries.some((c) => c.code === 'NZ' && c.name === 'New Zealand'));
+  assert.ok(countries.some((c) => c.code === 'XX'), '4chan’s own unknown flag');
+  const boards = [
+    { board: 'pol', country_flags: 1, board_flags: { AC: 'Anarcho-Capitalist' }, user_ids: 1 },
+    { board: 'mlp', board_flags: { '4CC': 'Pony &amp; co' } },
+    { board: 'g' },
+  ];
+  const onMlp = F.flagChoices(boards, ['mlp']);
+  assert.deepEqual(onMlp, [{ kind: 'board', board: 'mlp', code: '4CC', name: 'Pony & co' }], 'no country flags on /mlp/');
+  assert.ok(F.flagChoices(boards, []).some((c) => c.kind === 'country'));
+  assert.deepEqual(F.boardFeatures(boards).map((f) => f.board), ['pol', 'mlp']);
 });

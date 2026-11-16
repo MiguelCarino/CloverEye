@@ -374,7 +374,7 @@ function settingsContent({ settings, boards, onChange, onRunSetup, onDeleteMySta
     statsSection(s, onChange, onDeleteMyStats),
     sauceSection(s, onChange),
     archiveSection(s, boards, onChange),
-    filtersSection({ settings: s, onChange }),
+    filtersSection({ settings: s, onChange, boards }),
     h(
       'section',
       { class: 'settings__section', 'aria-labelledby': 'set-setup' },
@@ -562,6 +562,28 @@ function filesSection(s, onChange) {
       placeholder: 'Downloads/CloverEye/Saved threads',
       hint: 'Save offline keeps each thread here, with its files, to read without the site. Leave empty to use Downloads/CloverEye/Saved threads.',
     }),
+    folder({
+      key: 'libraryDir',
+      field: 'libraryDir',
+      label: 'Library folder',
+      placeholder: 'Downloads/CloverEye/Library',
+      hint: 'The library keeps its files here, in a folder per board, with library.json listing their tags and where they came from. Leave empty to use Downloads/CloverEye/Library.',
+    }),
+    h(
+      'label',
+      { class: 'checkline' },
+      h('input', {
+        type: 'checkbox',
+        checked: s.files?.toLibrary !== false,
+        'data-key': 'set-toLibrary',
+        onchange: (e) => {
+          const next = structuredClone(s);
+          next.files = { ...next.files, toLibrary: e.target.checked };
+          onChange(next, { focus: 'set-toLibrary' });
+        },
+      }),
+      h('span', { text: 'Save files into the library (the gallery’s Save and Download all); off: into the download folder' }),
+    ),
   );
 }
 

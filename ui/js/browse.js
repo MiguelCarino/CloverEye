@@ -2,7 +2,7 @@
 // loading; these only draw it. Text only through textContent.
 
 import * as B from './browse-model.js';
-import { isHiddenMark } from './filter-model.js';
+import { isHiddenMark, isGoneMark } from './filter-model.js';
 import { h, icon } from './dom.js';
 import { renderPost } from './setup.js';
 import { backlinks } from './render.js';
@@ -13,6 +13,7 @@ import { threadStats } from './stats-model.js';
 import { sauceLinks } from './sauce-model.js';
 import { catalogThumbView } from './display-model.js';
 import { saveControls, savedDate } from './offline.js';
+import { cardLabels } from './tag-view.js';
 
 const VIDEO = /^\.(webm|mp4)$/i;
 
@@ -87,9 +88,11 @@ function appearing(slot, key) {
     shownIn.set(slot, s);
   }
   let n = 0;
-  return (el, id, you = false) => {
+  // `quiet`: shown without motion (your reply, which already flew in grey)
+  return (el, id, you = false, quiet = false) => {
     if (s.seen.has(id)) return;
     s.seen.add(id);
+    if (quiet) return;
     if (opening) {
       if (n < 16) {
         el.classList.add('appear');
@@ -100,11 +103,25 @@ function appearing(slot, key) {
   };
 }
 
-export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSplit = false, onOpen, onRefresh, onNewThread = null, onView, marks = new Map(), onHide = null, display = null }) {
+/** On a thread (or post) a filter or a hide tag hid: deletes what hid it,
+ *  after asking. `src`: { kind: 'filter' | 'tag', name } or null. */
+function hiderButton(src, title, onRemove, key) {
+  if (!src || !onRemove) {
+    return h('button', { type: 'button', class: 'icon-btn icon-btn--sm catalog-card__hide', title: 'Hidden by a filter. Change it in Settings → Filters.', 'aria-label': `“${title}” is hidden by a filter`, 'data-key': key, disabled: true }, icon('eyeOff'));
+  }
+  const label = src.kind === 'tag' ? `Hidden by the tag “${src.name}”: delete the tag` : `Hidden by the filter “${src.name}”: delete the filter`;
+  return h(
+    'button',
+    { type: 'button', class: 'icon-btn icon-btn--sm catalog-card__hide', title: label, 'aria-label': label, 'data-key': key, onclick: (e) => onRemove(src, e.currentTarget) },
+    icon('trash'),
+  );
+}
+
+export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSplit = false, onOpen, onRefresh, onNewThread = null, onView, marks = new Map(), onHide = null, display = null, tagBar = null, labels = new Map(), activeTag = '', hiderOf = null, onRemoveHider = null }) {
   const out = h('div', { class: 'browse' });
   const tools = h(
     'div',
-    { class: 'browse__tools' },
+    { class: 'browse__tools browse__tools--sticky browse__tools--catalog' },
     h('input', {
       type: 'search',
       class: 'input',
@@ -122,6 +139,9 @@ export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSpl
     h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}catalog-refresh`, onclick: onRefresh, title: B.refreshKeysLabel(), disabled: entry?.status === 'loading' }, icon('refresh'), 'Refresh'),
     onNewThread ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}new-thread`, onclick: onNewThread }, icon('plus'), 'New thread') : null,
   );
+  // the tags (tag-view.js tagChips) sit right after the search box, in the
+  // same bar, always in sight
+  if (tagBar) tools.firstElementChild.after(tagBar);
   out.append(tools);
   const status = statusLine(entry, 'catalog');
   if (status) out.append(status);
@@ -142,7 +162,9 @@ export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSpl
     return out;
   }
 
-  const arranged = B.arrangeCatalog(entry.threads, view);
+  // a tag pressed: only the threads it finds
+  // discarded threads are gone: not shown, not even with "Show them"
+  const arranged = B.arrangeCatalog(entry.threads, view).filter((t) => !isGoneMark(marks.get(t.no)) && (!activeTag || labels.get(t.no)?.some((g) => g.id === activeTag)));
   const hiddenCount = arranged.filter((t) => isHiddenMark(marks.get(t.no))).length;
   const list = view.showHidden ? arranged : arranged.filter((t) => !isHiddenMark(marks.get(t.no)));
   if (hiddenCount) {
@@ -164,7 +186,7 @@ export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSpl
     );
   }
   if (!list.length) {
-    out.append(h('p', { class: 'rail__empty', text: hiddenCount ? 'Every thread here is hidden.' : view.query ? 'No thread matches that search.' : 'This catalog is empty.' }));
+    out.append(h('p', { class: 'rail__empty', text: hiddenCount ? 'Every thread here is hidden.' : activeTag ? 'No thread here matches this tag.' : view.query ? 'No thread matches that search.' : 'This catalog is empty.' }));
     return out;
   }
   const appear = appearing(`${keyPrefix}catalog`, board);
@@ -227,21 +249,11 @@ export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSpl
               h('span', { text: `R ${t.replies ?? 0}` }),
               h('span', { text: `I ${t.images ?? 0}` }),
             ),
-            onHide && mark === 'hide'
-              ? // Hidden by a filter: hiding it by hand would change nothing,
-                // and only the filter can show it again.
-                h(
-                  'button',
-                  {
-                    type: 'button',
-                    class: 'icon-btn icon-btn--sm catalog-card__hide',
-                    title: 'Hidden by a filter. Change it in Settings → Filters.',
-                    'aria-label': `“${title}” is hidden by a filter`,
-                    'data-key': `${keyPrefix}hide-${t.no}`,
-                    disabled: true,
-                  },
-                  icon('eyeOff'),
-                )
+            cardLabels(labels.get(t.no)),
+            onHide && (mark === 'hide' || mark === 'discard')
+              ? // Hidden by a filter or a hide tag: hiding it by hand would
+                // change nothing; deleting what hid it shows it again.
+                hiderButton(hiderOf?.(t.no), title, onRemoveHider, `${keyPrefix}hide-${t.no}`)
               : onHide
                 ? h(
                     'button',
@@ -321,13 +333,19 @@ function sauceMenu(board, post, engines, bridge) {
 
 /** The one-line stand-in for a hidden post: the line itself shows the post
  *  this time (click, Enter or Space); a post hidden by hand also gets Unhide. */
-function postStub(no, why, { keyPrefix, onReveal, onUnhide }) {
+function postStub(no, why, { keyPrefix, onReveal, onUnhide, src = null, onRemoveHider = null }) {
+  // a filter or hide tag that hid it is named, and can be deleted from here
+  const by = why.reason === 'filter' && src ? src : null;
   const text =
     why.reason === 'hidden'
       ? `Hidden post No. ${no} · hidden by you`
       : why.reason === 'reply'
         ? `Hidden post No. ${no} · reply to hidden No. ${why.via}`
-        : `Hidden post No. ${no} · filtered`;
+        : by?.kind === 'tag'
+          ? `Hidden post No. ${no} · hidden by the tag “${by.name}”`
+          : by
+            ? `Hidden post No. ${no} · filtered by “${by.name}”`
+            : `Hidden post No. ${no} · filtered`;
   return h(
     'div',
     { class: 'post-stub', 'data-no': no },
@@ -352,7 +370,16 @@ function postStub(no, why, { keyPrefix, onReveal, onUnhide }) {
           onclick: () => onUnhide(no),
           text: 'Unhide',
         })
-      : null,
+      : by && onRemoveHider
+        ? h('button', {
+            type: 'button',
+            class: 'link-btn',
+            title: 'Delete it: what it hid shows again',
+            'data-key': `${keyPrefix}unfilter-${no}`,
+            onclick: (e) => onRemoveHider(by, e.currentTarget),
+            text: by.kind === 'tag' ? 'Delete tag' : 'Delete filter',
+          })
+        : null,
   );
 }
 
@@ -375,6 +402,7 @@ function postStub(no, why, { keyPrefix, onReveal, onUnhide }) {
  * @param {(no: number) => void} [o.onReveal]  shows one hidden post, this time only
  * @param {(no: number) => void} [o.onUnhide]  shows a post hidden by hand again
  * @param {(post: object) => Array} [o.menuFor]  a post's "…" menu
+ * @param {(post: object) => boolean} [o.inLibrary]  the post's file is in the library
  * @param {() => string} [o.quoteMode]    'inline' (default) or 'jump': what a quote link does (quote-model.js)
  * @param {((q: {board: string, thread: number, no: number}, e: Event) => void) | null} [o.onCrossQuote]
  *   jumping to another thread's post (a quote link to it, clicked to jump)
@@ -391,6 +419,33 @@ function postStub(no, why, { keyPrefix, onReveal, onUnhide }) {
  * @param {string[]} [o.sauce]  reverse image search sites for each file (sauce-model.js)
  * @param {object|null} [o.display]  Settings → Posts (display-model.js): times, spoilers, work mode, names
  */
+/** A reply of yours going out (shell.js pendingEvent), drawn like a post:
+ *  grey while it is sent, in colour once the site has posted it, marked
+ *  when it did not go out. */
+function pendingCard(p, { keyPrefix, isYou, onQuote, links, display }) {
+  const sent = p.state === 'sent';
+  const card = renderPost(p.post, {
+    isYou: (n) => (sent && n === p.no) || isYou(n),
+    onQuote,
+    idPrefix: `${keyPrefix}pending-${p.id}-`,
+    links,
+    display,
+  });
+  card.removeAttribute('data-no'); // not a post of the thread (yet)
+  card.dataset.pending = p.id;
+  card.classList.add('post--pending');
+  if (sent) card.classList.add('post--sent');
+  if (p.state === 'failed') card.classList.add('post--failed');
+  const no = card.querySelector('.post__no');
+  if (no) no.textContent = sent ? `No. ${p.no}` : p.state === 'failed' ? 'Not posted' : 'Sending…';
+  card.setAttribute('role', 'status');
+  card.setAttribute('aria-label', sent ? `Your reply, posted as No. ${p.no}` : p.state === 'failed' ? 'Your reply was not posted' : 'Your reply, being sent');
+  const main = card.querySelector('.post__main');
+  if (p.file) main?.prepend(h('div', { class: 'post__pending-file' }, icon('folder'), h('span', { translate: 'no', text: p.file })));
+  if (p.state === 'failed' && p.message) card.append(h('p', { class: 'post__pending-file', text: p.message }));
+  return card;
+}
+
 export function threadView({
   board,
   no,
@@ -411,6 +466,9 @@ export function threadView({
   onReveal = () => {},
   onUnhide = () => {},
   menuFor = null,
+  inLibrary = null,
+  hiderOf = null,
+  onRemoveHider = null,
   quoteMode = () => 'inline',
   onCrossQuote = null,
   cross = null,
@@ -423,6 +481,8 @@ export function threadView({
   display = null,
   offline = null,
   save = null,
+  pending = [],
+  landed = null,
 }) {
   const out = h('div', { class: 'browse' });
   const first = entry?.posts?.[0];
@@ -513,7 +573,16 @@ export function threadView({
     void el.offsetWidth;
     el.classList.add('post--flash');
   };
-  const draw = (p, idPrefix) =>
+  const draw = (p, idPrefix) => markKept(p, drawPost(p, idPrefix));
+  // a file already in the library says so on its line
+  const markKept = (p, el) => {
+    if (inLibrary && p.tim && inLibrary(p)) {
+      const at = el.querySelector?.('.post__file');
+      at?.append(h('span', { class: 'post__kept', title: 'This file is in your library' }, icon('images'), h('span', { text: 'In library' })));
+    }
+    return el;
+  };
+  const drawPost = (p, idPrefix) =>
     renderPost(p, {
       backrefs: refs.get(p.no) || [],
       onQuote: quotes.onQuote,
@@ -565,12 +634,14 @@ export function threadView({
     if (unread?.line && p.no === unread.line) {
       list.append(h('div', { class: 'unread-line', role: 'separator', 'aria-label': 'New posts', 'data-unread-line': '' }, h('span', { text: 'New posts' })));
     }
+    // discarded: nothing at all, not even the line
+    if (why?.reason === 'discard') continue;
     if (why && !revealed.has(p.no)) {
-      list.append(postStub(p.no, why, { keyPrefix, onReveal, onUnhide }));
+      list.append(postStub(p.no, why, { keyPrefix, onReveal, onUnhide, src: why.reason === 'filter' ? hiderOf?.(p.no) : null, onRemoveHider }));
       continue;
     }
     const card = draw(p, `${keyPrefix}p`);
-    appear(card, p.no, isYou(p.no));
+    appear(card, p.no, isYou(p.no), Boolean(landed?.has(`${board}/${p.no}`)));
     if (entry.fresh?.has(p.no)) card.classList.add('post--new');
     if (mark === 'highlight') card.classList.add('post--highlight');
     if (why) card.classList.add('post--revealed');
@@ -578,6 +649,7 @@ export function threadView({
     if (ids?.active && p.id === ids.active) card.classList.add('post--id-hl');
     list.append(card);
   }
+  for (const p of pending) list.append(pendingCard(p, { keyPrefix, isYou, onQuote: quotes.onQuote, links, display }));
   quotes.attach(list);
   out.append(list);
   if (first?.closed || first?.archived) {

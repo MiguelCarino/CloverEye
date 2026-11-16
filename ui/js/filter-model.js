@@ -17,12 +17,24 @@ export const FILTER_FIELDS = Object.freeze([
   { value: 'id', label: 'Poster ID', exact: true },
   { value: 'filename', label: 'File name', exact: false },
   { value: 'md5', label: 'File MD5', exact: true },
+  // a country flag or a board's own flag: its code (NZ) or its name
+  { value: 'flag', label: 'Flag', exact: true },
+  { value: 'capcode', label: 'Capcode (mod, admin…)', exact: true },
+  { value: 'ext', label: 'File type (webm, gif…)', exact: true },
+  // only some boards send these
+  { value: 'pass', label: '4chan Pass since (year)', exact: true },
+  { value: 'ftag', label: '/f/ category (Loop, Game…)', exact: true },
 ]);
 
+/** Hide leaves a line to show the post this time; Discard takes it away
+ *  for good (nothing is drawn, nothing counted); Highlight marks it. */
 export const FILTER_ACTIONS = Object.freeze([
   { value: 'hide', label: 'Hide' },
+  { value: 'discard', label: 'Discard' },
   { value: 'highlight', label: 'Highlight' },
 ]);
+const ACTIONS = new Set(FILTER_ACTIONS.map((a) => a.value));
+const RANK = { discard: 3, hide: 2, highlight: 1 };
 
 export const MAX_FILTERS = 500;
 export const MAX_PATTERN = 500;
@@ -82,7 +94,7 @@ export function normalizeFilter(raw) {
     regex: raw.regex === true,
     matchCase: raw.matchCase === true,
     boards,
-    action: raw.action === 'highlight' ? 'highlight' : 'hide',
+    action: ACTIONS.has(raw.action) ? raw.action : 'hide',
     enabled: raw.enabled !== false,
   };
 }
@@ -146,6 +158,17 @@ export function fieldValue(post, field) {
       return post.filename ? `${decodeEntities(post.filename)}${post.ext || ''}` : '';
     case 'md5':
       return post.md5 ? String(post.md5) : '';
+    case 'flag':
+      // each on its own line; a filter matches any of them whole
+      return [post.country, post.country_name, post.board_flag, post.flag_name].filter(Boolean).map((v) => decodeEntities(String(v))).join('\n');
+    case 'capcode':
+      return post.capcode ? String(post.capcode) : '';
+    case 'ext':
+      return post.ext ? String(post.ext).replace(/^\./, '') : '';
+    case 'pass':
+      return post.since4pass ? String(post.since4pass) : '';
+    case 'ftag':
+      return post.tag ? decodeEntities(String(post.tag)) : '';
     default:
       return '';
   }
@@ -160,11 +183,13 @@ function matcher(f) {
   const exact = FIELDS.get(f.field)?.exact;
   // MD5s are base64: their case always matters.
   const keepCase = f.matchCase || f.field === 'md5';
-  const want = keepCase ? f.pattern.trim() : f.pattern.trim().toLowerCase();
+  let want = keepCase ? f.pattern.trim() : f.pattern.trim().toLowerCase();
+  if (f.field === 'ext') want = want.replace(/^\./, '');
   if (!want) return null;
   return (v) => {
     const have = keepCase ? v.trim() : v.trim().toLowerCase();
-    return exact ? have === want : have.includes(want);
+    // a value of several lines (a flag's code and name): any line, whole
+    return exact ? have.split('\n').some((x) => x.trim() === want) : have.includes(want);
   };
 }
 
@@ -176,29 +201,39 @@ export function compileFilters(filters, board) {
     if (!f || f.enabled === false || !FIELDS.has(f.field)) continue;
     if (f.boards?.length && !f.boards.includes(board)) continue;
     const test = matcher(f);
-    if (test) out.push({ id: f.id, field: f.field, action: f.action === 'highlight' ? 'highlight' : 'hide', test });
+    if (test) out.push({ id: f.id, field: f.field, action: ACTIONS.has(f.action) ? f.action : 'hide', test });
   }
   return out;
 }
 
-/** 'hide', 'highlight' or null for one post. Hide wins over highlight. */
+/** 'discard', 'hide', 'highlight' or null for one post. Discard wins over
+ *  hide, and hide over highlight. */
 export function classifyPost(compiled, post) {
+  return classifyPostBy(compiled, post).action;
+}
+
+/** classifyPost(), and the id of the filter that decided: { action, id }. */
+export function classifyPostBy(compiled, post) {
   let result = null;
+  let id = '';
   const values = new Map();
   for (const c of compiled) {
-    if (result === 'hide' || (result === 'highlight' && c.action === 'highlight')) continue;
+    if (result === 'discard' || (result && RANK[c.action] <= RANK[result])) continue;
     if (!values.has(c.field)) values.set(c.field, fieldValue(post, c.field));
     const v = values.get(c.field);
-    if (v && c.test(v)) result = c.action;
+    if (v && c.test(v)) {
+      result = c.action;
+      id = c.id;
+    }
   }
-  return result;
+  return { action: result, id };
 }
 
 /**
  * Post (or catalog thread) number → 'hidden' (by hand), 'hide' (a filter)
  * or 'highlight'. Unmarked posts are left out.
  */
-export function markPosts(posts, compiled, hidden = new Set()) {
+export function markPosts(posts, compiled, hidden = new Set(), by = null) {
   const marks = new Map();
   for (const p of Array.isArray(posts) ? posts : []) {
     if (!p) continue;
@@ -206,13 +241,19 @@ export function markPosts(posts, compiled, hidden = new Set()) {
       marks.set(p.no, 'hidden');
       continue;
     }
-    const m = compiled.length ? classifyPost(compiled, p) : null;
-    if (m) marks.set(p.no, m);
+    const m = compiled.length ? classifyPostBy(compiled, p) : null;
+    if (m?.action) {
+      marks.set(p.no, m.action);
+      // `by`: post No. → the filter's id, to name it (and remove it) later
+      if (by) by.set(p.no, m.id);
+    }
   }
   return marks;
 }
 
-export const isHiddenMark = (m) => m === 'hide' || m === 'hidden';
+export const isHiddenMark = (m) => m === 'hide' || m === 'hidden' || m === 'discard';
+/** Discarded: never drawn, not even as a line, and not counted. */
+export const isGoneMark = (m) => m === 'discard';
 
 // ------------------------------------------------------- settings changes
 
@@ -330,6 +371,10 @@ export function quickFilters(post) {
   if (trip) out.push({ field: 'trip', value: trip, label: 'Filter this tripcode' });
   const id = fieldValue(post, 'id').trim();
   if (id) out.push({ field: 'id', value: id, label: 'Filter this ID' });
+  const flag = String(post?.country || post?.board_flag || '').trim();
+  if (flag) out.push({ field: 'flag', value: flag, label: `Filter this flag (${decodeEntities(String(post.country_name || post.flag_name || flag))})` });
+  const ftag = fieldValue(post, 'ftag').trim();
+  if (ftag) out.push({ field: 'ftag', value: ftag, label: `Filter this /f/ category (${ftag})` });
   const md5 = fieldValue(post, 'md5').trim();
   if (md5 && !post.filedeleted) out.push({ field: 'md5', value: md5, label: 'Filter this file (MD5)' });
   return out;
@@ -337,6 +382,65 @@ export function quickFilters(post) {
 
 /** The filter a "Filter this …" choice adds: hide, plain text, this board. */
 export const quickFilter = (board, { field, value }) => ({ field, pattern: value, regex: false, matchCase: field === 'md5', boards: isBoard(board) ? [board] : [], action: 'hide', enabled: true });
+
+// ------------------------------------------------------------- flags
+
+let countryCache = null;
+/** Every country flag a post can carry: [{ code, name }], by name. The names
+ *  come from the system (Intl), in `locale`; 4chan's own extra codes too. */
+export function countryFlags(locale = 'en') {
+  if (countryCache?.locale === locale) return countryCache.list;
+  let names = null;
+  try {
+    names = new Intl.DisplayNames([locale, 'en'], { type: 'region' });
+  } catch {
+    names = null;
+  }
+  const out = [];
+  const A = 65;
+  for (let i = 0; i < 26; i++) {
+    for (let j = 0; j < 26; j++) {
+      const code = String.fromCharCode(A + i, A + j);
+      let name = '';
+      try {
+        name = names?.of(code) || '';
+      } catch {
+        name = '';
+      }
+      if (name && name !== code && !/^Unknown/i.test(name)) out.push({ code, name });
+    }
+  }
+  // the site's own: unknown or hidden locations, and the EU flag
+  for (const [code, name] of [['XX', 'Unknown'], ['EU', 'Europe']]) if (!out.some((c) => c.code === code)) out.push({ code, name });
+  out.sort((a, b) => a.name.localeCompare(b.name, locale));
+  countryCache = { locale, list: out };
+  return out;
+}
+
+/** The flags to pick from for the chosen boards (none chosen: all boards):
+ *  country flags where a board has them, then each board's own flags.
+ *  [{ kind: 'country' | 'board', board, code, name }] */
+export function flagChoices(boardList, chosen = [], locale = 'en') {
+  const list = (boardList || []).filter((b) => !chosen.length || chosen.includes(b.board));
+  const out = [];
+  if (!chosen.length || list.some((b) => b.country_flags)) for (const c of countryFlags(locale)) out.push({ kind: 'country', board: '', ...c });
+  for (const b of list) {
+    for (const [code, name] of Object.entries(b.board_flags || {})) out.push({ kind: 'board', board: b.board, code, name: decodeEntities(String(name)) });
+  }
+  return out;
+}
+
+/** The boards with something of their own to filter on, and what. */
+export function boardFeatures(boardList) {
+  return (boardList || [])
+    .map((b) => ({
+      board: b.board,
+      countryFlags: Boolean(b.country_flags),
+      boardFlags: Object.keys(b.board_flags || {}).length,
+      ids: Boolean(b.user_ids),
+    }))
+    .filter((f) => f.countryFlags || f.boardFlags || f.ids);
+}
 
 // ----------------------------------------------------------- hidden by hand
 

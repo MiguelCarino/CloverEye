@@ -181,6 +181,8 @@ for (const width of widths) {
     await page.waitForTimeout(250);
     await audit(page, tag('8e-reply-form'));
     await page.locator('[data-key="compose-close"]').click();
+    // a form with something in it asks before deleting
+    if (await page.locator('[data-key="confirm-ok"]').isVisible().catch(() => false)) await page.locator('[data-key="confirm-ok"]').click();
     await page.keyboard.press('g');
     await page.waitForSelector('.gallery .gallery__media');
     await page.waitForTimeout(250);

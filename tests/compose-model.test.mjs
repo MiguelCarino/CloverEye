@@ -282,3 +282,74 @@ test('selectionText: lines of the post, without Embed buttons, archive links or 
   assert.equal(C.selectionText(el('', 'just text', el('seg-embed', 'Insertar'))), 'just text');
   assert.equal(C.selectionText(null), '');
 });
+
+// ------------------------------------------------- pending post, saved replies
+
+import { parseComment } from '../ui/js/render.js';
+
+test('previewHtml reads back as quote links, greentext and plain lines', () => {
+  const html = C.previewHtml('>>123 yes\n>be me\nplain <b>&\n');
+  const lines = parseComment(html);
+  assert.equal(lines.length, 4);
+  assert.deepEqual(lines[0][0], { type: 'quotelink', text: '>>123', target: 123 });
+  assert.equal(lines[0][1].text, ' yes');
+  assert.deepEqual(lines[1], [{ type: 'greentext', text: '>be me' }]);
+  assert.deepEqual(lines[2], [{ type: 'text', text: 'plain <b>&' }]);
+  assert.deepEqual(lines[3], []);
+});
+
+test('pendingPost: Anonymous by default, No. 0 until given one', () => {
+  const p = C.pendingPost({ thread: 9, com: 'hi', at: 1_700_000_000_500 });
+  assert.equal(p.no, 0);
+  assert.equal(p.resto, 9);
+  assert.equal(p.name, 'Anonymous');
+  assert.equal(p.time, 1_700_000_000);
+  assert.equal(C.pendingPost({ thread: 9, com: 'x', no: 77, name: ' me ' }).name, 'me');
+});
+
+test('saved replies: several per thread, the same text once, newest first', () => {
+  let list = [];
+  list = C.saveReply(list, { board: 'g', thread: 5, com: 'one' }, { now: 1, id: 'a' });
+  list = C.saveReply(list, { board: 'g', thread: 5, com: 'two' }, { now: 2, id: 'b' });
+  list = C.saveReply(list, { board: 'g', thread: 6, com: 'elsewhere' }, { now: 3, id: 'c' });
+  list = C.saveReply(list, { board: 'g', thread: 5, com: '   ' }, { now: 4, id: 'd' });
+  assert.deepEqual(C.savedFor(list, 'g', 5).map((e) => e.id), ['b', 'a']);
+  list = C.saveReply(list, { board: 'g', thread: 5, com: 'one' }, { now: 9, id: 'e' });
+  assert.deepEqual(C.savedFor(list, 'g', 5).map((e) => e.id), ['a', 'b']);
+  assert.equal(list.length, 3);
+  const { entry, list: rest } = C.takeSaved(list, 'a');
+  assert.equal(entry.com, 'one');
+  assert.equal(rest.length, 2);
+  assert.equal(C.takeSaved(rest, 'zz').entry, null);
+});
+
+test('saved replies: stored lists are cleaned and capped', () => {
+  const raw = [{ id: 'a', board: 'g', thread: 1, com: 'x' }, { id: 'b', board: 'G!', thread: 1, com: 'x' }, { id: '', board: 'g', thread: 1, com: 'x' }, { id: 'c', board: 'g', thread: 1, com: ' ' }, null];
+  assert.deepEqual(C.normalizeSaved(raw).map((e) => e.id), ['a']);
+  const many = Array.from({ length: 150 }, (_, i) => ({ id: `i${i}`, board: 'g', thread: 0, com: `c${i}` }));
+  assert.equal(C.normalizeSaved(many).length, C.MAX_SAVED_REPLIES);
+});
+
+test('savedLabel: the first line with words, cut', () => {
+  assert.equal(C.savedLabel({ com: '>>12\n> quoted\nmy answer here' }), 'my answer here');
+  assert.equal(C.savedLabel({ com: '>>12' }), '>>12');
+  assert.equal(C.savedLabel({ com: 'x'.repeat(50) }, 10), `${'x'.repeat(9)}…`);
+  assert.equal(C.savedLabel({ com: '', sub: 'Subject' }), 'Subject');
+});
+
+test('a reply with only a file has content, and is saved for later with its file', () => {
+  const file = { name: 'pic.png', size: 10, type: 'image/png', bytes: new Uint8Array(10), randomName: '1.png' };
+  assert.equal(C.hasContent({ com: '  ', sub: '', file: null }), false);
+  assert.equal(C.hasContent({ com: '', sub: '', file: C.fileMeta(file) }), true);
+  assert.deepEqual(C.fileMeta(file), { name: 'pic.png', size: 10, type: 'image/png', randomName: '1.png' });
+  assert.equal(C.fileMeta({ name: '' }), null);
+  const list = C.saveReply([], { board: 'g', thread: 1, file }, { now: 5, id: 'a' });
+  assert.equal(list.length, 1);
+  assert.deepEqual(list[0].file, { name: 'pic.png', size: 10, type: 'image/png', randomName: '1.png' });
+  assert.equal('bytes' in list[0].file, false, 'the bytes are kept apart');
+  // the same words with another file is another reply
+  const two = C.saveReply(list, { board: 'g', thread: 1, file: { ...file, name: 'other.png' } }, { now: 6, id: 'b' });
+  assert.equal(two.length, 2);
+  assert.equal(C.normalizeSaved(two).length, 2);
+  assert.equal(C.savedLabel(list[0]), 'pic.png');
+});

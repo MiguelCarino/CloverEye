@@ -7,7 +7,7 @@
 import { quotedPosts } from './render.js';
 
 /** Why a post is hidden: by hand, by a filter, or as a reply to hidden posts. */
-export const HIDE_REASONS = Object.freeze(['hidden', 'filter', 'reply']);
+export const HIDE_REASONS = Object.freeze(['hidden', 'filter', 'discard', 'reply']);
 
 /**
  * Post No. → { reason, via? } for every hidden post of a thread.
@@ -34,6 +34,7 @@ export function hiddenPosts(posts, marks = new Map(), { replies = true, keep = n
     const m = marks.get(p.no);
     if (m === 'hidden') out.set(p.no, { reason: 'hidden' });
     else if (m === 'hide') out.set(p.no, { reason: 'filter' });
+    else if (m === 'discard') out.set(p.no, { reason: 'discard' });
   }
   if (!replies || !out.size) return out;
   const op = list.find((p) => !p.resto)?.no ?? null;
@@ -61,7 +62,7 @@ export function hiddenPosts(posts, marks = new Map(), { replies = true, keep = n
 
 /** How many hidden posts there are of each reason. */
 export function hiddenCounts(hidden) {
-  const counts = { hidden: 0, filter: 0, reply: 0, total: 0 };
+  const counts = { hidden: 0, filter: 0, discard: 0, reply: 0, total: 0 };
   for (const { reason } of hidden?.values?.() || []) {
     if (reason in counts) counts[reason] += 1;
     counts.total += 1;

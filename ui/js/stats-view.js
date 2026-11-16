@@ -375,6 +375,79 @@ function minePanel({ mine, on, now, view, keyPrefix, hue, onMetric, onMineToggle
   );
 }
 
+/** Stats → Tags: what each tag finds now, what it hides, and its last two
+ *  weeks (tag-model.js dailyFinds). Counted on this computer only. */
+function tagsPanel(o) {
+  const rows = o.tagRows || [];
+  const k = o.keyPrefix || '';
+  if (!rows.length) {
+    return h('div', { class: 'stats__panel' }, h('p', { class: 'rail__empty', text: 'No tags yet: press + Tag on a catalog, and what they find is counted here.' }));
+  }
+  const bars = (days) => {
+    const max = Math.max(1, ...days.map((d) => d.n));
+    return h(
+      'span',
+      { class: 'tag-spark', role: 'img', 'aria-label': days.map((d) => `${d.day}: ${d.n}`).join(', ') },
+      days.map((d) => h('span', { class: 'tag-spark__bar', title: `${d.day}: ${d.n}`, style: { height: `${Math.max(d.n ? 12 : 4, Math.round((d.n / max) * 100))}%` } })),
+    );
+  };
+  return h(
+    'div',
+    { class: 'stats__panel' },
+    h('p', { class: 'stats__promise' }, icon('shield'), 'Counted on this computer from the catalogs and threads you load; nothing is sent anywhere.'),
+    h(
+      'div',
+      { class: 'stats-table-wrap' },
+      h(
+        'table',
+        { class: 'stats-table tag-stats' },
+        h(
+          'thead',
+          null,
+          h(
+            'tr',
+            null,
+            h('th', { scope: 'col', text: 'Tag' }),
+            h('th', { scope: 'col', text: 'Looks in' }),
+            h('th', { scope: 'col', title: 'Threads it finds in the catalogs loaded now', text: 'Threads now' }),
+            h('th', { scope: 'col', title: 'Replies in those threads', text: 'Replies' }),
+            h('th', { scope: 'col', title: 'Posts a hide tag hides in the threads loaded now', text: 'Posts hidden' }),
+            h('th', { scope: 'col', title: 'Different threads found in the last 14 days', text: '14 days' }),
+            h('th', { scope: 'col', text: 'Per day' }),
+          ),
+        ),
+        h(
+          'tbody',
+          null,
+          rows.map((r) =>
+            h(
+              'tr',
+              null,
+              h(
+                'th',
+                { scope: 'row' },
+                h(
+                  'button',
+                  { type: 'button', class: 'link-btn tag-stats__name', title: 'Open the tag’s page', 'data-key': `${k}stats-tag-${r.id}`, onclick: () => o.onOpenTag?.(r.id) },
+                  icon(r.mode === 'hide' ? (r.on ? 'eyeOff' : 'eye') : 'tag'),
+                  h('span', { translate: 'no', text: r.name }),
+                ),
+                r.mode === 'hide' ? h('span', { class: `pill${r.on ? ' pill--dead' : ''}`, text: r.on ? 'Hiding' : 'Off' }) : null,
+              ),
+              h('td', { translate: 'no', text: r.where }),
+              h('td', { class: 'num', title: r.loaded < r.boards ? `${r.loaded} of ${r.boards} catalogs loaded` : null, text: r.loaded ? String(r.now) : '—' }),
+              h('td', { class: 'num', text: r.loaded ? String(r.replies) : '—' }),
+              h('td', { class: 'num', text: r.mode === 'hide' ? String(r.hidden) : '—' }),
+              h('td', { class: 'num', text: String(r.total) }),
+              h('td', null, bars(r.days)),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 /**
  * The pane's content.
  * @param {object} o
@@ -405,12 +478,17 @@ export function statsView(o) {
     h(
       'div',
       { class: 'browse__tools' },
-      h('div', { class: 'stats-tabs', role: 'group', 'aria-label': 'Stats' }, tab('boards', 'Boards'), tab('you', 'You')),
+      h('div', { class: 'stats-tabs', role: 'group', 'aria-label': 'Stats' }, tab('boards', 'Boards'), tab('tags', 'Tags'), tab('you', 'You')),
+      view.tab === 'tags' && o.onLoadTagBoards
+        ? h('button', { type: 'button', class: 'btn', title: 'Loads the catalogs your tags look in', 'data-key': `${keyPrefix}stats-tags-load`, onclick: o.onLoadTagBoards }, icon('refresh'), 'Look now')
+        : null,
       view.tab === 'boards' && trackOn
         ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}stats-refresh`, title: o.refreshKeys || null, onclick: o.onRefresh }, icon('refresh'), 'Sample now')
         : null,
     ),
     view.tab === 'boards' && trackOn ? h('p', { class: 'stats__status', role: 'status', 'data-stats-status': '', text: statusText(status, { isMain, now }) }) : null,
-    view.tab === 'boards' ? (trackOn ? boardsPanel({ ...o, now }) : boardsOffPanel(o)) : minePanel({ mine: o.mine, on: o.mineOn, now, view, keyPrefix, hue: o.hue, onMetric: o.onMetric, onMineToggle: o.onMineToggle, onDeleteMine: o.onDeleteMine, onOpenBoard: o.onOpenBoard }),
+    view.tab === 'tags'
+      ? tagsPanel(o)
+      : view.tab === 'boards' ? (trackOn ? boardsPanel({ ...o, now }) : boardsOffPanel(o)) : minePanel({ mine: o.mine, on: o.mineOn, now, view, keyPrefix, hue: o.hue, onMetric: o.onMetric, onMineToggle: o.onMineToggle, onDeleteMine: o.onDeleteMine, onOpenBoard: o.onOpenBoard }),
   );
 }

@@ -4,7 +4,10 @@
 // out through the bridge (the post helper in the desktop app).
 
 import * as C from './compose-model.js';
+import * as L from './library-model.js';
 import { h, icon, toast } from './dom.js';
+import { confirmDialog } from './offline.js';
+import { putFile, getFile, delFile, moveFile } from './reply-files.js';
 
 /**
  * @param {object} o
@@ -14,11 +17,22 @@ import { h, icon, toast } from './dom.js';
  * @param {(board: string) => Promise<object|null>} o.getBoard   boards.json entry
  * @param {(p: {board: string, thread: number, no: number}) => void} o.onPosted
  * @param {(board: string, thread: number, quote: number) => void} [o.onSitePage]
+ * @param {(e: object) => void} [o.onPending]   a reply going out, for the thread to show:
+ *   { type: 'start', id, board, thread, post, from } (from: where the comment box was),
+ *   { type: 'posted', id, no } or { type: 'failed', id, message }
+ * @param {(board: string, thread: number) => Element|null} [o.paneFor]   the pane the
+ *   form fills in its "Fill the pane" mode
+ * @param {object} [o.library]   the library (library.js), for "From library"
  */
 const DRAFTS_KEY = 'clovereye-drafts';
+const SAVED_KEY = 'clovereye-saved-replies';
+const MODE_KEY = 'clovereye-composer-mode';
 const SIZE_KEY = 'clovereye-composer-size';
 const MIN_W = 300;
 const MIN_H = 240;
+
+/** Motion is off when the system asks for less of it. */
+const still = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /** The size the person gave the form, kept for next time ({ w, h } or null). */
 function loadSize() {
@@ -46,7 +60,12 @@ function fitSize(size) {
   const maxH = Math.max(MIN_H, innerHeight - 80);
   return { w: Math.round(Math.min(maxW, Math.max(MIN_W, size.w))), h: Math.round(Math.min(maxH, Math.max(MIN_H, size.h))) };
 }
-const MAX_DRAFTS = 50;
+// Replies being written are never dropped to make room: a high cap only
+// against a runaway store.
+const MAX_DRAFTS = 500;
+
+/** The captcha's time left, and how to use it. */
+const expiresText = (s) => (s > 0 ? `Expires in ${s} s. Slide, drag or scroll over the picture, or use ←/→; Enter keeps a choice.` : 'Expired: get a new one.');
 
 // Where the person moved the form: how far from its corner, as a translate
 // ({ x, y }, negative = left / up), kept like the size.
@@ -70,6 +89,35 @@ function savePos(pos) {
   }
 }
 
+/** How the form sits: 'float' (its corner, moved and sized by hand),
+ *  'pane' (over the thread's pane) or 'full' (the whole window). */
+function loadMode() {
+  try {
+    const m = localStorage.getItem(MODE_KEY);
+    return m === 'pane' || m === 'full' ? m : 'float';
+  } catch (_) {
+    return 'float';
+  }
+}
+
+function saveMode(m) {
+  try {
+    if (m === 'float') localStorage.removeItem(MODE_KEY);
+    else localStorage.setItem(MODE_KEY, m);
+  } catch (_) {
+    /* no storage: the mode lasts until the app closes */
+  }
+}
+
+/** Replies kept for later (compose-model.js saveReply). */
+function loadSaved() {
+  try {
+    return C.normalizeSaved(JSON.parse(localStorage.getItem(SAVED_KEY) || '[]'));
+  } catch (_) {
+    return [];
+  }
+}
+
 /** Drafts saved by an earlier run (see persistDrafts). */
 function loadDrafts() {
   const out = new Map();
@@ -77,7 +125,7 @@ function loadDrafts() {
     const raw = JSON.parse(localStorage.getItem(DRAFTS_KEY) || '{}');
     for (const [k, d] of Object.entries(raw && typeof raw === 'object' ? raw : {})) {
       if (!/^[a-z0-9]{1,10}\/\d{1,12}$/.test(k) || !d || typeof d !== 'object') continue;
-      out.set(k, { com: String(d.com || ''), sub: String(d.sub || ''), email: String(d.email || ''), at: Number(d.at) || 0 });
+      out.set(k, { com: String(d.com || ''), sub: String(d.sub || ''), email: String(d.email || ''), file: C.fileMeta(d.file), at: Number(d.at) || 0 });
     }
   } catch (_) {
     /* nothing saved, or no storage */
@@ -116,8 +164,11 @@ export function postSelection(post) {
   }
 }
 
-export function createComposer({ bridge, getSettings, saveSettings, getBoard, onPosted, onSitePage = null }) {
+export function createComposer({ bridge, getSettings, saveSettings, getBoard, onPosted, onSitePage = null, onPending = null, paneFor = null, library = null }) {
   const drafts = loadDrafts(); // "board/thread" → { com, sub, email, at }
+  let saved = loadSaved(); // replies kept for later, several per thread
+  let mode = loadMode();
+  let pendingSeq = 0;
   const cooldowns = new Map(); // board → time the next post may go
   let st = null; // the open form
   let el = null;
@@ -127,7 +178,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
 
   function applySize(node) {
     const s = fitSize(size);
-    if (!node || !s || st?.min) return;
+    if (!node || !s || st?.min || mode !== 'float') return;
     node.style.width = `${s.w}px`;
     node.style.height = `${s.h}px`;
     node.style.maxHeight = 'none';
@@ -140,7 +191,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   function applyPos(node) {
     if (!node) return;
     node.style.translate = '';
-    if (!pos) return;
+    if (!pos || mode !== 'float' || st?.min) return;
     const base = node.getBoundingClientRect(); // where its corner puts it
     const wide = base.width < innerWidth - 24;
     const x = wide ? Math.min(innerWidth - 8 - base.right, Math.max(8 - base.left, pos.x)) : 0;
@@ -152,7 +203,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   // clicks); arrow keys on the title move it too; double-click: back to
   // the corner.
   function startMove(e) {
-    if (e.button !== 0 || !el) return;
+    if (e.button !== 0 || !el || mode !== 'float') return;
     if (e.target.closest('button:not(.composer__title--btn), input, textarea, select, a, .composer__grip')) return;
     const from = pos || { x: 0, y: 0 };
     const x0 = e.clientX;
@@ -188,6 +239,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   }
 
   function moveKeys(e) {
+    if (mode !== 'float') return;
     const step = e.shiftKey ? 60 : 20;
     const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
     if (!d) return;
@@ -200,13 +252,48 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   }
 
   function resetPos(e) {
+    if (mode !== 'float') return;
     if (e.target.closest('button:not(.composer__title--btn), input, .composer__grip')) return;
     pos = null;
     savePos(null);
     applyPos(el);
   }
 
-  addEventListener('resize', () => applyPos(el));
+  addEventListener('resize', () => {
+    applyPos(el);
+    placeOver();
+  });
+
+  // "Fill the pane": the form lies over the pane showing its thread (the
+  // focused one when none does), kept there as the panes change (checked
+  // with the form's clock); "Full window": below the title bar, all of it.
+  let paneBox = '';
+  function placeOver() {
+    if (!el || !st || mode !== 'pane' || st.min) return;
+    const pane = paneFor?.(st.board, st.thread);
+    const r = pane?.getBoundingClientRect();
+    const box = r && r.width > 200 && r.height > 160 ? `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)},${Math.round(r.height)}` : 'full';
+    if (box === paneBox && el.dataset.placed) return;
+    paneBox = box;
+    el.dataset.placed = '1';
+    el.classList.toggle('composer--full', box === 'full');
+    if (box === 'full') {
+      for (const k of ['left', 'top', 'width', 'height']) el.style.removeProperty(k);
+      return;
+    }
+    const [x, y, w, hh] = box.split(',');
+    Object.assign(el.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${hh}px` });
+  }
+
+  function setMode(next) {
+    if (!st) return;
+    const from = el?.getBoundingClientRect();
+    mode = mode === next ? 'float' : next;
+    saveMode(mode);
+    paneBox = '';
+    draw('keep');
+    morph(el, from);
+  }
 
   // The grip in the top-left corner (the form is anchored bottom-right):
   // drag it, or use the arrow keys on it; double-click puts the size back.
@@ -262,14 +349,17 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
 
   const key = (board, thread) => `${board}/${thread || 0}`;
 
-  // Drafts outlive the app: kept in this app's own storage as they are
-  // typed, so closing CloverEye (or a crash) loses nothing. The attached
-  // file is not kept, only the text.
+  // Replies being written outlive the app: their text in this app's own
+  // storage as it is typed, an attached file in reply-files.js (key
+  // "a:<board>/<thread>"), so closing CloverEye (or a crash) loses nothing.
+  // One with anything in it stays, as a pill in the tray when its form is
+  // not open, until it is posted, saved for later or deleted by hand.
+  const fileKey = (k) => `a:${k}`;
   function persistDrafts() {
     clearTimeout(saveTimer);
     saveTimer = 0;
     try {
-      const list = [...drafts.entries()].filter(([, d]) => d.com || d.sub || d.email);
+      const list = [...drafts.entries()].filter(([, d]) => C.hasContent(d));
       list.sort((a, b) => (b[1].at || 0) - (a[1].at || 0));
       localStorage.setItem(DRAFTS_KEY, JSON.stringify(Object.fromEntries(list.slice(0, MAX_DRAFTS))));
     } catch (_) {
@@ -277,9 +367,11 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     }
   }
 
+  const draftOf = (s) => ({ com: s.com, sub: s.sub, email: s.email, file: C.fileMeta(s.file), at: Date.now() });
+
   function typed() {
     if (!st) return;
-    drafts.set(key(st.board, st.thread), { com: st.com, sub: st.sub, email: st.email, at: Date.now() });
+    drafts.set(key(st.board, st.thread), draftOf(st));
     clearTimeout(saveTimer);
     saveTimer = setTimeout(persistDrafts, 400);
   }
@@ -297,36 +389,462 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     return made;
   }
 
+  /** Keeps the open form's reply; an empty one is not kept. */
   function stash() {
     if (!st) return;
-    drafts.set(key(st.board, st.thread), { com: st.com, sub: st.sub, email: st.email, at: Date.now() });
+    const k = key(st.board, st.thread);
+    if (C.hasContent(st)) drafts.set(k, draftOf(st));
+    else {
+      drafts.delete(k);
+      delFile(fileKey(k));
+    }
     persistDrafts();
+  }
+
+  /** Forgets a reply being written, file and all. */
+  function forget(k) {
+    drafts.delete(k);
+    delFile(fileKey(k));
+    persistDrafts();
+  }
+
+  // ------------------------------------------------------ saved replies
+
+  function persistSaved() {
+    try {
+      localStorage.setItem(SAVED_KEY, JSON.stringify(saved));
+    } catch (_) {
+      /* no storage: saved replies last until the app closes */
+    }
+  }
+
+  const focusComment = () => el?.querySelector('[data-key="compose-com"]')?.focus({ preventScroll: true });
+
+
+  /** Takes the form down without a trace (no draft kept: the caller did). */
+  function dropForm() {
+    clearInterval(tick);
+    tick = null;
+    const node = el;
+    el = null;
+    st = null;
+    return node;
+  }
+
+  /** Keeps what is in the form for later: the form folds into a pill
+   *  under the tray's Later, file and all, and the next Reply starts empty. */
+  function saveForLater() {
+    if (!st || st.busy) return;
+    const before = saved;
+    saved = C.saveReply(saved, { board: st.board, thread: st.thread, com: st.com, sub: st.sub, email: st.email, file: st.file });
+    if (saved === before) {
+      toast('Nothing to save yet: write something first.');
+      return;
+    }
+    persistSaved();
+    const k = key(st.board, st.thread);
+    if (st.file) putFile(`s:${saved[0].id}`, st.file);
+    forget(k);
+    const node = dropForm();
+    laterOpen = true;
+    drawTray(`s:${saved[0].id}`);
+    const pill = tray?.querySelector(`[data-saved-id="${CSS.escape(saved[0].id)}"]`);
+    leave(node, tray?.hidden ? null : pill?.getBoundingClientRect());
+    toast('Reply saved for later.');
+  }
+
+  /** A pill under Later opens as the form. A reply already being written
+   *  for that thread goes under Later in its place, so the two never mix;
+   *  the open form (another thread) stays as a pill of its own. */
+  async function openSaved(id, pill) {
+    if (st?.busy) return;
+    let { entry, list } = C.takeSaved(saved, id);
+    if (!entry) return;
+    const from = pill?.getBoundingClientRect();
+    const k = key(entry.board, entry.thread);
+    const here = Boolean(st && key(st.board, st.thread) === k);
+    const cur = here ? st : drafts.get(k);
+    if (C.hasContent(cur)) {
+      list = C.saveReply(list, { board: entry.board, thread: entry.thread, com: cur.com, sub: cur.sub, email: cur.email, file: cur.file });
+      if (here && st.file) {
+        await putFile(`s:${list[0].id}`, st.file);
+        await delFile(fileKey(k));
+      } else if (cur.file) await moveFile(fileKey(k), `s:${list[0].id}`);
+    }
+    if (entry.file) await moveFile(`s:${entry.id}`, fileKey(k));
+    else await delFile(fileKey(k));
+    drafts.set(k, { com: entry.com, sub: entry.sub, email: entry.email || '', file: entry.file, at: Date.now() });
+    saved = list;
+    persistSaved();
+    persistDrafts();
+    if (here) {
+      // the same thread: the captcha already there stays
+      const f = entry.file ? await getFile(fileKey(k)) : null;
+      Object.assign(st, { com: entry.com, sub: entry.sub, email: entry.email || st.email, file: f, caret: entry.com.length, problems: [], message: '', min: false });
+      draw('none');
+      morph(el, from);
+      focusComment();
+      drawTray();
+      return;
+    }
+    await open({ board: entry.board, thread: entry.thread, from });
+  }
+
+  /** A pill of a reply being written opens as the form (the open one
+   *  becomes a pill). */
+  function openActive(k, pill) {
+    if (st?.busy) return;
+    const [board, thread] = k.split('/');
+    open({ board, thread: Number(thread), from: pill?.getBoundingClientRect() });
+  }
+
+  /** Deletes a reply being written: only ever by hand, after asking. */
+  async function dropActive(k, opener) {
+    const d = drafts.get(k);
+    if (!d) return;
+    const ok = await confirmDialog({ title: 'Delete this reply?', text: `“${C.savedLabel(d, 80)}” is deleted for good.`, confirm: 'Delete', opener });
+    if (!ok) return;
+    const item = tray?.querySelector(`[data-active-key="${CSS.escape(k)}"]`);
+    forget(k);
+    fadeOut(item);
+  }
+
+  /** A pill leaving the tray, then the tray drawn again. */
+  function fadeOut(item) {
+    let finished = false;
+    const once = () => {
+      if (finished) return;
+      finished = true;
+      drawTray();
+      (tray?.querySelector('.reply-pill__open') || el?.querySelector('[data-key="compose-com"]'))?.focus({ preventScroll: true });
+    };
+    if (item && !still() && item.animate) {
+      const r = item.getBoundingClientRect();
+      item.animate(
+        [
+          { opacity: 1, transform: 'none', maxHeight: `${r.height}px` },
+          { opacity: 0, transform: 'translateX(24px) scale(0.96)', maxHeight: '0px', marginTop: `${-8}px` },
+        ],
+        { duration: 220, easing: 'ease-in', fill: 'forwards' },
+      ).onfinish = once;
+      setTimeout(once, 400); // a window in the background may hold the animation back
+    } else once();
+  }
+
+  async function dropSaved(entry, opener) {
+    const ok = await confirmDialog({ title: 'Delete this saved reply?', text: `“${C.savedLabel(entry, 80)}” is deleted for good.`, confirm: 'Delete', opener });
+    if (!ok) return;
+    const item = tray?.querySelector(`[data-saved-id="${CSS.escape(entry.id)}"]`);
+    saved = C.takeSaved(saved, entry.id).list;
+    persistSaved();
+    delFile(`s:${entry.id}`);
+    fadeOut(item);
+  }
+
+  // ------------------------------------------------------------- the tray
+
+  // Replies wait as pills at the bottom right, like a folded form:
+  // "Reply to /g/ No. 12  Captcha to solve  ×". At the bottom, the replies
+  // being written (each stays until posted or deleted by hand); above them,
+  // a Later header that opens the replies saved for later. A press opens a
+  // pill as the form; × deletes it, after asking. Above a folded form,
+  // beside an open one.
+  const ACTIVE_SHOWN = 5;
+  const PEEK = 7; // px of each card behind showing above the one in front
+  let tray = null;
+  let trayAll = false; // "+N more" pressed
+  let laterOpen = false; // the Later header pressed
+  let trayIds = new Set();
+  let stackOpen = false; // the pile fanned out (pointed at, or focus inside)
+  let fanTimer = 0;
+
+  // The replies being written lie in a pile, one on another, the newest
+  // (or the folded form) in front and the edges of the others showing
+  // above it; pointing at the pile, or tabbing into it, fans it out.
+  function fan(open) {
+    clearTimeout(fanTimer);
+    if (open === stackOpen) return;
+    // closing waits a moment: the pile moves under the pointer as it folds
+    fanTimer = setTimeout(
+      () => {
+        stackOpen = open;
+        tray?.classList.toggle('reply-tray--open', open);
+        placeTray();
+      },
+      open ? 0 : 280,
+    );
+  }
+
+  function pillTitle(e) {
+    return e.thread ? `Reply to /${e.board}/ No. ${e.thread}` : `New thread on /${e.board}/`;
+  }
+
+  /** The replies being written whose form is not the open one, newest first. */
+  function activeList() {
+    const open = st ? key(st.board, st.thread) : '';
+    return [...drafts.entries()]
+      .filter(([k, d]) => k !== open && C.hasContent(d))
+      .map(([k, d]) => {
+        const [board, thread] = k.split('/');
+        return { k, board, thread: Number(thread), ...d };
+      })
+      .sort((a, b) => b.at - a.at);
+  }
+
+  function pill({ e, id, attr, later, fresh, onOpen, onDelete }) {
+    return h(
+      'li',
+      { class: `reply-pill${later ? ' reply-pill--later' : ''}${trayIds.has(id) && id !== fresh ? '' : ' reply-pill--new'}`, ...attr },
+      h(
+        'button',
+        { type: 'button', class: 'reply-pill__open', title: C.savedLabel(e, 80), 'data-key': `tray-open-${id}`, onclick: (ev) => onOpen(ev.currentTarget.closest('.reply-pill')) },
+        later ? icon('bookmark') : null,
+        h('span', { class: 'reply-pill__title', text: pillTitle(e) }),
+        e.file ? h('span', { class: 'reply-pill__file', title: e.file.name, 'aria-label': `File: ${e.file.name}` }, icon('folder')) : null,
+        h('span', { class: 'reply-pill__note', text: 'Captcha to solve' }),
+      ),
+      h(
+        'button',
+        { type: 'button', class: 'reply-pill__x', 'aria-label': `Delete the reply “${C.savedLabel(e)}”`, title: 'Delete this reply', 'data-key': `tray-del-${id}`, onclick: (ev) => onDelete(ev.currentTarget) },
+        icon('x'),
+      ),
+    );
+  }
+
+  function drawTray(fresh = '') {
+    const active = activeList();
+    const later = saved;
+    if (!active.length && !later.length) {
+      tray?.remove();
+      tray = null;
+      trayIds = new Set();
+      return;
+    }
+    const shown = trayAll || active.length <= ACTIVE_SHOWN + 1 ? active : active.slice(0, ACTIVE_SHOWN);
+    const more = active.length - shown.length;
+    const next = h(
+      'div',
+      {
+        class: `reply-tray${stackOpen ? ' reply-tray--open' : ''}`,
+        'data-key': 'reply-tray',
+        onpointerenter: () => fan(true),
+        onpointerleave: () => fan(false),
+        onfocusin: () => fan(true),
+        onfocusout: (e) => !next.contains(e.relatedTarget) && fan(false),
+      },
+      later.length
+        ? h(
+            'button',
+            {
+              type: 'button',
+              class: `reply-tray__later${laterOpen ? ' reply-tray__later--open' : ''}`,
+              'aria-expanded': String(laterOpen),
+              title: laterOpen ? 'Hide the replies saved for later' : 'Show the replies saved for later',
+              'data-key': 'reply-tray-later',
+              onclick: () => ((laterOpen = !laterOpen), drawTray()),
+            },
+            icon('bookmark'),
+            h('span', { text: `Later (${later.length})` }),
+            icon(laterOpen ? 'collapse' : 'expand'),
+          )
+        : null,
+      later.length && laterOpen
+        ? h(
+            'ul',
+            { class: 'reply-tray__list reply-tray__list--later', 'aria-label': 'Replies saved for later' },
+            [...later].reverse().map((e) =>
+              pill({ e, id: `s:${e.id}`, attr: { 'data-saved-id': e.id }, later: true, fresh, onOpen: (p) => openSaved(e.id, p), onDelete: (b) => dropSaved(e, b) }),
+            ),
+          )
+        : null,
+      active.length > ACTIVE_SHOWN + 1
+        ? h('button', {
+            type: 'button',
+            class: 'reply-tray__more',
+            'data-key': 'reply-tray-more',
+            'aria-expanded': String(trayAll),
+            onclick: () => ((trayAll = !trayAll), drawTray()),
+            text: more ? `+${more} more` : 'Show fewer',
+          })
+        : null,
+      active.length
+        ? h(
+            'ul',
+            { class: 'reply-tray__list reply-tray__list--stack', 'aria-label': 'Replies being written' },
+            // newest at the bottom, nearest the form, and on top of the pile
+            [...shown].reverse().map((e, i) =>
+              pill({ e, id: `a:${e.k}`, attr: { 'data-active-key': e.k, style: { 'z-index': String(i + 1) } }, fresh, onOpen: (p) => openActive(e.k, p), onDelete: (b) => dropActive(e.k, b) }),
+            ),
+          )
+        : null,
+    );
+    trayIds = new Set([...active.map((e) => `a:${e.k}`), ...later.map((e) => `s:${e.id}`)]);
+    if (tray) tray.replaceWith(next);
+    else document.body.append(next);
+    tray = next;
+    placeTray();
+  }
+
+  /** Above a folded form, to the left of an open floating one; out of the
+   *  way while the form fills a pane or the window. */
+  function placeTray() {
+    if (!tray) return;
+    let right = 16;
+    let bottom = 16;
+    let hide = false;
+    const r = el?.isConnected ? el.getBoundingClientRect() : null;
+    if (st && r) {
+      if (st.min) {
+        right = innerWidth - r.right;
+        // the folded form is the pile's front card: the last pill tucks
+        // behind it, its top edge showing; fanned out, they sit above it
+        const pillH = tray.querySelector('.reply-tray__list--stack > .reply-pill')?.offsetHeight || r.height;
+        bottom = stackOpen || !tray.querySelector('.reply-tray__list--stack') ? innerHeight - r.top + 8 : innerHeight - r.top + PEEK - pillH - 2;
+      } else if (mode === 'float' && r.left > 320) {
+        right = innerWidth - r.left + 12;
+        bottom = innerHeight - r.bottom;
+      } else hide = true;
+    }
+    tray.hidden = hide;
+    tray.classList.toggle('reply-tray--behind', Boolean(st?.min && el));
+    const front = tray.querySelector('.reply-tray__list--stack > .reply-pill:last-child');
+    if (front?.offsetHeight) tray.style.setProperty('--pill-h', `${front.offsetHeight}px`);
+    const b = Math.max(8, Math.round(bottom));
+    tray.style.right = `${Math.max(8, Math.round(right))}px`;
+    tray.style.bottom = `${b}px`;
+    // never past the title bar: the lists scroll instead
+    const top = document.querySelector('.titlebar')?.getBoundingClientRect().bottom || 40;
+    tray.style.maxHeight = `${Math.max(120, innerHeight - b - top - 8)}px`;
+  }
+
+  addEventListener('resize', placeTray);
+  // another window saved or used one
+  addEventListener('storage', (e) => {
+    if (e.key !== SAVED_KEY) return;
+    saved = loadSaved();
+    drawTray();
+  });
+  if (document.body) drawTray();
+  else addEventListener('DOMContentLoaded', () => drawTray(), { once: true });
+
+  // ------------------------------------------------------------ motion
+
+  /** FLIP: the form (or a pill) grows from where it was (`from`, a rect)
+   *  into where it is now. */
+  function morph(node, from, ms = 260) {
+    if (!node || !from || still() || !node.animate) return;
+    const to = node.getBoundingClientRect();
+    if (!to.width || !to.height || !from.width || !from.height) return;
+    const dx = from.left - to.left;
+    const dy = from.top - to.top;
+    const sx = from.width / to.width;
+    const sy = from.height / to.height;
+    node.animate(
+      [
+        { transformOrigin: '0 0', transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
+        { transformOrigin: '0 0', transform: 'none' },
+      ],
+      { duration: ms, easing: 'cubic-bezier(.2, .8, .2, 1)' },
+    );
+    // the inside fades in, so the text is not seen squeezed
+    for (const part of node.querySelectorAll(':scope > .composer__body, :scope > .composer__foot')) {
+      part.animate([{ opacity: 0 }, { opacity: 0, offset: 0.4 }, { opacity: 1 }], { duration: ms + 60, easing: 'ease-out' });
+    }
+  }
+
+  /** A form that has just appeared rises into place. */
+  function rise(node) {
+    if (!node || still() || !node.animate) return;
+    node.animate(
+      [
+        { opacity: 0, transform: 'translateY(16px) scale(0.98)' },
+        { opacity: 1, transform: 'none' },
+      ],
+      { duration: 220, easing: 'cubic-bezier(.2, .8, .2, 1)' },
+    );
+  }
+
+  /** A form going away: into `to` (a rect: the pill it became), else down
+   *  and out. The node is removed at the end. */
+  function leave(node, to) {
+    if (!node) return;
+    if (still() || !node.animate || !node.isConnected) {
+      node.remove();
+      return;
+    }
+    // a ghost from here on: not the form any more for anything that looks
+    node.inert = true;
+    node.style.pointerEvents = 'none';
+    node.removeAttribute('data-key');
+    for (const n of node.querySelectorAll('[data-key], [id]')) {
+      n.removeAttribute('data-key');
+      n.removeAttribute('id');
+    }
+    node.removeAttribute('role');
+    node.setAttribute('aria-hidden', 'true');
+    // a window in the background may hold the animation back: gone anyway
+    const gone = setTimeout(() => node.remove(), 600);
+    const r = node.getBoundingClientRect();
+    const end = to && to.width && r.width
+      ? { transformOrigin: '0 0', transform: `translate(${to.left - r.left}px, ${to.top - r.top}px) scale(${to.width / r.width}, ${to.height / r.height})`, opacity: 0.2 }
+      : { transformOrigin: '50% 100%', transform: 'translateY(16px) scale(0.97)', opacity: 0 };
+    for (const part of node.querySelectorAll(':scope > .composer__body, :scope > .composer__foot')) {
+      part.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120, fill: 'forwards' });
+    }
+    node.animate([{ transformOrigin: end.transformOrigin, transform: 'none', opacity: 1 }, end], { duration: to ? 300 : 200, easing: 'cubic-bezier(.4, 0, .6, 1)', fill: 'forwards' }).onfinish = () => {
+      clearTimeout(gone);
+      node.remove();
+    };
   }
 
   function setMin(on) {
     if (!st) return;
+    const from = el?.getBoundingClientRect();
+    // folding: a copy of the open form shrinks into the pill and fades,
+    // while the pill fades in (scaling the pill itself up would stretch it)
+    const ghost = on && el && !still() ? el.cloneNode(true) : null;
     st.min = on;
     draw('none');
+    if (ghost && from) {
+      Object.assign(ghost.style, { left: `${from.left}px`, top: `${from.top}px`, width: `${from.width}px`, height: `${from.height}px`, right: 'auto', bottom: 'auto', transform: 'none', margin: '0' });
+      document.body.append(ghost);
+      leave(ghost, el.getBoundingClientRect());
+      el.animate?.([{ opacity: 0 }, { opacity: 0, offset: 0.5 }, { opacity: 1 }], { duration: 300, easing: 'ease-out' });
+    } else if (!on) morph(el, from, 240);
     if (!on) el?.querySelector('[data-key="compose-com"]')?.focus({ preventScroll: true });
     else el?.querySelector('[data-key="compose-restore"]')?.focus({ preventScroll: true });
   }
 
+  /** The app closing: the reply is kept as it is. */
   function close() {
     stash();
-    clearInterval(tick);
-    tick = null;
-    el?.remove();
-    el = null;
-    st = null;
+    dropForm()?.remove();
+    tray?.remove();
+    tray = null;
   }
 
-  async function open({ board, thread = 0, quote = 0, selection = '' }) {
+  /** The form's ×: an empty form just closes; a reply with something in
+   *  it is deleted, after asking (minimise keeps it instead). */
+  async function closeAsked(opener) {
+    if (!st || st.busy) return;
+    if (C.hasContent(st)) {
+      const mine = st;
+      const ok = await confirmDialog({ title: 'Delete this reply?', text: `“${C.savedLabel(mine, 80)}” is deleted for good. To keep it, minimise it or save it for later.`, confirm: 'Delete', opener });
+      if (!ok || st !== mine) return;
+      forget(key(mine.board, mine.thread));
+    } else stash();
+    leave(dropForm(), null);
+    drawTray();
+  }
+
+  async function open({ board, thread = 0, quote = 0, selection = '', from = null }) {
     const same = st && st.board === board && st.thread === thread;
     // An open form takes the quote at its caret; a form opened now, at the end.
     const ta0 = same ? el?.querySelector('[data-key="compose-com"]') : null;
     const caret = ta0 && document.activeElement === ta0 ? ta0.selectionStart : same ? st.caret : null;
     if (!same) {
-      stash();
+      stash(); // the form open now stays, as a pill
+      saved = loadSaved(); // another window may have saved some
       const d = drafts.get(key(board, thread)) || {};
       const s = getSettings();
       st = {
@@ -349,6 +867,20 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
         min: false, // folded down to its title bar
       };
     }
+    if (!same) {
+      drawTray(); // this thread's pill is the form now
+      if (drafts.get(key(board, thread))?.file) {
+        const mine = st;
+        getFile(fileKey(key(board, thread))).then((f) => {
+          if (f && st === mine && !st.file) {
+            st.file = f;
+            draw('keep');
+          }
+        });
+      }
+    }
+    const wasMin = Boolean(st.min);
+    const minBox = wasMin ? el?.getBoundingClientRect() : null;
     st.min = false;
     const picked = String(selection || '').trim() ? String(selection) : '';
     // The selection comes in as greentext under the >>N; a bare >>N only
@@ -358,7 +890,10 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       st.com = r.text;
       st.caret = r.caret;
     } else if (Number.isFinite(caret)) st.caret = caret;
+    const fresh = !el;
     draw();
+    if (from || minBox) morph(el, from || minBox);
+    else if (fresh) rise(el);
     const ta = el.querySelector('[data-key="compose-com"]');
     ta?.focus();
     if (ta) ta.selectionStart = ta.selectionEnd = Number.isFinite(st.caret) ? Math.min(st.caret, ta.value.length) : ta.value.length;
@@ -393,7 +928,89 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     if (stale()) return;
     st.captcha = C.captchaState(data);
     draw('keep');
-    if (st.captcha.state === 'ready') el?.querySelector('[data-key="compose-slider"]')?.focus({ preventScroll: true });
+    // The slider takes the keys at once, unless something is being typed.
+    if (st.captcha.state === 'ready' && !typing()) focusSlider();
+  }
+
+  const typing = () => {
+    const a = document.activeElement;
+    return Boolean(a && el?.contains(a) && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && !/^(range|checkbox|file)$/.test(a.type))));
+  };
+  const focusSlider = () => el?.querySelector('[data-key="compose-slider"]')?.focus({ preventScroll: true });
+
+  // ------------------------------------------------- "From library"
+
+  /** A picker over the library: search, press a picture, it is attached. */
+  async function fromLibrary(opener) {
+    if (!library?.available()) return;
+    await library.load();
+    let q = '';
+    const grid = h('ul', { class: 'library__grid library-pick__grid', 'aria-label': 'Library files' });
+    const fill = () => {
+      const list = L.filterItems(library.items(), { q, sort: 'added' }).slice(0, 120);
+      grid.replaceChildren(
+        ...list.map((e) =>
+          h(
+            'li',
+            { class: 'library__tile' },
+            h(
+              'button',
+              {
+                type: 'button',
+                class: 'library__thumb',
+                title: e.tags.length ? `${e.name} · ${e.tags.join(', ')}` : e.name,
+                'aria-label': e.tags.length ? `${e.name} · ${e.tags.join(', ')}` : e.name,
+                'data-key': `compose-lib-${e.id}`,
+                onclick: async () => {
+                  try {
+                    const file = await library.asFile(e);
+                    finish();
+                    await pickFile(file);
+                    el?.querySelector('[data-key="compose-com"]')?.focus({ preventScroll: true });
+                  } catch (err) {
+                    toast(`Couldn’t attach it: ${err?.message || err}`);
+                  }
+                },
+              },
+              e.kind === 'video'
+                ? h('video', { src: library.fileUrl(e), muted: true, preload: 'metadata', 'aria-hidden': 'true' })
+                : h('img', { src: library.fileUrl(e), alt: '', loading: 'lazy' }),
+            ),
+          ),
+        ),
+      );
+      if (!list.length) grid.append(h('li', { class: 'state-line', text: library.items().length ? 'Nothing matches.' : 'The library is empty.' }));
+    };
+    const d = h(
+      'dialog',
+      { class: 'library-pick', 'aria-label': 'Attach from the library' },
+      h(
+        'div',
+        { class: 'library-pick__head' },
+        h('strong', { text: 'Attach from the library' }),
+        h('button', { type: 'button', class: 'icon-btn icon-btn--sm', 'aria-label': 'Close', 'data-key': 'compose-lib-close', onclick: () => finish() }, icon('x')),
+      ),
+      h('input', {
+        type: 'search',
+        class: 'input',
+        placeholder: 'Search names, tags, threads',
+        'aria-label': 'Search the library',
+        'data-key': 'compose-lib-search',
+        autofocus: true,
+        oninput: (e) => ((q = e.target.value), fill()),
+      }),
+      grid,
+    );
+    function finish() {
+      if (!d.isConnected) return;
+      d.close();
+      d.remove();
+      opener?.isConnected && opener.focus({ preventScroll: true });
+    }
+    d.addEventListener('close', () => d.remove());
+    fill();
+    document.body.append(d);
+    d.showModal();
   }
 
   async function pickFile(file) {
@@ -401,6 +1018,8 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     const bytes = new Uint8Array(await file.arrayBuffer());
     const name = file.name || 'pasted.png';
     st.file = { name, size: bytes.length, type: file.type || '', bytes, randomName: C.randomFileName(name) };
+    putFile(fileKey(key(st.board, st.thread)), st.file); // kept with the reply
+    typed();
     draw('keep');
   }
 
@@ -419,12 +1038,31 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     });
     if (st.problems.length) {
       draw('keep');
-      el?.querySelector('.composer__problems')?.focus?.();
+      // only the captcha left: straight to its slider, for the arrow keys
+      if (st.problems.every((p) => p.field === 'captcha') && st.captcha.state === 'ready') focusSlider();
+      else el?.querySelector('.composer__problems')?.focus?.();
       return;
     }
     const mine = st;
     st.busy = true;
     st.message = 'Posting…';
+    // A reply goes into its thread at once, grey until the site says it is
+    // posted; the form folds down meanwhile so it can be seen arriving.
+    const pid = !isThread && onPending ? `p${++pendingSeq}` : null;
+    if (pid) {
+      const box = el?.querySelector('[data-key="compose-com"]')?.getBoundingClientRect();
+      mine.wasMin = mine.min;
+      mine.min = true;
+      onPending({
+        type: 'start',
+        id: pid,
+        board: mine.board,
+        thread: mine.thread,
+        post: C.pendingPost({ thread: mine.thread, name: mine.name, sub: mine.sub, com: mine.com }),
+        file: mine.file ? C.uploadName(mine.file, mine.randomName) : '',
+        from: box && box.width ? { left: box.left, top: box.top, width: box.width, height: box.height } : null,
+      });
+    }
     draw('keep');
     let file = null;
     let cleaned = 0;
@@ -457,26 +1095,33 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       const msg = String(e?.message || e);
       result = { ok: false, message: msg === 'check-needed' ? 'The site wants a quick browser check: complete it in the window that opened, then post again.' : msg };
     }
-    if (st !== mine) return;
+    if (pid) onPending(result.ok ? { type: 'posted', id: pid, no: result.no } : { type: 'failed', id: pid, message: result.message });
     mine.busy = false;
     if (!result.ok) {
+      if (st !== mine) {
+        toast(`Not posted: ${result.message}`); // the form was closed meanwhile; the draft is kept
+        return;
+      }
       mine.message = result.message;
+      if (pid) mine.min = Boolean(mine.wasMin);
       // A used captcha is gone either way: fetch the next one.
       if (mine.captcha.state === 'ready') loadCaptcha();
       else draw('keep');
+      if (!mine.min) focusComment();
       return;
     }
     const wait = C.cooldownSeconds(mine.info, { isThread, hasFile: Boolean(file) });
     if (wait) cooldowns.set(mine.board, Date.now() + wait * 1000);
     const next = C.addYou({ ...getSettings(), post: { ...(getSettings().post || {}), name: mine.name } }, mine.board, result.no);
     saveSettings(next);
-    drafts.delete(key(mine.board, mine.thread));
-    persistDrafts();
-    toast(`Posted: No. ${result.no}${cleaned ? ' · location and camera data removed' : ''}`);
-    st = null;
-    el?.remove();
-    el = null;
-    clearInterval(tick);
+    forget(key(mine.board, mine.thread));
+    const left = C.savedFor(saved, mine.board, mine.thread).length;
+    const leftNote = left === 1 ? ' · 1 saved reply left for this thread' : left ? ` · ${left} saved replies left for this thread` : '';
+    toast(`Posted: No. ${result.no}${cleaned ? ' · location and camera data removed' : ''}${leftNote}`);
+    if (st === mine) {
+      leave(dropForm(), null);
+      placeTray();
+    }
     onPosted({ board: mine.board, thread: result.thread, no: result.no });
   }
 
@@ -544,19 +1189,87 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       );
     }
     const task = c.tasks[c.step];
-    const shown = c.current === 0 ? task.promptImg : task.items[c.current - 1];
-    const set = (n) => {
-      st.captcha = C.captchaShow(st.captcha, n);
-      draw('keep');
+    const count = task.items.length;
+    const picture = (n) => {
+      const src = n === 0 ? task.promptImg : task.items[n - 1];
+      return src
+        ? h('img', { class: 'captcha__img', src, draggable: 'false', alt: n === 0 ? 'The captcha’s question' : `Choice ${n} of ${count}` })
+        : h('span', { class: 'field__hint', text: 'Slide to see the choices.' });
     };
+    const valueText = (n) => (n === 0 ? 'the question' : `choice ${n} of ${count}`);
+    // Sliding redraws nothing: the picture, the slider's words and Next
+    // change in place, so a drag under way is never cut off (a redraw
+    // replaced the slider under the pointer, which ended the drag).
+    const show = (n) => {
+      if (!st || st.captcha.state !== 'ready') return;
+      st.captcha = C.captchaShow(st.captcha, n);
+      const cur = st.captcha.current;
+      const stage = el?.querySelector('[data-captcha-stage]');
+      if (stage && stage.dataset.shown !== String(cur)) {
+        stage.dataset.shown = String(cur);
+        stage.replaceChildren(picture(cur));
+      }
+      const sl = el?.querySelector('[data-key="compose-slider"]');
+      if (sl) {
+        if (sl.value !== String(cur)) sl.value = String(cur);
+        sl.setAttribute('aria-valuetext', valueText(cur));
+      }
+      const nx = el?.querySelector('[data-key="compose-captcha-next"]');
+      if (nx) nx.disabled = cur < 1;
+    };
+    const step = (d) => show(st.captcha.current + d);
     const next = () => {
       st.captcha = C.captchaNext(st.captcha);
       draw('none');
       (el.querySelector('[data-key="compose-slider"]') || el.querySelector('[data-key="compose-submit"]'))?.focus();
     };
+    // The picture itself scrubs too: drag across it (a choice per 24 px),
+    // or the wheel / a two-finger swipe over it.
+    let wheel = 0;
+    const scrub = (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      focusSlider();
+      const x0 = e.clientX;
+      const from = st.captcha.current;
+      const stage = e.currentTarget;
+      stage.setPointerCapture?.(e.pointerId);
+      stage.classList.add('captcha__stage--drag');
+      const move = (ev) => show(from + Math.round((ev.clientX - x0) / 24));
+      const up = () => {
+        stage.removeEventListener('pointermove', move);
+        stage.removeEventListener('pointerup', up);
+        stage.removeEventListener('pointercancel', up);
+        stage.classList.remove('captcha__stage--drag');
+      };
+      stage.addEventListener('pointermove', move);
+      stage.addEventListener('pointerup', up);
+      stage.addEventListener('pointercancel', up);
+    };
+    const onWheel = (e) => {
+      const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (!d) return;
+      e.preventDefault();
+      wheel += e.deltaMode === 1 ? d * 40 : d;
+      if (Math.abs(wheel) < 40) return;
+      step(Math.sign(wheel));
+      wheel = 0;
+    };
     return h(
       'div',
-      { class: 'captcha' },
+      {
+        class: 'captcha',
+        // ←/→ work wherever the focus is in the captcha (the picture, Next),
+        // not only on the slider
+        onkeydown: (e) => {
+          if (e.target.matches?.('input[type="range"]')) return;
+          const d = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: 1, ArrowDown: -1 }[e.key];
+          if (!d) return;
+          e.preventDefault();
+          step(d);
+          focusSlider();
+        },
+      },
       progress,
       task.prompt ? h('p', { class: 'captcha__prompt', text: task.prompt }) : null,
       h(
@@ -564,8 +1277,15 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
         { class: 'captcha__view' },
         h(
           'div',
-          { class: 'captcha__stage' },
-          shown ? h('img', { class: 'captcha__img', src: shown, alt: c.current === 0 ? 'The captcha’s question' : `Choice ${c.current} of ${task.items.length}` }) : h('span', { class: 'field__hint', text: 'Slide to see the choices.' }),
+          {
+            class: 'captcha__stage',
+            'data-captcha-stage': '',
+            'data-shown': String(c.current),
+            title: 'Drag across the picture, or scroll over it, to see the choices',
+            onpointerdown: scrub,
+            onwheel: onWheel,
+          },
+          picture(c.current),
         ),
         task.target
           ? h(
@@ -579,13 +1299,24 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       h('input', {
         type: 'range',
         min: '0',
-        max: String(task.items.length),
+        max: String(count),
+        step: '1',
         value: String(c.current),
         class: 'captcha__slider',
-        'aria-label': `Step ${c.step + 1} of ${c.tasks.length}: slide through the ${task.items.length} choices`,
-        'aria-valuetext': c.current === 0 ? 'the question' : `choice ${c.current} of ${task.items.length}`,
+        'aria-label': `Step ${c.step + 1} of ${c.tasks.length}: slide through the ${count} choices`,
+        'aria-valuetext': valueText(c.current),
         'data-key': 'compose-slider',
-        oninput: (e) => set(e.target.value),
+        // WebKit does not focus a range input that is clicked: it is given
+        // the focus here, so the arrow keys work right after a slide.
+        onpointerdown: (e) => e.currentTarget.focus({ preventScroll: true }),
+        oninput: (e) => {
+          show(e.target.value);
+          if (document.activeElement !== e.target) e.target.focus({ preventScroll: true });
+        },
+        onchange: (e) => {
+          if (document.activeElement !== e.target) e.target.focus({ preventScroll: true });
+        },
+        onwheel: onWheel,
         onkeydown: (e) => {
           if ((e.key === 'Enter' || e.key === ' ') && st.captcha.current > 0) {
             e.preventDefault();
@@ -603,7 +1334,24 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
         ),
         again,
       ),
-      h('p', { class: 'field__hint', 'data-captcha-left': '', text: left ? `Expires in ${left} s. Slide (or ←/→), then Enter to keep a choice.` : 'Expired: get a new one.' }),
+      h('p', { class: 'field__hint', 'data-captcha-left': '', text: expiresText(left) }),
+    );
+  }
+
+  function modeButton(which, iconName, label) {
+    const on = mode === which;
+    return h(
+      'button',
+      {
+        type: 'button',
+        class: `icon-btn icon-btn--sm composer__mode${on ? ' composer__mode--on' : ''}`,
+        'aria-pressed': String(on),
+        'aria-label': label,
+        title: on ? `${label} (on: press for a floating form)` : label,
+        'data-key': `compose-${which}`,
+        onclick: () => setMode(which),
+      },
+      icon(iconName),
     );
   }
 
@@ -620,15 +1368,18 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     const next = h(
       'section',
       {
-        class: `composer${st.min ? ' composer--min' : ''}`,
+        class: `composer${st.min ? ' composer--min' : mode === 'full' ? ' composer--full' : mode === 'pane' ? ' composer--pane' : ''}`,
         role: 'dialog',
         'aria-label': isThread ? `New thread on /${st.board}/` : `Reply to No. ${st.thread}`,
         'data-key': 'composer',
+        // folded, it is the pile's front card: pointing at it fans the pile
+        onpointerenter: st.min ? () => fan(true) : null,
+        onpointerleave: st.min ? () => fan(false) : null,
       },
       h(
         'div',
         { class: 'composer__head', onpointerdown: startMove, ondblclick: resetPos },
-        st.min ? null : grip(),
+        st.min || mode !== 'float' ? null : grip(),
         st.min
           ? h(
               'button',
@@ -638,26 +1389,31 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
           : h('strong', {
               class: 'composer__title',
               tabindex: '0',
-              title: 'Drag to move · arrow keys · double-click: back to the corner',
-              'aria-description': 'Move the reply form: drag, or arrow keys (double-click: back to the corner)',
+              title: mode === 'float' ? 'Drag to move · arrow keys · double-click: back to the corner' : null,
+              'aria-description': mode === 'float' ? 'Move the reply form: drag, or arrow keys (double-click: back to the corner)' : null,
               'data-key': 'compose-move',
               onkeydown: moveKeys,
               text: isThread ? `New thread on /${st.board}/` : `Reply to /${st.board}/ No. ${st.thread}`,
             }),
         st.min ? h('span', { class: 'composer__note', 'data-compose-note': '', text: headNote() }) : null,
-        h(
-          'button',
-          {
-            type: 'button',
-            class: 'icon-btn icon-btn--sm composer__fold',
-            'aria-label': st.min ? 'Open the reply form again' : 'Minimise the reply form (it keeps everything)',
-            'aria-expanded': String(!st.min),
-            'data-key': 'compose-min',
-            onclick: () => setMin(!st.min),
-          },
-          icon(st.min ? 'maximize' : 'minus'),
-        ),
-        h('button', { type: 'button', class: 'icon-btn icon-btn--sm', 'aria-label': 'Close the reply form (the draft is kept)', 'data-key': 'compose-close', onclick: close }, icon('x')),
+        st.min ? null : modeButton('pane', 'panel', 'Fill the thread’s pane'),
+        st.min ? null : modeButton('full', mode === 'full' ? 'collapse' : 'expand', 'Fill the window'),
+        // folded, the title opens it again (the bar is a pill, like a saved reply's)
+        st.min
+          ? null
+          : h(
+              'button',
+              {
+                type: 'button',
+                class: 'icon-btn icon-btn--sm composer__fold',
+                'aria-label': 'Minimise the reply form (it keeps everything)',
+                'aria-expanded': 'true',
+                'data-key': 'compose-min',
+                onclick: () => setMin(true),
+              },
+              icon('minus'),
+            ),
+        h('button', { type: 'button', class: 'icon-btn icon-btn--sm', 'aria-label': 'Delete this reply (asks first; minimise keeps it)', title: 'Delete this reply (asks first; minimise keeps it)', 'data-key': 'compose-close', onclick: (e) => closeAsked(e.currentTarget) }, icon('x')),
       ),
       h(
         'div',
@@ -685,7 +1441,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
             class: 'input composer__com',
             rows: '6',
             'data-key': 'compose-com',
-            onblur: (e) => (st.caret = e.target.selectionStart),
+            onblur: (e) => st && (st.caret = e.target.selectionStart),
             oninput: (e) => {
               st.com = e.target.value;
               st.caret = e.target.selectionStart;
@@ -707,6 +1463,9 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
               if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault();
                 submit();
+              } else if (e.key.toLowerCase() === 's' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+                e.preventDefault();
+                saveForLater();
               }
             },
           }),
@@ -734,9 +1493,12 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
                 { class: 'composer__filename' },
                 `${C.uploadName(st.file, st.randomName)} · ${(st.file.size / 1024 / 1024).toFixed(2)} MB${fileLimit ? ` of ${(fileLimit / 1024 / 1024).toFixed(0)} MB` : ''}`,
                 st.randomName ? h('span', { class: 'composer__origname', translate: 'no', title: 'The file’s own name, not sent', text: st.file.name }) : null,
-                h('button', { type: 'button', class: 'link-btn', 'data-key': 'compose-file-remove', onclick: () => ((st.file = null), draw('keep')), text: 'Remove' }),
+                h('button', { type: 'button', class: 'link-btn', 'data-key': 'compose-file-remove', onclick: () => ((st.file = null), delFile(fileKey(key(st.board, st.thread))), typed(), draw('keep')), text: 'Remove' }),
               )
             : h('span', { class: 'field__hint', text: 'or drop / paste one here' }),
+          !st.file && library?.available()
+            ? h('button', { type: 'button', class: 'btn btn--sm', 'data-key': 'compose-library', onclick: (e) => fromLibrary(e.currentTarget) }, icon('images'), 'From library')
+            : null,
           st.file
             ? h(
                 'label',
@@ -766,7 +1528,24 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
         onSitePage
           ? h('button', { type: 'button', class: 'link-btn', 'data-key': 'compose-site', onclick: () => onSitePage(st.board, st.thread, 0), text: 'Post on the site’s page instead' })
           : null,
-        h('button', { type: 'button', class: 'btn btn--primary', 'data-key': 'compose-submit', disabled: st.busy, onclick: submit }, icon('reply'), st.busy ? 'Posting…' : 'Post'),
+        h(
+          'span',
+          { class: 'composer__actions' },
+          h(
+            'button',
+            {
+              type: 'button',
+              class: 'btn',
+              'data-key': 'compose-save',
+              title: 'Keep this reply for later, in the tray at the bottom (Ctrl+S)',
+              disabled: st.busy,
+              onclick: saveForLater,
+            },
+            icon('bookmark'),
+            'Save for later',
+          ),
+          h('button', { type: 'button', class: 'btn btn--primary', 'data-key': 'compose-submit', disabled: st.busy, onclick: submit }, icon('reply'), st.busy ? 'Posting…' : 'Post'),
+        ),
       ),
     );
     applySize(next);
@@ -774,6 +1553,8 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     else document.body.append(next);
     el = next;
     applyPos(el);
+    paneBox = '';
+    placeOver();
     const ta = el.querySelector('[data-key="compose-com"]');
     if (ta) {
       ta.value = st.com;
@@ -786,18 +1567,21 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       if (f && caret && typeof f.setSelectionRange === 'function') f.setSelectionRange(caret[0], caret[1]);
     }
     if (!tick) tick = setInterval(onTick, 250);
+    placeTray();
   }
 
   // Four times a second, so each second turns on time: the captcha's time
   // left, and a wait the site asked for, counted down live. When the wait is
   // over, the next captcha is fetched.
   function onTick() {
+    placeOver();
+    placeTray();
     const c = st?.captcha;
     if (!c || !el) return;
     if (c.state === 'ready') {
       const left = el.querySelector('[data-captcha-left]');
       const s = Math.max(0, Math.ceil((c.expires - Date.now()) / 1000));
-      if (left) left.textContent = s ? `Expires in ${s} s. Slide (or ←/→), then Enter to keep a choice.` : 'Expired: get a new one.';
+      if (left) left.textContent = expiresText(s);
       return;
     }
     if (!c.until) return;

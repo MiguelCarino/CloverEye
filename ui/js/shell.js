@@ -29,6 +29,12 @@ import { statsView, statusText, FOURSTATS_URL } from './stats-view.js';
 import { askView, newAsk, stopAsk } from './ai-view.js';
 import { idleDetect, runDetect, runMemory, unloadModel } from './ai-setup-view.js';
 import { openLogDialog } from './log-dialog.js';
+import { createLibrary } from './library.js';
+import { createLibraryView } from './library-view.js';
+import { knownFiles, md5Hex } from './library-model.js';
+import { commentText } from './render.js';
+import * as TG from './tag-model.js';
+import { tagChips, editTag, tagPage } from './tag-view.js';
 
 /** A catalog is fetched again on its own after this long (manual Refresh
  *  any time; the queue still keeps ≤ 1 request/s). */
@@ -91,6 +97,10 @@ export function openShell({
     offline: {}, // "board/no" → a saved thread read from disk: { status, posts, have, folder, savedAt, error }
     jobs: new Map(), // "board/no" → a save or download running: { kind, done, total, cancelled }
     aiDetect: idleDetect(), // model servers on this computer, for Settings → Assistant (ai-setup-view.js)
+    // replies going out (compose.js onPending), shown in their thread:
+    // { id, board, thread, post, file, from, state: 'sending' | 'sent' | 'failed', no, message, colour }
+    pending: [],
+    landed: new Set(), // "board/no" of those now in the thread: they appear without motion
   };
   const ac = new AbortController();
   let closed = false;
@@ -118,6 +128,292 @@ export function openShell({
       visible: M.visibleBoards(boards, settings).map((b) => b.board),
     });
   }
+  // ------------------------------------------------------------- library
+
+  // The library (meme gallery): kept files with their source and tags.
+  // Each pane showing it keeps its own view node across redraws.
+  const libraryViews = new WeakMap(); // pane → createLibraryView(...)
+  let libraryFrame = 0;
+  const library = createLibrary({
+    bridge,
+    getSettings: () => settings,
+    onChange: () => {
+      for (const p of st.panes) libraryViews.get(p)?.draw();
+      // the "in the library" marks in threads
+      cancelAnimationFrame(libraryFrame);
+      libraryFrame = requestAnimationFrame(() => render());
+    },
+  });
+  const toLibrary = () => settings.files?.toLibrary !== false && library.available();
+
+  /** What the app knows about files from the threads it holds, for imports. */
+  function seenFiles() {
+    const threads = [];
+    for (const [k, e] of [...Object.entries(st.threads), ...Object.entries(st.offline)]) {
+      if (e?.posts?.length) threads.push({ board: k.split('/')[0], posts: e.posts });
+    }
+    return knownFiles(threads, commentText);
+  }
+
+  function libraryBody(i) {
+    const pane = st.panes[i];
+    let v = libraryViews.get(pane);
+    if (!v) {
+      v = createLibraryView({
+        library,
+        bridge,
+        getSettings: () => settings,
+        saveSettings: (next) => {
+          save(next, { now: true });
+          render();
+        },
+        onOpenPost: ({ board, thread, no }) => {
+          goto({ kind: 'thread', board, no: thread }, i);
+          if (no !== thread) setTimeout(() => root.querySelector(`[data-pane="${i}"] [data-no="${no}"]`)?.scrollIntoView({ block: 'center' }), 600);
+        },
+        knownFiles: seenFiles,
+        keyPrefix: st.panes.length > 1 ? `p${i}-` : '',
+      });
+      libraryViews.set(pane, v);
+    }
+    return v.node;
+  }
+
+  /** A post's file into the library; says how it went. */
+  async function saveToLibrary(board, thread, post) {
+    const subject = st.threads[tkey(board, thread)]?.posts?.[0]?.sub || '';
+    try {
+      const r = await library.addFromPost({ board, thread, post, subject });
+      toast(r.status === 'have' ? 'Already in the library.' : `In the library: ${r.entry.rel}`);
+      return r;
+    } catch (e) {
+      toast(`Couldn’t save the file: ${e?.message || e}`);
+      return null;
+    }
+  }
+
+  // ----------------------------------------------------------------- tags
+
+  // What each tag found, day by day (tag-model.js recordFinds): kept on this
+  // computer, for Stats → Tags.
+  const TAG_STATS_KEY = 'clovereye-tag-stats';
+  let tagHistory = (() => {
+    try {
+      return TG.normalizeHistory(JSON.parse(localStorage.getItem(TAG_STATS_KEY) || '{}'));
+    } catch {
+      return {};
+    }
+  })();
+  let tagHistoryTimer = 0;
+  function noteTagFinds(board, threads) {
+    if (!settings.tags?.length || !threads?.length) return;
+    tagHistory = TG.recordFinds(tagHistory, settings.tags, board, threads, commentText);
+    clearTimeout(tagHistoryTimer);
+    tagHistoryTimer = setTimeout(() => {
+      try {
+        localStorage.setItem(TAG_STATS_KEY, JSON.stringify(tagHistory));
+      } catch {
+        /* no storage: the counts last until the app closes */
+      }
+    }, 1000);
+  }
+
+  /** Stats → Tags: each tag's finds now (loaded catalogs and threads) and
+   *  over the last two weeks. */
+  function tagStatsRows() {
+    const now = Date.now();
+    return (settings.tags || []).map((t) => {
+      const where = tagBoards(t);
+      const loaded = where.filter((b) => st.cats[b]?.threads);
+      const found = loaded.flatMap((b) => st.cats[b].threads.filter((th) => TG.matchesPost(t, th, commentText)));
+      // posts it hides in the threads open or cached on its boards
+      let hidden = 0;
+      if (t.mode === 'hide' && t.on) {
+        for (const [k, e] of Object.entries(st.threads)) {
+          if (!e?.posts || !where.includes(k.split('/')[0])) continue;
+          hidden += e.posts.filter((p) => TG.matchesPost(t, p, commentText)).length;
+        }
+      }
+      const { days, total } = TG.dailyFinds(tagHistory, t.id, 14, now);
+      return {
+        id: t.id,
+        name: t.name,
+        mode: t.mode,
+        on: t.on,
+        where: t.board ? `/${t.board}/` : where.map((b) => `/${b}/`).join(' ') || '—',
+        loaded: loaded.length,
+        boards: where.length,
+        now: found.length,
+        replies: found.reduce((n, th) => n + (th.replies || 0), 0),
+        hidden,
+        days,
+        total,
+      };
+    });
+  }
+
+  // Tags for lurking (tag-model.js): a board's own, and universal ones that
+  // look in every active board. Kept in settings.tags.
+  const tagBoards = (t) => (t.board ? [t.board] : TG.activeBoards(settings.favourites, views().filter((x) => x?.kind === 'board' || x?.kind === 'thread').map((x) => x.board)));
+
+  /** What a catalog needs for its tags: the chips, the labels, the one pressed. */
+  function catalogTags(board, pane, i) {
+    const tags = TG.tagsFor(settings.tags || [], board);
+    const threads = st.cats[board]?.threads;
+    const labels = threads && tags.length ? TG.labelThreads(tags, threads, commentText) : new Map();
+    // only a show tag narrows the catalog to its threads; hide tags work
+    // through the filter marks
+    const active = tags.some((t) => t.id === pane.catView.tag && t.mode === 'show') ? pane.catView.tag : '';
+    return {
+      // a hide tag's label would only sit on threads it hides
+      labels: new Map([...labels].map(([no, l]) => [no, l.filter((t) => t.mode === 'show')]).filter(([, l]) => l.length)),
+      activeTag: active,
+      tagBar: tagChips({
+        board,
+        tags,
+        labels,
+        active,
+        query: pane.catView.query || '',
+        onToggle: (t) => {
+          save({ ...settings, tags: (settings.tags || []).map((x) => (x.id === t.id ? { ...x, on: !x.on } : x)) }, { now: true });
+          toast(t.on ? `Showing what “${t.name}” hid` : `Hiding what “${t.name}” finds`);
+          render();
+        },
+        keyPrefix: st.panes.length > 1 ? `p${i}-` : '',
+        onPick: (id) => {
+          pane.catView.tag = id;
+          render();
+        },
+        onEdit: (tag) => editTagFlow(tag, board, document.activeElement, tag ? '' : pane.catView.query || ''),
+        onPage: (tag) => goto({ kind: 'tag', id: tag.id }, i),
+      }),
+    };
+  }
+
+  async function editTagFlow(tag, board = '', opener = document.activeElement, terms = '') {
+    // flags to pick from: this board's (from the board list, loaded if need be)
+    const here = board || tag?.board || '';
+    if (here && !boards && st.boardList !== 'loading') await loadBoardList().catch(() => {});
+    const flagList = here ? F.flagChoices(boards, [here], document.documentElement.lang || 'en') : [];
+    const r = await editTag({ tag, board, opener, terms, flagList });
+    if (!r) return;
+    const list = settings.tags || [];
+    const next = r.deleted ? list.filter((t) => t.id !== tag.id) : tag ? list.map((t) => (t.id === tag.id ? { ...r, id: tag.id } : t)) : [...list, r];
+    save({ ...settings, tags: TG.normalizeTags(next) }, { now: true });
+    if (!r.deleted && !tag) {
+      // the search that made it gives way to it; a new show tag is pressed
+      // at once on the catalog it was made on (a hide tag is already at work)
+      const p = focused();
+      if (p?.view?.kind === 'board') Object.assign(p.catView, { query: '', tag: r.mode === 'show' ? settings.tags.at(-1)?.id || '' : p.catView.tag });
+    }
+    for (const b of r.deleted ? [] : tagBoards(r)) loadCatalog(b);
+    if (r.library) library.load();
+    toast(r.deleted ? 'Tag deleted.' : tag ? 'Tag saved.' : `Tag added: ${r.name}`);
+    render();
+  }
+
+  function tagPageBody(t, i) {
+    const boardsHere = tagBoards(t);
+    return tagPage({
+      tag: t,
+      boards: boardsHere,
+      catalog: (b) => st.cats[b],
+      bridge,
+      files: t.library && library.available() ? library.items().filter((e) => TG.libraryMatches(t, e)) : null,
+      fileUrl: (e) => library.fileUrl(e),
+      keyPrefix: st.panes.length > 1 ? `p${i}-` : '',
+      onOpen: (board, no) => goto({ kind: 'thread', board, no }, i),
+      onOpenFile: (e) => {
+        goto({ kind: 'library' }, i);
+        libraryViews.get(st.panes[i])?.select(e.id);
+      },
+      onEdit: (opener) => editTagFlow(t, t.board, opener),
+      onRefresh: () => {
+        for (const b of boardsHere) loadCatalog(b, true);
+      },
+    });
+  }
+
+  /** The sidebar's edge: drag it to make the sidebar wider or narrower;
+   *  ←/→ on it too; a double-click puts the width back. */
+  function railGrip() {
+    const width = () => M.fitRail(settings.ui?.railWidth);
+    const keep = (w) => save({ ...settings, ui: { ...settings.ui, railWidth: M.fitRail(w) } }, { now: true });
+    const show = (w, grip) => {
+      root.style.setProperty('--rail-w', `${M.fitRail(w)}px`);
+      grip?.setAttribute('aria-valuenow', String(M.fitRail(w)));
+    };
+    return h('div', {
+      class: 'rail__grip',
+      role: 'separator',
+      tabindex: '0',
+      'aria-orientation': 'vertical',
+      'aria-label': 'Sidebar width',
+      'aria-valuemin': String(M.RAIL_MIN),
+      'aria-valuemax': String(M.RAIL_MAX),
+      'aria-valuenow': String(width()),
+      title: 'Drag to resize the sidebar · double-click: back to its width',
+      'data-key': 'rail-grip',
+      onpointerdown: (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        const grip = e.currentTarget;
+        const x0 = e.clientX;
+        const w0 = width();
+        let w = w0;
+        grip.setPointerCapture?.(e.pointerId);
+        root.classList.add('shell--resizing');
+        const move = (ev) => {
+          w = w0 + (ev.clientX - x0);
+          show(w, grip);
+        };
+        const up = () => {
+          grip.removeEventListener('pointermove', move);
+          grip.removeEventListener('pointerup', up);
+          grip.removeEventListener('pointercancel', up);
+          root.classList.remove('shell--resizing');
+          if (M.fitRail(w) !== w0) keep(w);
+        };
+        grip.addEventListener('pointermove', move);
+        grip.addEventListener('pointerup', up);
+        grip.addEventListener('pointercancel', up);
+      },
+      onkeydown: (e) => {
+        const step = e.shiftKey ? 48 : 16;
+        const w = e.key === 'ArrowLeft' ? width() - step : e.key === 'ArrowRight' ? width() + step : e.key === 'Home' ? M.RAIL_MIN : e.key === 'End' ? M.RAIL_MAX : null;
+        if (w === null) return;
+        e.preventDefault();
+        show(w, e.currentTarget);
+        keep(w);
+      },
+      ondblclick: (e) => {
+        show(M.RAIL_DEFAULT, e.currentTarget);
+        keep(M.RAIL_DEFAULT);
+      },
+    });
+  }
+
+  function tagsRail() {
+    const list = settings.tags || [];
+    if (!list.length) return h('p', { class: 'rail__empty', text: 'No tags yet: press + Tag on a catalog.' });
+    return h(
+      'ul',
+      { class: 'rail__list' },
+      list.map((t) =>
+        railItem([icon(t.board ? 'tag' : 'grid'), h('span', { class: 'rail__label', translate: 'no', text: t.name }), t.board ? tag(t.board) : null], {
+          current: views().some((x) => x?.kind === 'tag' && x.id === t.id),
+          key: `tagrail-${t.id}`,
+          onclick: () => goto({ kind: 'tag', id: t.id }),
+        }),
+      ),
+    );
+  }
+
+  function showInLibrary(post) {
+    goto({ kind: 'library' });
+    libraryViews.get(focused())?.select(md5Hex(post.md5));
+  }
+
   const stats = createStats({
     bridge,
     getSettings: () => settings,
@@ -142,7 +438,7 @@ export function openShell({
 
   const tkey = (board, no) => `${board}/${no}`;
   const viewKey = (v) =>
-    !v ? '' : v.kind === 'board' ? `b:${v.board}` : v.kind === 'thread' ? `t:${tkey(v.board, v.no)}` : v.kind === 'offline' ? `o:${tkey(v.board, v.no)}` : v.kind;
+    !v ? '' : v.kind === 'board' ? `b:${v.board}` : v.kind === 'thread' ? `t:${tkey(v.board, v.no)}` : v.kind === 'offline' ? `o:${tkey(v.board, v.no)}` : v.kind === 'tag' ? `g:${v.id}` : v.kind;
   const intervalMs = () => Math.max(M.MIN_WATCH_INTERVAL, settings.watch?.intervalSec || M.MIN_WATCH_INTERVAL) * 1000;
   const views = () => st.panes.map((p) => p.view);
   const openThreads = () => views().filter((v) => v?.kind === 'thread').map((v) => tkey(v.board, v.no));
@@ -218,10 +514,12 @@ export function openShell({
       st.cats[board] = { status: 'ok', threads: B.catalogThreads(res?.data), at: Date.now(), freshness: res?.freshness, error: null };
       // a catalog loaded anyway is a board activity sample: no extra request
       stats.recordCatalog(board, res?.data);
+      noteTagFinds(board, st.cats[board].threads);
     } catch (e) {
       st.cats[board] = { ...prev, status: 'error', error: e };
     }
-    if (!closed && isShown({ kind: 'board', board })) render();
+    // a tag's page gathers several catalogs
+    if (!closed && (isShown({ kind: 'board', board }) || views().some((x) => x?.kind === 'tag' || x?.kind === 'stats'))) render();
   }
 
   /** Fetches a thread (through the queue: never more often than every 10 s
@@ -247,6 +545,7 @@ export function openShell({
         st.lines.set(key, U.lineAfterUpdate(st.lines.get(key), U.readOf(settings, board, no), prev.posts[prev.posts.length - 1].no));
       }
       st.threads[key] = { status: 'ok', posts, at: Date.now(), freshness: res?.freshness, error: null, gone: false, fresh };
+      settlePending(board, no);
       countRepliesToYou(board, posts);
       const op = posts[0];
       if (M.isWatched(settings, board, no)) {
@@ -435,6 +734,7 @@ export function openShell({
     if (v.kind === 'board') loadCatalog(v.board);
     else if (v.kind === 'thread') {
       stats.count('threads', 1, v.board);
+      library.load(); // for the "in the library" marks
       const entry = st.threads[tkey(v.board, v.no)];
       if (entry?.posts && Date.now() - entry.at < 10_000) {
         markSeen(v.board, v.no);
@@ -442,6 +742,16 @@ export function openShell({
       } else loadThread(v.board, v.no);
     } else if (v.kind === 'boards' && st.boardList === 'idle') loadBoardList();
     else if (v.kind === 'saved') loadSaved();
+    else if (v.kind === 'library') library.load();
+    // Settings → Filters lists each board's own flags from the board list
+    else if (v.kind === 'settings' && !boards && st.boardList === 'idle') loadBoardList();
+    else if (v.kind === 'tag') {
+      const t = (settings.tags || []).find((x) => x.id === v.id);
+      if (t) {
+        for (const b of tagBoards(t)) loadCatalog(b);
+        if (t.library) library.load();
+      }
+    }
     else if (v.kind === 'offline' && st.offline[tkey(v.board, v.no)]?.status !== 'ok') loadOffline(v.board, v.no);
     else if (v.kind === 'stats') {
       stats.reload();
@@ -592,6 +902,12 @@ export function openShell({
     },
     getBoard: boardInfo,
     onSitePage: (board, thread, quote) => openSitePage(board, thread || null, quote || null),
+    onPending: (e) => pendingEvent(e),
+    library,
+    paneFor: (board, thread) => {
+      const i = st.panes.findIndex((p) => (thread ? p.view?.kind === 'thread' && p.view.no === thread : p.view?.kind === 'board') && p.view.board === board);
+      return root.querySelector(`[data-pane="${i >= 0 ? i : st.focus}"]`);
+    },
     onPosted: ({ board, thread, no }) => {
       stats.count('posts', 1);
       // A reply: watch the thread and show it fresh. A new thread: open it.
@@ -601,6 +917,91 @@ export function openShell({
       void no;
     },
   });
+
+  /** A reply going out: shown at the end of its thread at once, grey; it
+   *  flies in from the reply form; coloured when the site says it is
+   *  posted, and replaced by the real post when the thread brings it. A
+   *  reply that did not go out says so for a few seconds. */
+  function pendingEvent(e) {
+    if (closed) return;
+    if (e.type === 'start') {
+      st.pending = st.pending.filter((p) => !(p.state === 'failed' && p.board === e.board && p.thread === e.thread));
+      const p = { ...e, state: 'sending', no: 0, message: '', flyAt: 0 };
+      st.pending.push(p);
+      render();
+      p.flyAt = performance.now();
+      flyIn(p, 0);
+      return;
+    }
+    const p = st.pending.find((x) => x.id === e.id);
+    if (!p) return;
+    if (e.type === 'posted') {
+      Object.assign(p, { state: 'sent', no: e.no, post: { ...p.post, no: e.no }, colourAt: performance.now() });
+      settlePending(p.board, p.thread);
+      render();
+      return;
+    }
+    Object.assign(p, { state: 'failed', message: e.message || '' });
+    render();
+    setTimeout(() => {
+      if (!st.pending.includes(p)) return;
+      st.pending = st.pending.filter((x) => x !== p);
+      render();
+    }, 6000);
+  }
+
+  /** Replies the thread now has: the real post takes the grey one's place. */
+  function settlePending(board, thread) {
+    const posts = st.threads[tkey(board, thread)]?.posts;
+    if (!posts || !st.pending.length) return;
+    const have = new Set(posts.map((p) => p.no));
+    st.pending = st.pending.filter((p) => {
+      if (p.board !== board || p.thread !== thread || p.state !== 'sent' || !have.has(p.no)) return true;
+      st.landed.add(tkey(board, p.no));
+      return false;
+    });
+  }
+
+  const FLY_MS = 620;
+  const COLOUR_MS = 900;
+
+  /** The grey reply comes out of the form's comment box and settles at the
+   *  end of the thread (nothing moves with reduced motion). `elapsed`: a
+   *  redraw during the flight picks it up where it was. */
+  function flyIn(p, elapsed) {
+    const card = root.querySelector(`[data-pending="${CSS.escape(p.id)}"]`);
+    if (!card) return;
+    if (!elapsed) card.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+    const from = p.from;
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches || !from || typeof card.animate !== 'function') return;
+    const to = card.getBoundingClientRect();
+    if (!to.width || !to.height) return;
+    const sx = Math.min(2.5, Math.max(0.3, from.width / to.width));
+    const sy = Math.min(2.5, Math.max(0.3, from.height / to.height));
+    const a = card.animate(
+      [
+        { transformOrigin: 'top left', transform: `translate(${from.left - to.left}px, ${from.top - to.top}px) scale(${sx}, ${sy})`, opacity: 0.15 },
+        { transformOrigin: 'top left', transform: 'translate(0, 0) scale(1, 1)', opacity: 0.6 },
+      ],
+      { duration: FLY_MS, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' },
+    );
+    a.currentTime = elapsed;
+  }
+
+  /** The thread redraws itself (updates, the post's own refresh): a reply
+   *  still flying in or taking its colours carries on from where it was. */
+  function resumePendingMotion() {
+    if (!st.pending.length) return;
+    const now = performance.now();
+    for (const p of st.pending) {
+      if (p.flyAt && p.state === 'sending' && now - p.flyAt < FLY_MS) flyIn(p, now - p.flyAt);
+      if (p.colourAt && now - p.colourAt < COLOUR_MS) {
+        const card = root.querySelector(`[data-pending="${CSS.escape(p.id)}"]`);
+        card?.classList.add('post--colouring');
+        card?.style.setProperty('animation-delay', `${-(now - p.colourAt)}ms`);
+      }
+    }
+  }
 
   async function openSitePage(board, thread = null, quote = null) {
     if (!bridge?.openPost) return;
@@ -632,7 +1033,12 @@ export function openShell({
       // a saved copy's file is already on disk: Save says where
       onSave: saved
         ? async (it) => O.savedFileOnDisk(entry.folder, entry.posts.find((p) => p.no === it.no))
-        : (it) => bridge.saveMedia(it.full, it.name, settings.files?.downloadDir || ''),
+        : toLibrary()
+          ? async (it) => {
+              const r = await library.addFromPost({ board: v.board, thread: v.no, post: entry.posts.find((p) => p.no === it.no), subject: entry.posts[0]?.sub || '' });
+              return r.status === 'have' ? `${r.entry.rel} (already in the library)` : r.entry.rel;
+            }
+          : (it) => bridge.saveMedia(it.full, it.name, settings.files?.downloadDir || ''),
       preload: settings.display?.galleryPreload !== false,
       onClose: (no) => {
         const el = root.querySelector(`[data-pane="${paneIndex}"] [data-no="${no}"]`);
@@ -753,9 +1159,16 @@ export function openShell({
     const posts = st.threads[tkey(board, no)]?.posts;
     if (!bridge?.downloadFile || !posts?.length) return;
     const dir = settings.files?.downloadDir || '';
+    const lib = toLibrary();
     runJob(board, no, 'all', async () => ({
       jobs: O.downloadJobs(posts, (p) => bridge.mediaUrl(board, p)),
-      worker: (j) => bridge.downloadFile(j.url, j.name, dir, j.size),
+      // into the library, with each file's post; one already there is skipped
+      worker: lib
+        ? async (j) => {
+            const r = await library.addFromPost({ board, thread: no, post: posts.find((p) => p.no === j.no), subject: posts[0]?.sub || '' });
+            return { status: r.status === 'have' ? 'skipped' : 'saved', path: r.entry.rel };
+          }
+        : (j) => bridge.downloadFile(j.url, j.name, dir, j.size),
     }));
   }
 
@@ -886,17 +1299,61 @@ export function openShell({
   const markCache = new WeakMap(); // posts or catalog threads → { key, marks, you }
   function postMarks(board, list) {
     const hit = markCache.get(list);
-    if (hit && hit.filters === settings.filters && hit.hidden === settings.hiddenPosts && hit.yous === settings.yous && hit.board === board) return hit;
+    if (hit && hit.filters === settings.filters && hit.tags === settings.tags && hit.hidden === settings.hiddenPosts && hit.yous === settings.yous && hit.board === board) return hit;
+    const byFilter = new Map();
+    const marks = F.markPosts(list, F.compileFilters(settings.filters, board), F.hiddenSet(settings.hiddenPosts, board), byFilter);
+    // who hid what: post No. → { kind: 'filter' | 'tag', id }, so a hidden
+    // post can name it, and delete it
+    const by = new Map([...byFilter].map(([no, id]) => [no, { kind: 'filter', id }]));
+    // hide tags at work hide like a filter (a line to show it this time)
+    for (const [no, id] of TG.hiddenByTagsBy(settings.tags, board, list, commentText)) {
+      const m = marks.get(no);
+      if (!m || m === 'highlight') {
+        marks.set(no, 'hide');
+        by.set(no, { kind: 'tag', id });
+      }
+    }
     const c = {
       board,
       filters: settings.filters,
+      tags: settings.tags,
       hidden: settings.hiddenPosts,
       yous: settings.yous,
-      marks: F.markPosts(list, F.compileFilters(settings.filters, board), F.hiddenSet(settings.hiddenPosts, board)),
+      marks,
+      by,
       you: F.repliesToYou(list, F.youSet(settings.yous, board)),
     };
     markCache.set(list, c);
     return c;
+  }
+
+  /** The filter or tag that hid a post: { kind, id, name } or null. */
+  function hiderOf(board, list, no) {
+    const src = postMarks(board, list).by?.get(no);
+    if (!src) return null;
+    if (src.kind === 'tag') {
+      const t = (settings.tags || []).find((x) => x.id === src.id);
+      return t ? { ...src, name: t.name } : null;
+    }
+    const f = (settings.filters || []).find((x) => x.id === src.id);
+    return f ? { ...src, name: `${F.fieldLabel(f.field)}: ${f.pattern}` } : null;
+  }
+
+  /** Deletes the filter or tag that hid a post, after asking. */
+  async function removeHider(src, opener) {
+    if (!src) return;
+    const tagOne = src.kind === 'tag';
+    const ok = await confirmDialog({
+      title: tagOne ? 'Delete this tag?' : 'Delete this filter?',
+      text: `“${src.name}” is deleted, and what it hid shows again.`,
+      confirm: 'Delete',
+      opener,
+    });
+    if (!ok) return;
+    const next = tagOne ? { ...settings, tags: (settings.tags || []).filter((t) => t.id !== src.id) } : F.removeFilter(settings, src.id);
+    save(next, { now: true });
+    toast(tagOne ? 'Tag deleted.' : 'Filter deleted.');
+    render();
   }
 
   /** postMarks() plus which posts of a thread are hidden and why, replies
@@ -1029,7 +1486,8 @@ export function openShell({
         .filter(([k]) => k.startsWith(`${board}/`))
         .map(([, e]) => e.posts?.find((p) => p.no === no))
         .find(Boolean);
-    return Boolean(post) && F.classifyPost(F.compileFilters(settings.filters, board), post) === 'hide';
+    const m = Boolean(post) && F.classifyPost(F.compileFilters(settings.filters, board), post);
+    return m === 'hide' || m === 'discard';
   }
 
   function toggleHiddenPost(board, no, what = 'post') {
@@ -1056,7 +1514,13 @@ export function openShell({
   /** A post's "…" menu. */
   function postMenu(board, post) {
     const hidden = F.isHidden(settings, board, post.no);
+    const thread = post.resto || post.no;
+    const keep =
+      post.tim && !post.filedeleted && library.available()
+        ? [library.has(post.md5) ? { label: 'Show in the library', onSelect: () => showInLibrary(post) } : { label: 'Save the file to the library', onSelect: () => saveToLibrary(board, thread, post) }]
+        : [];
     return [
+      ...keep,
       { label: hidden ? 'Unhide post' : 'Hide post', onSelect: () => toggleHiddenPost(board, post.no) },
       ...F.quickFilters(post).map((q) => ({ label: q.label, onSelect: () => addQuickFilter(board, q) })),
     ];
@@ -1281,10 +1745,18 @@ export function openShell({
             render();
           },
           marks: st.cats[v.board]?.threads ? postMarks(v.board, st.cats[v.board].threads).marks : new Map(),
+          hiderOf: (no) => (st.cats[v.board]?.threads ? hiderOf(v.board, st.cats[v.board].threads, no) : null),
+          onRemoveHider: (src, opener) => removeHider(src, opener),
           onHide: (no) => toggleHiddenPost(v.board, no, 'thread'),
           display: settings.display,
+          ...catalogTags(v.board, pane, i),
         }),
       );
+    } else if (v.kind === 'tag') {
+      const t = (settings.tags || []).find((x) => x.id === v.id);
+      title = [icon(t && !t.board ? 'grid' : 'tag'), h('span', { class: 'centre__title-text', translate: 'no', text: t ? t.name : 'Tag' })];
+      windowTitle = t ? t.name : 'Tag';
+      body.append(t ? tagPageBody(t, i) : h('p', { class: 'rail__empty', text: 'This tag was deleted.' }));
     } else if (v.kind === 'thread') {
       title = [
         h(
@@ -1316,9 +1788,13 @@ export function openShell({
           onRefresh: () => loadThread(v.board, v.no),
           onWatch: () => toggleWatchThread(v.board, v.no),
           onReply: (quote = null, selection = '') => composer.open({ board: v.board, thread: v.no, quote: quote || 0, selection }),
+          pending: st.pending.filter((p) => p.board === v.board && p.thread === v.no),
+          landed: st.landed,
           onGallery: () => gallery(i),
           marks: pm?.marks,
           hidden: pm?.why,
+          hiderOf: (no) => (pm ? hiderOf(v.board, entry.posts, no) : null),
+          onRemoveHider: (src, opener) => removeHider(src, opener),
           youReplies: pm?.you,
           revealed: new Set(entry?.posts?.filter((p) => st.revealed.has(tkey(v.board, p.no))).map((p) => p.no)),
           onReveal: (no) => {
@@ -1327,6 +1803,7 @@ export function openShell({
           },
           onUnhide: (no) => toggleHiddenPost(v.board, no),
           menuFor: (post) => postMenu(v.board, post),
+          inLibrary: library.available() ? (post) => library.has(post.md5) : null,
           quoteMode: () => settings.quotes?.links || 'inline',
           onCrossQuote: (q) => openCross(q, i),
           cross: crossThreads,
@@ -1401,6 +1878,8 @@ export function openShell({
           onGallery: () => gallery(i),
           marks: pm?.marks,
           hidden: pm?.why,
+          hiderOf: (no) => (pm ? hiderOf(v.board, saved.posts, no) : null),
+          onRemoveHider: (src, opener) => removeHider(src, opener),
           youReplies: pm?.you,
           revealed: new Set(saved?.posts?.filter((p) => st.revealed.has(tkey(v.board, p.no))).map((p) => p.no)),
           onReveal: (no) => {
@@ -1409,6 +1888,7 @@ export function openShell({
           },
           onUnhide: (no) => toggleHiddenPost(v.board, no),
           menuFor: (post) => postMenu(v.board, post),
+          inLibrary: library.available() ? (post) => library.has(post.md5) : null,
           quoteMode: () => settings.quotes?.links || 'inline',
           // another thread's quote: nothing is fetched for previews; a click opens it live beside
           onCrossQuote: (q) => openCross(q, i),
@@ -1445,6 +1925,10 @@ export function openShell({
           redraw: () => render(),
         }),
       );
+    } else if (v.kind === 'library') {
+      title = [h('span', { class: 'centre__title-text', text: 'Library' })];
+      windowTitle = 'Library';
+      body.append(libraryBody(i));
     } else if (v.kind === 'stats') {
       title = [h('span', { class: 'centre__title-text', text: 'Stats' })];
       windowTitle = 'Stats';
@@ -1504,6 +1988,11 @@ export function openShell({
       onRefresh: () => refreshPane(i),
       onOpenBoard: (b) => goto({ kind: 'board', board: b }, i),
       onOpenThread: (b, no) => goto({ kind: 'thread', board: b, no }, i),
+      tagRows: view.tab === 'tags' ? tagStatsRows() : [],
+      onOpenTag: (id) => goto({ kind: 'tag', id }, i),
+      onLoadTagBoards: () => {
+        for (const t of settings.tags || []) for (const b of tagBoards(t)) loadCatalog(b);
+      },
       onMineToggle: (on) => {
         save({ ...settings, stats: { ...SM.normalizeStatsSettings(settings.stats), mine: on } }, { now: true });
         showStats(i);
@@ -1779,6 +2268,11 @@ export function openShell({
               key: 'all-boards',
               onclick: () => goto({ kind: 'boards' }),
             }),
+            railItem([icon('images'), h('span', { text: 'Library' })], {
+              current: shown((x) => x.kind === 'library'),
+              key: 'library',
+              onclick: () => goto({ kind: 'library' }),
+            }),
             railItem([icon('chart'), h('span', { text: 'Stats' })], {
               current: shown((x) => x.kind === 'stats'),
               key: 'stats',
@@ -1804,6 +2298,7 @@ export function openShell({
         ),
         h('section', {}, h('h2', { class: 'rail__heading', text: 'Watched threads' }), watchedRail()),
         savedRail(),
+        h('section', {}, h('h2', { class: 'rail__heading', text: 'Tags' }), tagsRail()),
       ),
       h(
         'div',
@@ -1926,6 +2421,8 @@ export function openShell({
         : null;
     const workspace = h('main', { class: 'centre workspace' }, head, tabs, grid);
 
+    if (!narrow && !railHidden) rail.append(railGrip());
+    root.style.setProperty('--rail-w', `${M.fitRail(settings.ui?.railWidth)}px`);
     root.append(rail, workspace);
     if (st.rail) root.append(h('div', { class: 'shell__scrim only-narrow', onclick: () => ((st.rail = false), render()) }));
     if (st.rail) root.dataset.railOpen = '';
@@ -1946,6 +2443,7 @@ export function openShell({
     }
     setTitle(focusTitle, focusedUnread());
     showJump();
+    resumePendingMotion();
     if (focusKey) {
       const el = root.querySelector(`[data-key="${CSS.escape(focusKey)}"]`);
       el?.focus({ preventScroll: true });
@@ -1980,6 +2478,7 @@ export function openShell({
     else if (v?.kind === 'thread') loadThread(v.board, v.no);
     else if (v?.kind === 'boards') loadBoardList();
     else if (v?.kind === 'saved') loadSaved();
+    else if (v?.kind === 'library') library.load(true);
     else if (v?.kind === 'offline') loadOffline(v.board, v.no);
     else if (v?.kind === 'stats') {
       // one sample of each board listed whose last one is over a minute old

@@ -101,6 +101,23 @@ export function parseComment(html) {
   return lines;
 }
 
+/** Text made safe to put in HTML. */
+export const escapeHtml = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/** A comment as typed, in the site's HTML (what parseComment reads): >>N
+ *  as a quote link, a line starting with ">" as greentext, line breaks as
+ *  <br>. */
+export function commentHtml(com) {
+  return String(com || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => {
+      const html = escapeHtml(line).replace(/&gt;&gt;(\d{1,12})/g, '<a href="#p$1" class="quotelink">&gt;&gt;$1</a>');
+      return /^>(?!>\d)/.test(line) ? `<span class="quote">${html}</span>` : html;
+    })
+    .join('<br>');
+}
+
 /** Plain text of a comment (for search and previews). */
 export function commentText(html) {
   return parseComment(html)

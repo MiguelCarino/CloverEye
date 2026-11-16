@@ -19,6 +19,7 @@ use tauri::{Emitter, Manager};
 mod ai;
 mod diag;
 mod extra;
+mod library;
 mod links;
 mod offline;
 mod stats;
@@ -419,10 +420,12 @@ fn main() {
         })
         .manage(extra::AgentState::default())
         .manage(offline::OfflineState::default())
+        .manage(library::LibraryState::default())
         .manage(stats::StatsState::default())
         .manage(ai::AiState::default())
         // saved threads' files, for CloverEye's own windows only (offline.rs)
         .register_asynchronous_uri_scheme_protocol(offline::SCHEME, offline::protocol)
+        .register_asynchronous_uri_scheme_protocol(library::SCHEME, library::protocol)
         // CLOVEREYE_TRY_CAPTCHA=<board>: asks for one captcha at start and
         // prints what came back. For finding out why a captcha does not
         // arrive, from a terminal; it never posts.
@@ -455,7 +458,25 @@ fn main() {
         // The hidden post helper must not keep the app alive: when the last
         // CloverEye window closes, the app ends.
         .on_window_event(|window, event| {
+            // A CloverEye window closing first plays its closing animation:
+            // the request is held, the page animates and closes again
+            // (window.__ceClosing in app.js); that second request goes
+            // through. A page that does not answer is closed after a second.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let label = window.label().to_string();
+                let web = window.app_handle().get_webview_window(&label);
+                if let Some(web) = web.filter(|_| (label == "main" || label.starts_with("w-")) && closing::first(&label)) {
+                    api.prevent_close();
+                    let ok = web.eval("window.__ceClosing ? window.__ceClosing() : window.__TAURI__?.window?.getCurrentWindow?.().close()").is_ok();
+                    let w = web.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(if ok { 1000 } else { 0 }));
+                        let _ = w.destroy();
+                    });
+                }
+            }
             if let tauri::WindowEvent::Destroyed = event {
+                closing::done(window.label());
                 let app = window.app_handle();
                 if window.label() == extra::AGENT_LABEL {
                     extra::agent_closed(app);
@@ -489,6 +510,13 @@ fn main() {
             offline::offline_fetch_file,
             offline::offline_delete,
             offline::download_file,
+            library::library_load,
+            library::library_save,
+            library::library_fetch,
+            library::library_import,
+            library::library_delete,
+            library::library_browse,
+            library::library_import_dir,
             links::open_link,
             stats::stats_read,
             stats::stats_write,
@@ -501,6 +529,51 @@ fn main() {
             ai::ai_loaded,
             ai::ai_unload
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running CloverEye");
+        .build(tauri::generate_context!())
+        .expect("error while running CloverEye")
+        .run(|app, event| {
+            // Quitting (Cmd+Q, the app menu): each window closes with its
+            // animation, and the last one to go ends the app.
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
+                let windows: Vec<_> = app.webview_windows().into_iter().filter(|(l, _)| l == "main" || l.starts_with("w-")).map(|(_, w)| w).collect();
+                if !windows.is_empty() {
+                    api.prevent_exit();
+                    for w in windows {
+                        let _ = w.close();
+                    }
+                }
+            }
+        });
+}
+
+/// Which windows are already playing their closing animation.
+mod closing {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    static CLOSING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+    /// True the first time a window asks to close (hold it and animate);
+    /// false after (let it go).
+    pub fn first(label: &str) -> bool {
+        CLOSING.lock().unwrap().get_or_insert_with(HashSet::new).insert(label.to_string())
+    }
+
+    pub fn done(label: &str) {
+        if let Some(set) = CLOSING.lock().unwrap().as_mut() {
+            set.remove(label);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn the_first_close_is_held_the_second_goes_through() {
+            assert!(super::first("w-test"));
+            assert!(!super::first("w-test"));
+            super::done("w-test");
+            assert!(super::first("w-test"));
+            super::done("w-test");
+        }
+    }
 }
