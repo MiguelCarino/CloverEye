@@ -6108,11 +6108,25 @@ dialog.folder-pick[open] {
   color: var(--accent);
 }
 
+/* the tag labels get a line of their own, above the counts, so they never
+   squeeze the counts or sit under the card's buttons */
+.catalog-card__foot:has(.catalog-card__tags) {
+  flex-wrap: wrap;
+}
+
 .catalog-card__tags {
-  display: inline-flex;
+  order: -1;
+  flex: 1 1 100%;
+  display: flex;
   flex-wrap: wrap;
   gap: 4px;
   min-width: 0;
+}
+
+.catalog-card__tag {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .catalog-card__tag {

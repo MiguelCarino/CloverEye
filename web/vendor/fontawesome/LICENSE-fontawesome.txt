@@ -1,0 +1,42 @@
+Font Awesome Free 6.7.2 -- https://fontawesome.com
+
+SPDX-License-Identifier: CC-BY-4.0 AND OFL-1.1 AND MIT
+
+Copyright 2024 Fonticons, Inc.
+(read from the banner at the top of css/all.min.css)
+
+Font Awesome Free is licensed in three parts, per
+https://fontawesome.com/license/free:
+
+  Icons (the SVG / glyph artwork) ....... CC BY 4.0
+  Fonts (the .woff2 files in webfonts/) . SIL OFL 1.1 -- text in ./OFL.txt
+  Code  (the CSS and any JS) ............ MIT -- text below
+
+ATTRIBUTION IS REQUIRED. CC BY 4.0 obliges anyone redistributing the icons to
+credit Font Awesome. Keeping this file, ./OFL.txt, and the upstream banner
+inside css/all.min.css satisfies that -- do not strip any of them when
+updating the bundle.
+
+The full CC BY 4.0 text is at https://creativecommons.org/licenses/by/4.0/
+legalcode and is not reproduced here; it is long and Creative Commons asks
+that it be linked rather than copied.
+
+MIT License (applies to the code portion)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

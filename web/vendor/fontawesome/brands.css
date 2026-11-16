@@ -1,0 +1,26 @@
+/* Font Awesome Free 6.7.2 brand icons (fontawesome.com): the font is under
+   the SIL OFL 1.1, the icons under CC BY 4.0 (LICENSE-fontawesome.txt).
+   Only the platform logos the download buttons use. */
+@font-face {
+  font-family: 'Font Awesome 6 Brands';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('fa-brands-400.woff2') format('woff2');
+}
+.fab {
+  display: inline-block;
+  font-family: 'Font Awesome 6 Brands';
+  font-style: normal;
+  font-weight: 400;
+  line-height: 1;
+  text-rendering: auto;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.fa-linux::before { content: '\f17c'; }
+.fa-fedora::before { content: '\f798'; }
+.fa-debian::before { content: '\e60b'; }
+.fa-ubuntu::before { content: '\f7df'; }
+.fa-windows::before { content: '\f17a'; }
+.fa-apple::before { content: '\f179'; }
