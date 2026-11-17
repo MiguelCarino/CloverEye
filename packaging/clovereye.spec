@@ -56,6 +56,18 @@ install -Dm0644 %{_sourcedir}/README.md %{buildroot}%{_docdir}/%{name}/README.md
 %{_datadir}/icons/hicolor/*/apps/clovereye.png
 
 %changelog
+* Tue Nov 17 2026 MiguelCarino <miguel.carino1994@outlook.com> - 0.1.5-1
+- Tabs in each pane: Ctrl+click or middle-click opens a background tab;
+  Ctrl+T, Ctrl+W, Ctrl+Shift+T, Ctrl+Tab and Ctrl+1-9.
+- Threads can show their posts in columns that scroll sideways (L).
+- R replies to the thread or starts a thread on the board.
+- Pre-written posts on right-click of Reply or New thread: search, pin, own.
+- A clover Update button that animates on a manual update; delete
+  confirmations take the arrow keys.
+- Much less redrawing: idle CPU on a big thread from 57% to about 2%.
+- Fixes: settings, drafts and the library merge across windows; a reply
+  cannot be posted twice from two windows; spoilers cover links and code.
+
 * Mon Nov 16 2026 MiguelCarino <miguel.carino1994@outlook.com> - 0.1.4-1
 - Library: files saved from threads keep their board, thread and post; tags,
   collections, look-alike finder, folder import with rescan, opt-in tags from
