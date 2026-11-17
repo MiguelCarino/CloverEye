@@ -4,8 +4,7 @@
 import * as B from './browse-model.js';
 import { isHiddenMark, isGoneMark } from './filter-model.js';
 import { h, icon } from './dom.js';
-import { renderPost } from './setup.js';
-import { backlinks } from './render.js';
+import { renderPost, backlinksRow } from './setup.js';
 import { quoteLinks } from './quotes.js';
 import { postSelection } from './compose.js';
 import { idColour } from './ids-model.js';
@@ -14,20 +13,21 @@ import { sauceLinks } from './sauce-model.js';
 import { catalogThumbView } from './display-model.js';
 import { saveControls, savedDate } from './offline.js';
 import { cardLabels } from './tag-view.js';
+import { threadDelta } from './redraw-model.js';
 
 const VIDEO = /^\.(webm|mp4)$/i;
 
-function statusLine(entry, what) {
-  if (!entry || entry.status === 'loading') {
-    return h('p', { class: 'state-line', role: 'status' }, icon('refresh'), `Loading the ${what}…`);
-  }
-  if (entry.status === 'error') return null;
-  const parts = [];
-  if (entry.at) parts.push(`Updated ${new Date(entry.at).toLocaleTimeString()}`);
-  if (entry.freshness === 'not-modified') parts.push('no changes');
-  if (entry.freshness === 'throttled') parts.push('too soon to ask again, showing the last copy');
-  if (entry.fresh?.size) parts.push(`${entry.fresh.size} new`);
-  return parts.length ? h('p', { class: 'state-line browse__status', role: 'status', text: parts.join(' · ') }) : null;
+/** Text runs (browse-model.js titleRuns) with spoilers drawn hidden. */
+const runsEl = (runs) => runs.map((r) => (r.spoiler ? h('span', { class: 'seg-spoiler', text: r.text }) : r.text));
+
+/** A catalog's or thread's status line (browse-model.js statusText), or
+ *  null. `data-status` lets the shell swap it in place when a fetch
+ *  changed nothing else. */
+export function statusLine(entry, what) {
+  const text = B.statusText(entry, what);
+  if (text === null) return null;
+  if (!entry || entry.status === 'loading') return h('p', { class: 'state-line', role: 'status', 'data-status': '' }, icon('refresh'), text);
+  return h('p', { class: 'state-line browse__status', role: 'status', 'data-status': '', text });
 }
 
 /** "Open in archive (host)" for a thread the site no longer shows. */
@@ -129,7 +129,13 @@ export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSpl
       'aria-label': 'Search this catalog',
       value: view.query,
       'data-key': `${keyPrefix}catalog-search`,
-      oninput: (e) => onView({ query: e.target.value }),
+      // while an input method composes a word (Japanese, Chinese...), a
+      // redraw would break it: the search follows once the word is done
+      oninput: (e) => {
+        if (e.isComposing) return;
+        onView({ query: e.target.value });
+      },
+      oncompositionend: (e) => onView({ query: e.target.value }),
     }),
     h(
       'select',
@@ -235,8 +241,9 @@ export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSpl
                     ? h('span', { class: 'catalog-card__nofile catalog-card__nofile--spoiler', text: 'Spoiler' })
                     : h('span', { class: 'catalog-card__nofile', text: 'No file' }),
             ),
-            h('span', { class: 'catalog-card__title', translate: 'no', text: title }),
-            t.sub ? h('span', { class: 'catalog-card__text', translate: 'no', text: B.excerpt(t) }) : null,
+            // spoiler text stays hidden as in the thread (app.css .seg-spoiler)
+            h('span', { class: 'catalog-card__title', translate: 'no' }, runsEl(B.titleRuns(t))),
+            t.sub ? h('span', { class: 'catalog-card__text', translate: 'no' }, runsEl(B.excerptRuns(t))) : null,
           ),
           h(
             'div',
@@ -294,7 +301,7 @@ export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSpl
 
 /** Replies, files, posters and the catalog page, in the thread's toolbar:
  *  only from the thread and the cached catalog (stats-model.js). */
-function statsLine(posts, catalog, keyPrefix) {
+export function statsLine(posts, catalog, keyPrefix) {
   const s = threadStats(posts, catalog?.threads || null);
   if (!s) return null;
   const at = catalog?.at ? new Date(catalog.at).toLocaleTimeString() : '';
@@ -333,19 +340,29 @@ function sauceMenu(board, post, engines, bridge) {
 
 /** The one-line stand-in for a hidden post: the line itself shows the post
  *  this time (click, Enter or Space); a post hidden by hand also gets Unhide. */
+function stubText(no, why, by) {
+  return why.reason === 'hidden'
+    ? `Hidden post No. ${no} · hidden by you`
+    : why.reason === 'reply'
+      ? `Hidden post No. ${no} · reply to hidden No. ${why.via}`
+      : by?.kind === 'tag'
+        ? `Hidden post No. ${no} · hidden by the tag “${by.name}”`
+        : by
+          ? `Hidden post No. ${no} · filtered by “${by.name}”`
+          : `Hidden post No. ${no} · filtered`;
+}
+
+/** A hidden post where a quote link would show it (a preview, an inline
+ *  copy): the same line as in the thread, nothing of the post itself. */
+function hiddenCopy(no, why, src) {
+  const by = why.reason === 'filter' && src ? src : null;
+  return h('div', { class: 'post-stub post-stub--copy', 'data-no': no }, h('span', { class: 'post-stub__show' }, icon('eyeOff'), h('span', { text: stubText(no, why, by) })));
+}
+
 function postStub(no, why, { keyPrefix, onReveal, onUnhide, src = null, onRemoveHider = null }) {
   // a filter or hide tag that hid it is named, and can be deleted from here
   const by = why.reason === 'filter' && src ? src : null;
-  const text =
-    why.reason === 'hidden'
-      ? `Hidden post No. ${no} · hidden by you`
-      : why.reason === 'reply'
-        ? `Hidden post No. ${no} · reply to hidden No. ${why.via}`
-        : by?.kind === 'tag'
-          ? `Hidden post No. ${no} · hidden by the tag “${by.name}”`
-          : by
-            ? `Hidden post No. ${no} · filtered by “${by.name}”`
-            : `Hidden post No. ${no} · filtered`;
+  const text = stubText(no, why, by);
   return h(
     'div',
     { class: 'post-stub', 'data-no': no },
@@ -406,6 +423,8 @@ function postStub(no, why, { keyPrefix, onReveal, onUnhide, src = null, onRemove
  * @param {() => string} [o.quoteMode]    'inline' (default) or 'jump': what a quote link does (quote-model.js)
  * @param {((q: {board: string, thread: number, no: number}, e: Event) => void) | null} [o.onCrossQuote]
  *   jumping to another thread's post (a quote link to it, clicked to jump)
+ * @param {((q: {board: string, search: string}, e: Event) => void) | null} [o.onBoardLink]
+ *   a board link (>>>/g/, >>>/g/search/) clicked: that board's catalog, searched
  * @param {object|null} [o.cross]  other threads' posts for quote links, and archive links
  *   (quotes.js CrossThreads, without `render`: drawn here)
  * @param {{host: string, url: string}|null} [o.archive]  this thread on its board's archive
@@ -422,11 +441,12 @@ function postStub(no, why, { keyPrefix, onReveal, onUnhide, src = null, onRemove
 /** A reply of yours going out (shell.js pendingEvent), drawn like a post:
  *  grey while it is sent, in colour once the site has posted it, marked
  *  when it did not go out. */
-function pendingCard(p, { keyPrefix, isYou, onQuote, links, display }) {
+function pendingCard(p, { keyPrefix, isYou, onQuote, onBoardLink, links, display }) {
   const sent = p.state === 'sent';
   const card = renderPost(p.post, {
     isYou: (n) => (sent && n === p.no) || isYou(n),
     onQuote,
+    onBoardLink,
     idPrefix: `${keyPrefix}pending-${p.id}-`,
     links,
     display,
@@ -446,124 +466,159 @@ function pendingCard(p, { keyPrefix, isYou, onQuote, links, display }) {
   return card;
 }
 
-export function threadView({
-  board,
-  no,
-  entry,
-  bridge,
-  keyPrefix = '',
-  watched = false,
-  intervalSec,
-  isYou = () => false,
-  onRefresh,
-  onWatch = null,
-  onReply = null,
-  onGallery = null,
-  marks = new Map(),
-  hidden = new Map(),
-  youReplies = new Set(),
-  revealed = new Set(),
-  onReveal = () => {},
-  onUnhide = () => {},
-  menuFor = null,
-  inLibrary = null,
-  hiderOf = null,
-  onRemoveHider = null,
-  quoteMode = () => 'inline',
-  onCrossQuote = null,
-  cross = null,
-  archive = null,
-  ids = null,
-  unread = null,
-  catalog = null,
-  sauce = [],
-  links = null,
-  display = null,
-  offline = null,
-  save = null,
-  pending = [],
-  landed = null,
-}) {
+const THREAD_DEFAULTS = {
+  keyPrefix: '',
+  watched: false,
+  isYou: () => false,
+  onWatch: null,
+  onReply: null,
+  onGallery: null,
+  marks: new Map(),
+  hidden: new Map(),
+  youReplies: new Set(),
+  revealed: new Set(),
+  onReveal: () => {},
+  onUnhide: () => {},
+  menuFor: null,
+  inLibrary: null,
+  hiderOf: null,
+  onRemoveHider: null,
+  quoteMode: () => 'inline',
+  onCrossQuote: null,
+  onBoardLink: null,
+  cross: null,
+  archive: null,
+  ids: null,
+  unread: null,
+  catalog: null,
+  sauce: [],
+  links: null,
+  display: null,
+  offline: null,
+  save: null,
+  pending: [],
+  landed: null,
+};
+
+/** The options with their defaults (an option passed as null or undefined
+ *  takes its default, as destructuring did). */
+function threadOptions(raw) {
+  const o = { ...raw };
+  for (const [k, v] of Object.entries(THREAD_DEFAULTS)) if (o[k] === undefined || (o[k] === null && v !== null)) o[k] = v;
+  return o;
+}
+
+/** A thread's control bar: Update, Watch, Reply, Gallery, Save, the unread
+ *  jump, the highlighted ID, replies to you, the stats line. */
+function threadTools(o, frozen) {
+  const { entry, keyPrefix, offline, unread, ids, youReplies, watched } = o;
+  return h(
+    'div',
+    { class: 'browse__tools browse__tools--thread', 'data-thread-tools': '' },
+    offline
+      ? // a saved copy, read from disk: no updates; the live thread is one click away
+        h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-live`, title: 'Read the live thread in this pane', onclick: offline.onLive }, icon('refresh'), 'Open live thread')
+      : h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-refresh`, onclick: o.onRefresh, title: B.refreshKeysLabel(), disabled: entry?.status === 'loading' || entry?.gone }, icon('refresh'), 'Update'),
+    o.onWatch
+      ? h(
+          'button',
+          { type: 'button', class: `btn${watched ? ' btn--on' : ''}`, 'aria-pressed': String(watched), 'data-key': `${keyPrefix}thread-watch`, onclick: o.onWatch },
+          icon('bell'),
+          watched ? 'Watching' : 'Watch',
+        )
+      : null,
+    o.onReply && !frozen ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-reply`, onclick: () => o.onReply() }, icon('reply'), 'Reply') : null,
+    o.onGallery ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-gallery`, title: 'Gallery (G)', onclick: o.onGallery }, icon('grid'), 'Gallery') : null,
+    o.save ? saveControls({ ...o.save, keyPrefix }) : null,
+    offline ? h('span', { class: 'pill pill--saved', text: offline.savedAt ? `Saved copy · ${savedDate(offline.savedAt)}` : 'Saved copy' }) : null,
+    unread
+      ? h(
+          'button',
+          {
+            type: 'button',
+            class: 'btn',
+            'data-key': `${keyPrefix}thread-unread`,
+            'data-unread-jump': '',
+            title: 'Jump to the first unread post (U)',
+            disabled: !unread.count,
+            onclick: unread.onJump,
+          },
+          icon('arrowDown'),
+          'First unread',
+          h('span', { class: 'badge thread-unread__count', 'data-unread-count': '', hidden: !unread.count, text: String(unread.count || 0) }),
+        )
+      : null,
+    ids?.active
+      ? h(
+          'button',
+          {
+            type: 'button',
+            class: 'pill pill--id-hl',
+            'data-key': `${keyPrefix}thread-id-clear`,
+            title: 'Stop highlighting this poster’s posts (Esc)',
+            onclick: () => ids.onClick(ids.active),
+          },
+          h('span', { text: 'Highlighting ID' }),
+          ' ',
+          h('span', { translate: 'no', text: ids.active }),
+          icon('x'),
+        )
+      : null,
+    youReplies.size
+      ? h('span', {
+          class: 'pill pill--you',
+          'data-key': `${keyPrefix}thread-you-count`,
+          title: 'Posts in this thread that quote one of yours',
+          text: `Replies to you: ${youReplies.size}`,
+        })
+      : null,
+    statsLine(entry?.posts, o.catalog, keyPrefix),
+    frozen || offline ? null : h('span', { class: 'field__hint', text: `Updates by itself every ${o.intervalSec} s while open.` }),
+  );
+}
+
+const unreadLine = () => h('div', { class: 'unread-line', role: 'separator', 'aria-label': 'New posts', 'data-unread-line': '' }, h('span', { text: 'New posts' }));
+const whyKey = (why) => (why ? JSON.stringify(why) : '');
+const sameSet = (a, b) => a.size === b.size && [...a].every((x) => b.has(x));
+
+// a drawn thread view (its .browse node) → its update(next)
+const updaters = new WeakMap();
+
+/**
+ * Brings a drawn thread view up to `next` (the same options threadView
+ * takes) in place, when all that changed is new posts at the end: they are
+ * added (popping in), the posts they quote get their new reply links, the
+ * ID counts, the "new" marks and the "New posts" line move, the control
+ * bar and the status line are drawn again. Everything else stays: the
+ * scroll, open files, open quote copies. Returns false, having changed
+ * nothing, on anything else (a post deleted or edited, other marks, other
+ * settings, replies being sent): then the caller draws the view anew.
+ */
+export function updateThreadView(node, next) {
+  const update = node && updaters.get(node);
+  return update ? update(threadOptions(next)) : false;
+}
+
+export function threadView(raw) {
+  let o = threadOptions(raw);
+  const { board, no, entry, keyPrefix } = o;
   const out = h('div', { class: 'browse' });
   const first = entry?.posts?.[0];
   const frozen = entry?.gone || first?.closed || first?.archived;
-  out.append(
-    h(
-      'div',
-      { class: 'browse__tools browse__tools--thread', 'data-thread-tools': '' },
-      offline
-        ? // a saved copy, read from disk: no updates; the live thread is one click away
-          h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-live`, title: 'Read the live thread in this pane', onclick: offline.onLive }, icon('refresh'), 'Open live thread')
-        : h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-refresh`, onclick: onRefresh, title: B.refreshKeysLabel(), disabled: entry?.status === 'loading' || entry?.gone }, icon('refresh'), 'Update'),
-      onWatch
-        ? h(
-            'button',
-            { type: 'button', class: `btn${watched ? ' btn--on' : ''}`, 'aria-pressed': String(watched), 'data-key': `${keyPrefix}thread-watch`, onclick: onWatch },
-            icon('bell'),
-            watched ? 'Watching' : 'Watch',
-          )
-        : null,
-      onReply && !frozen ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-reply`, onclick: () => onReply() }, icon('reply'), 'Reply') : null,
-      onGallery ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-gallery`, title: 'Gallery (G)', onclick: onGallery }, icon('grid'), 'Gallery') : null,
-      save ? saveControls({ ...save, keyPrefix }) : null,
-      offline
-        ? h('span', { class: 'pill pill--saved', text: offline.savedAt ? `Saved copy · ${savedDate(offline.savedAt)}` : 'Saved copy' })
-        : null,
-      unread
-        ? h(
-            'button',
-            {
-              type: 'button',
-              class: 'btn',
-              'data-key': `${keyPrefix}thread-unread`,
-              'data-unread-jump': '',
-              title: 'Jump to the first unread post (U)',
-              disabled: !unread.count,
-              onclick: unread.onJump,
-            },
-            icon('arrowDown'),
-            'First unread',
-            h('span', { class: 'badge thread-unread__count', 'data-unread-count': '', hidden: !unread.count, text: String(unread.count || 0) }),
-          )
-        : null,
-      ids?.active
-        ? h(
-            'button',
-            {
-              type: 'button',
-              class: 'pill pill--id-hl',
-              'data-key': `${keyPrefix}thread-id-clear`,
-              title: 'Stop highlighting this poster’s posts (Esc)',
-              onclick: () => ids.onClick(ids.active),
-            },
-            h('span', { text: 'Highlighting ID' }),
-            ' ',
-            h('span', { translate: 'no', text: ids.active }),
-            icon('x'),
-          )
-        : null,
-      youReplies.size
-        ? h('span', {
-            class: 'pill pill--you',
-            'data-key': `${keyPrefix}thread-you-count`,
-            title: 'Posts in this thread that quote one of yours',
-            text: `Replies to you: ${youReplies.size}`,
-          })
-        : null,
-      statsLine(entry?.posts, catalog, keyPrefix),
-      frozen || offline ? null : h('span', { class: 'field__hint', text: `Updates by itself every ${intervalSec} s while open.` }),
-    ),
-  );
+  out.append(threadTools(o, frozen));
   const status = statusLine(entry, 'thread');
   if (status) out.append(status);
-  const openArchive = cross?.open || null;
-  if (entry?.status === 'error') out.append(errorBox(entry, 'thread', onRefresh, keyPrefix, archiveLine(archive, openArchive, keyPrefix)));
+  const openArchive = o.cross?.open || null;
+  if (entry?.status === 'error') out.append(errorBox(entry, 'thread', o.onRefresh, keyPrefix, archiveLine(o.archive, openArchive, keyPrefix)));
   if (!entry?.posts) {
     if (entry?.status !== 'error') for (let i = 0; i < 4; i++) out.append(h('div', { class: 'skeleton', style: { height: '96px' } }));
     return out;
   }
-  const refs = backlinks(entry.posts);
-  const appear = appearing(`${keyPrefix}thread`, `${board}/${no}`);
+  // what quote links can reach: never a discarded post; a hidden one shows
+  // as its stub line (draw). (A copy of the Map: an update adds to it.)
+  const shown = B.shownPosts(entry.posts, o.hidden, o.revealed);
+  let refs = shown.refs;
+  const reachable = new Map(shown.posts);
   const list = h('div', { class: 'thread', 'aria-label': `Thread ${no}` });
   const jump = (target) => {
     const el = list.querySelector(`[data-no="${target}"]`);
@@ -573,83 +628,95 @@ export function threadView({
     void el.offsetWidth;
     el.classList.add('post--flash');
   };
-  const draw = (p, idPrefix) => markKept(p, drawPost(p, idPrefix));
+  const draw = (p, idPrefix) => {
+    const why = o.hidden.get(p.no);
+    if (why && !o.revealed.has(p.no)) return hiddenCopy(p.no, why, why.reason === 'filter' ? o.hiderOf?.(p.no) : null);
+    return markKept(p, drawPost(p, idPrefix));
+  };
   // a file already in the library says so on its line
   const markKept = (p, el) => {
-    if (inLibrary && p.tim && inLibrary(p)) {
+    if (o.inLibrary && p.tim && o.inLibrary(p)) {
       const at = el.querySelector?.('.post__file');
       at?.append(h('span', { class: 'post__kept', title: 'This file is in your library' }, icon('images'), h('span', { text: 'In library' })));
     }
     return el;
   };
-  const drawPost = (p, idPrefix) =>
-    renderPost(p, {
+  const drawPost = (p, idPrefix) => {
+    const { bridge, ids, onReply, menuFor } = o;
+    return renderPost(p, {
       backrefs: refs.get(p.no) || [],
       onQuote: quotes.onQuote,
-      isYou,
+      onBoardLink: o.onBoardLink,
+      isYou: o.isYou,
       onReply: onReply && !frozen ? (e) => onReply(p.no, postSelection(e?.currentTarget?.closest?.('.post'))) : null,
       thumb: bridge.thumbUrl(board, p),
       flag: bridge.flag ? bridge.flag(board, p) : null,
       full: bridge.mediaUrl(board, p),
       idPrefix,
       menu: menuFor ? () => menuFor(p) : null,
-      sauce: sauceMenu(board, p, sauce, bridge),
-      links,
-      display,
+      sauce: sauceMenu(board, p, o.sauce, bridge),
+      links: o.links,
+      display: o.display,
       posterId: ids && p.id
         ? { count: ids.counts.get(p.id) || 0, colour: ids.colour ? idColour(p.id) : null, active: ids.active === p.id, onClick: ids.onClick }
         : null,
     });
+  };
   const quotes = quoteLinks({
     key: `${keyPrefix}${board}/${no}`,
     board,
     thread: no,
-    posts: new Map(entry.posts.map((p) => [p.no, p])),
+    posts: reachable,
     render: draw,
     jump,
-    mode: quoteMode,
+    mode: o.quoteMode,
     keyPrefix,
-    onCross: onCrossQuote,
-    cross: cross
+    onCross: o.onCrossQuote,
+    cross: o.cross
       ? {
-          ...cross,
+          ...o.cross,
           // another board's post: its files, flag and search menu from that board
           render: (p, xb, _xt, idPrefix) =>
             renderPost(p, {
               onQuote: quotes.onQuote,
-              thumb: bridge.thumbUrl(xb, p),
-              flag: bridge.flag ? bridge.flag(xb, p) : null,
-              full: bridge.mediaUrl(xb, p),
+              onBoardLink: o.onBoardLink,
+              thumb: o.bridge.thumbUrl(xb, p),
+              flag: o.bridge.flag ? o.bridge.flag(xb, p) : null,
+              full: o.bridge.mediaUrl(xb, p),
               idPrefix,
-              sauce: sauceMenu(xb, p, sauce, bridge),
-              links,
-              display,
+              sauce: sauceMenu(xb, p, o.sauce, o.bridge),
+              links: o.links,
+              display: o.display,
             }),
         }
       : null,
   });
-  for (const p of entry.posts) {
-    const mark = marks.get(p.no);
-    const why = hidden.get(p.no);
-    if (unread?.line && p.no === unread.line) {
-      list.append(h('div', { class: 'unread-line', role: 'separator', 'aria-label': 'New posts', 'data-unread-line': '' }, h('span', { text: 'New posts' })));
-    }
+  /** One post of the thread as the list shows it: its card, its stub line,
+   *  or nothing (discarded). */
+  const item = (p, appear) => {
+    const mark = o.marks.get(p.no);
+    const why = o.hidden.get(p.no);
     // discarded: nothing at all, not even the line
-    if (why?.reason === 'discard') continue;
-    if (why && !revealed.has(p.no)) {
-      list.append(postStub(p.no, why, { keyPrefix, onReveal, onUnhide, src: why.reason === 'filter' ? hiderOf?.(p.no) : null, onRemoveHider }));
-      continue;
+    if (why?.reason === 'discard') return null;
+    if (why && !o.revealed.has(p.no)) {
+      return postStub(p.no, why, { keyPrefix, onReveal: o.onReveal, onUnhide: o.onUnhide, src: why.reason === 'filter' ? o.hiderOf?.(p.no) : null, onRemoveHider: o.onRemoveHider });
     }
     const card = draw(p, `${keyPrefix}p`);
-    appear(card, p.no, isYou(p.no), Boolean(landed?.has(`${board}/${p.no}`)));
-    if (entry.fresh?.has(p.no)) card.classList.add('post--new');
+    appear(card, p.no, o.isYou(p.no), Boolean(o.landed?.has(`${board}/${p.no}`)));
+    if (o.entry.fresh?.has(p.no)) card.classList.add('post--new');
     if (mark === 'highlight') card.classList.add('post--highlight');
     if (why) card.classList.add('post--revealed');
-    if (youReplies.has(p.no)) card.classList.add('post--reply-you');
-    if (ids?.active && p.id === ids.active) card.classList.add('post--id-hl');
-    list.append(card);
+    if (o.youReplies.has(p.no)) card.classList.add('post--reply-you');
+    if (o.ids?.active && p.id === o.ids.active) card.classList.add('post--id-hl');
+    return card;
+  };
+  const appear = appearing(`${keyPrefix}thread`, `${board}/${no}`);
+  for (const p of entry.posts) {
+    if (o.unread?.line && p.no === o.unread.line) list.append(unreadLine());
+    const el = item(p, appear);
+    if (el) list.append(el);
   }
-  for (const p of pending) list.append(pendingCard(p, { keyPrefix, isYou, onQuote: quotes.onQuote, links, display }));
+  for (const p of o.pending) list.append(pendingCard(p, { keyPrefix, isYou: o.isYou, onQuote: quotes.onQuote, onBoardLink: o.onBoardLink, links: o.links, display: o.display }));
   quotes.attach(list);
   out.append(list);
   if (first?.closed || first?.archived) {
@@ -658,9 +725,119 @@ export function threadView({
         'p',
         { class: 'state-line' },
         h('span', { text: first.archived ? 'This thread is archived: no new replies.' : 'This thread is closed: no new replies.' }),
-        first.archived ? archiveLine(archive, openArchive, keyPrefix) : null,
+        first.archived ? archiveLine(o.archive, openArchive, keyPrefix) : null,
       ),
     );
   }
+
+  // What the old posts were drawn with, for update() to tell whether they
+  // would be drawn the same now.
+  const drawnFor = (opts, posts) => ({
+    you: new Set(posts.filter((p) => opts.isYou(p.no)).map((p) => p.no)),
+    kept: opts.inLibrary ? new Set(posts.filter((p) => p.tim && opts.inLibrary(p)).map((p) => p.no)) : null,
+  });
+  let drawn = drawnFor(o, entry.posts);
+
+  /** Whether the posts already drawn would be drawn the same with `n`. */
+  const sameOld = (n) => {
+    if (n.board !== o.board || n.no !== o.no || n.keyPrefix !== o.keyPrefix || n.bridge !== o.bridge) return false;
+    if (n.offline || o.offline || o.pending.length || n.pending.length) return false;
+    if (JSON.stringify(n.display) !== JSON.stringify(o.display) || JSON.stringify(n.sauce) !== JSON.stringify(o.sauce)) return false;
+    if (Boolean(n.links) !== Boolean(o.links) || n.links?.embeds !== o.links?.embeds) return false;
+    if (Boolean(n.onReply) !== Boolean(o.onReply) || Boolean(n.menuFor) !== Boolean(o.menuFor) || Boolean(n.inLibrary) !== Boolean(o.inLibrary)) return false;
+    if (Boolean(n.ids) !== Boolean(o.ids) || n.ids?.active !== o.ids?.active || n.ids?.colour !== o.ids?.colour) return false;
+    if (Boolean(n.cross) !== Boolean(o.cross) || n.quoteMode() !== o.quoteMode()) return false;
+    if (Boolean(n.onBoardLink) !== Boolean(o.onBoardLink)) return false;
+    if (!sameSet(n.revealed, o.revealed)) return false;
+    const now = drawnFor(n, o.entry.posts);
+    if (!sameSet(now.you, drawn.you) || (now.kept && !sameSet(now.kept, drawn.kept))) return false;
+    for (const p of o.entry.posts) {
+      if (n.marks.get(p.no) !== o.marks.get(p.no) || whyKey(n.hidden.get(p.no)) !== whyKey(o.hidden.get(p.no))) return false;
+      if (n.youReplies.has(p.no) !== o.youReplies.has(p.no)) return false;
+    }
+    return true;
+  };
+
+  const update = (n) => {
+    if (!list.isConnected || !n.entry?.posts || n.entry.status !== 'ok' || n.entry.gone || o.entry.status === 'error') return false;
+    const d = threadDelta(o.entry.posts, n.entry.posts);
+    if (d.kind !== 'appended' || !sameOld(n)) return false;
+    // a reply link or a control in a quote copy that had the focus gets it back
+    const listKey = list.contains(document.activeElement) ? document.activeElement.dataset.key || null : null;
+    const top = new Map();
+    for (const el of list.children) if (el.dataset.no) top.set(Number(el.dataset.no), el);
+    // Open quote copies stay as they are (a video in one keeps playing):
+    // only the cards drawn or changed here go through quotes.add().
+    const prev = o;
+    o = n;
+    const next = B.shownPosts(n.entry.posts, n.hidden, n.revealed);
+    // the posts the new ones quote: their reply links (renderPost's row)
+    const changed = prev.entry.posts.filter((p) => (refs.get(p.no) || []).join(',') !== (next.refs.get(p.no) || []).join(',')).map((p) => p.no);
+    // what copies drawn from here on show (quotes.add() opens some again)
+    refs = next.refs;
+    for (const p of d.added) if (next.posts.has(p.no)) reachable.set(p.no, p);
+    const roots = new Set(); // cards whose open copies are drawn again
+    for (const no of changed) {
+      const card = top.get(no);
+      if (card?.classList.contains('post')) {
+        const row = backlinksRow(refs.get(no) || [], (t, e) => quotes.onQuote(t, e));
+        const old = card.querySelector(':scope > .post__backlinks');
+        if (old && row) old.replaceWith(row);
+        else if (old) old.remove();
+        else if (row) card.querySelector(':scope > .post__main')?.after(row);
+        roots.add(card);
+      }
+      // an open copy of that post: its box goes, and quotes.add() opens it
+      // again from the card it hangs on, with the new reply links
+      for (const copy of list.querySelectorAll(`.post--copy[data-inline-no="${no}"]`)) {
+        const box = copy.closest('.quote-inline');
+        const root = box?.closest('.post:not(.post--copy)');
+        if (!box || !root || root.parentElement !== list) continue; // gone with an outer box
+        box.remove();
+        roots.add(root);
+      }
+    }
+    for (const card of roots) quotes.add(card);
+    // the counts after each poster ID that posted again (in open copies too)
+    if (n.ids) {
+      for (const id of new Set(d.added.map((p) => p.id).filter(Boolean))) {
+        const count = n.ids.counts.get(id) || 0;
+        if (count === (prev.ids.counts.get(id) || 0)) continue;
+        for (const el of list.querySelectorAll(`.post__meta [data-id="${CSS.escape(id)}"] .post__id-count`)) el.textContent = ` (${count})`;
+      }
+    }
+    // only the latest posts are "new"
+    for (const el of list.querySelectorAll(':scope > .post--new')) if (!n.entry.fresh?.has(Number(el.dataset.no))) el.classList.remove('post--new');
+    const pop = appearing(`${keyPrefix}thread`, `${board}/${no}`);
+    for (const p of d.added) {
+      const el = item(p, pop);
+      if (!el) continue;
+      list.append(el);
+      quotes.add(el);
+    }
+    // the "New posts" line, before the first post at or after it
+    if ((prev.unread?.line || 0) !== (n.unread?.line || 0)) {
+      list.querySelector(':scope > [data-unread-line]')?.remove();
+      if (n.unread?.line) {
+        const at = [...list.children].find((el) => el.dataset.no && Number(el.dataset.no) >= n.unread.line);
+        if (at) at.before(unreadLine());
+        else list.append(unreadLine());
+      }
+    }
+    if (listKey && !list.contains(document.activeElement)) list.querySelector(`[data-key="${CSS.escape(listKey)}"]`)?.focus({ preventScroll: true });
+    drawn = drawnFor(n, n.entry.posts);
+    // the control bar keeps its element (it is watched for tucking away)
+    const bar = out.querySelector(':scope > [data-thread-tools]');
+    const focusKey = bar?.contains(document.activeElement) ? document.activeElement.dataset.key : null;
+    bar?.replaceChildren(...threadTools(n, frozen).childNodes);
+    if (focusKey) bar.querySelector(`[data-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
+    const oldStatus = out.querySelector(':scope > [data-status]');
+    const nextStatus = statusLine(n.entry, 'thread');
+    if (oldStatus && nextStatus) oldStatus.replaceWith(nextStatus);
+    else if (oldStatus) oldStatus.remove();
+    else if (nextStatus) bar?.after(nextStatus);
+    return true;
+  };
+  updaters.set(out, update);
   return out;
 }

@@ -65,6 +65,9 @@ test('an entry from a post keeps its source', () => {
   // no MD5 (rare): a stable id from the file's name
   const noSum = L.entryFromPost({ board: 'g', thread: 1, post: { ...post, md5: undefined }, rel: 'g/frog.png' });
   assert.match(noSum.id, /^[0-9a-f]{32}$/);
+  // the name as the post shows it: the API's HTML entities decoded
+  assert.equal(L.entryFromPost({ board: 'g', thread: 1, post: { ...post, filename: 'don&#039;t &amp; do' }, rel: 'g/x.png' }).name, "don't & do.png");
+  assert.equal(L.knownFiles([{ board: 'g', posts: [{ ...post, filename: 'a&amp;b' }] }]).get('ab'.repeat(16)).name, 'a&b.png');
 });
 
 test('imports: a file seen in a thread gets its source back; site names give the date', () => {
@@ -138,4 +141,125 @@ test('imported folders: listed, named, and filtered by where files came from', (
   assert.deepEqual(names('files'), ['e.png']);
   assert.equal(names('').length, 5);
   assert.deepEqual(L.filterItems(items, { q: 'reactions' }).map((e) => e.name), ['a.png'], 'its path in the folder is searched');
+});
+
+const hex = (n) => n.toString(16).padStart(16, '0');
+const hashOf = (big) => big.toString(16).padStart(16, '0');
+
+test('look-alike groups form around the file kept: a chain of near ones is not one group', () => {
+  // a ~ b and b ~ c (6 bits each), but a and c are 12 bits apart
+  const a = entry({ id: '1'.repeat(32), dhash: hex(0), w: 100, h: 100 });
+  const b = entry({ id: '2'.repeat(32), dhash: hex(0x3f), w: 50, h: 50 });
+  const c = entry({ id: '3'.repeat(32), dhash: hex(0xfc3f), w: 400, h: 400 });
+  assert.equal(L.hamming(a.dhash, c.dhash), 12);
+  const groups = L.lookalikeGroups([a, b, c]);
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].map((e) => e.id), [c.id, b.id], 'c (the largest) keeps only what looks like it');
+  for (const g of groups) for (const e of g.slice(1)) assert.ok(L.hamming(g[0].dhash, e.dhash) <= L.LOOKALIKE_BITS);
+  // copies of the same picture (the same fingerprint) are one group
+  const flat = Array.from({ length: 5 }, (_, i) => entry({ id: String(i + 4).repeat(32), dhash: hex(0), w: 10 + i, h: 10 }));
+  assert.deepEqual(L.lookalikeGroups(flat)[0].map((e) => e.w), [14, 13, 12, 11, 10]);
+});
+
+test('look-alike groups match comparing every pair, and a big library is quick', () => {
+  // random fingerprints, with near copies of some
+  let seed = 7;
+  const rnd = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed;
+  };
+  const items = [];
+  for (let i = 0; i < 5000; i++) {
+    let v = (BigInt(rnd()) << 33n) ^ (BigInt(rnd()) << 2n) ^ BigInt(rnd() & 3);
+    if (i % 10 === 1) v = BigInt('0x' + items[i - 1].dhash) ^ (1n << BigInt(rnd() % 64)) ^ (1n << BigInt(rnd() % 64));
+    items.push(entry({ id: i.toString(16).padStart(32, '0'), dhash: hashOf(v & 0xffffffffffffffffn), w: rnd() % 1000, h: 100, size: i }));
+  }
+  const t0 = performance.now();
+  const groups = L.lookalikeGroups(items);
+  const ms = performance.now() - t0;
+  assert.ok(ms < 1500, `5000 pictures took ${ms.toFixed(0)} ms`);
+  // the same greedy grouping, comparing every pair
+  const sorted = [...items].sort((x, y) => y.w * y.h - x.w * x.h || y.size - x.size);
+  const placed = new Set();
+  const want = [];
+  for (const c of sorted) {
+    if (placed.has(c)) continue;
+    const g = sorted.filter((e) => !placed.has(e) && L.hamming(c.dhash, e.dhash) <= L.LOOKALIKE_BITS);
+    g.forEach((e) => placed.add(e));
+    if (g.length > 1) want.push(g.map((e) => e.id).sort());
+  }
+  assert.ok(want.length > 100);
+  assert.deepEqual(groups.map((g) => g.map((e) => e.id).sort()).sort(), want.sort());
+});
+
+test('the index keeps its revision, and what a rescan leaves out of each folder', () => {
+  const idx = L.normalizeIndex({ rev: 7, items: [], folders: { '/m': { deep: false, at: 3, removed: ['a.png', 'a.png', 5], dupes: ['b.png'] } } });
+  assert.equal(idx.rev, 7);
+  assert.deepEqual(idx.folders['/m'], { deep: false, at: 3, removed: ['a.png'], dupes: ['b.png'] });
+  assert.equal(L.emptyIndex().rev, 0);
+  const many = Array.from({ length: 6000 }, (_, i) => `${i}.png`);
+  assert.equal(L.normalizeIndex({ folders: { '/m': { removed: many } } }).folders['/m'].removed.length, 6000, 'more than one import’s worth');
+});
+
+test('merging: this window’s changes made again on the file another window wrote', () => {
+  const x = entry({ id: '1'.repeat(32), rel: 'g/x.png', tags: ['old'] });
+  const y = entry({ id: '2'.repeat(32), rel: 'g/y.png' });
+  const z = entry({ id: '3'.repeat(32), rel: 'g/z.png' });
+  const start = L.normalizeIndex({ rev: 1, items: [x, y, z], collections: ['Keep'], folders: { '/a': { removed: ['1.png'] } } });
+  const base = L.snapshotOf(start);
+  // here: x tagged, z removed, w added, collection "New", /a gets a removal
+  const mine = L.normalizeIndex(JSON.parse(JSON.stringify(start)));
+  mine.items[0].tags = ['old', 'mine'];
+  mine.items = mine.items.filter((e) => e.id !== z.id);
+  const w = entry({ id: '4'.repeat(32), rel: 'g/w.png' });
+  const v = entry({ id: '5'.repeat(32), rel: 'g/v-2.png' });
+  mine.items.unshift(w, v);
+  mine.collections.push('New');
+  mine.folders['/a'].removed.push('2.png');
+  // there: y removed, x got a fingerprint, u added, v added too (its own copy)
+  const theirs = L.normalizeIndex(JSON.parse(JSON.stringify(start)));
+  theirs.rev = 2;
+  theirs.items = theirs.items.filter((e) => e.id !== y.id);
+  theirs.items[0].dhash = 'ffffffffffffffff';
+  theirs.items.unshift(entry({ id: '6'.repeat(32), rel: 'g/u.png' }), entry({ id: '5'.repeat(32), rel: 'g/v.png' }));
+  theirs.folders['/a'].dupes = ['3.png'];
+  const { index, dropped } = L.mergeIndex(base, mine, theirs);
+  const byId = new Map(index.items.map((e) => [e.id, e]));
+  assert.deepEqual([...byId.keys()].sort(), ['1', '4', '5', '6'].map((c) => c.repeat(32)), 'y stays removed (there), z removed (here), w and u added');
+  assert.deepEqual(byId.get(x.id).tags, ['old', 'mine'], 'the tag added here');
+  assert.equal(byId.get(x.id).dhash, 'ffffffffffffffff', 'the fingerprint found there');
+  assert.equal(byId.get(v.id).rel, 'g/v.png', 'one kept there stays theirs');
+  assert.deepEqual(dropped.map((e) => e.rel), ['g/v-2.png'], 'this copy of it is not used');
+  assert.equal(index.rev, 2);
+  assert.ok(index.collections.includes('New') && index.collections.includes('Keep'));
+  assert.deepEqual(index.folders['/a'].removed, ['1.png', '2.png']);
+  assert.deepEqual(index.folders['/a'].dupes, ['3.png']);
+  // nothing changed here: the file as it is
+  assert.deepEqual(L.mergeIndex(L.snapshotOf(theirs), theirs, theirs).index.items.map((e) => e.id), theirs.items.map((e) => e.id));
+});
+
+test('a folder’s left-out paths are added once each, quickly, and the oldest go past the limit', () => {
+  const rec = L.normalizeFolder({ dupes: ['a', 'b'] });
+  L.addFolderPath(rec, 'dupes', 'b');
+  L.addFolderPath(rec, 'dupes', 'c');
+  L.addFolderPath(rec, 'removed', 'a');
+  L.addFolderPath(rec, 'removed', '');
+  assert.deepEqual(rec.dupes, ['a', 'b', 'c']);
+  assert.deepEqual(rec.removed, ['a']);
+  const big = L.normalizeFolder({ dupes: Array.from({ length: L.MAX_FOLDER_PATHS }, (_, i) => `old/${i}`) });
+  const list = big.dupes;
+  const t0 = performance.now();
+  for (let i = 0; i < 5000; i++) L.addFolderPath(big, 'dupes', `new/${i}`);
+  for (let i = 0; i < 5000; i++) L.addFolderPath(big, 'dupes', `new/${i}`);
+  const ms = performance.now() - t0;
+  assert.equal(big.dupes, list, 'in place');
+  assert.equal(big.dupes.length, L.MAX_FOLDER_PATHS);
+  assert.equal(big.dupes[0], 'old/5000');
+  assert.equal(big.dupes.at(-1), 'new/4999');
+  assert.equal(new Set(big.dupes).size, big.dupes.length);
+  assert.ok(ms < 1500, `5000 copies into a full list took ${ms.toFixed(0)} ms`);
+  // a list read again (a new array) is checked against itself, not the old one
+  big.dupes = ['new/1'];
+  L.addFolderPath(big, 'dupes', 'old/1');
+  assert.deepEqual(big.dupes, ['new/1', 'old/1']);
 });

@@ -75,6 +75,17 @@ test('hide tags: on by default, whole words when asked, only the ones at work hi
   assert.deepEqual([...T.hiddenByTags([{ ...whole, board: 'v' }], 'g', posts, (x) => x)], [], 'another board’s tag');
 });
 
+test('a flag code in a tag means the country, never a board flag that reuses it', () => {
+  const nazi = { no: 1, board_flag: 'NZ', flag_name: 'Nazi', com: 'x' };
+  const kiwi = { no: 2, country: 'NZ', country_name: 'New Zealand', com: 'x' };
+  const autumn = { no: 3, board_flag: 'AU', flag_name: 'Autumn Blaze', com: 'x' };
+  const posts = [nazi, kiwi, autumn];
+  const pick = (flags) => posts.filter((p) => T.matchesPost(T.normalizeTag({ name: 't', terms: '', flags }), p)).map((p) => p.no);
+  assert.deepEqual(pick(['NZ']), [2]);
+  assert.deepEqual(pick(['AU']), []);
+  assert.deepEqual(pick(['Nazi', 'Autumn Blaze']), [1, 3], 'board flags by name');
+});
+
 test('a tag can find flags: alone, or with words; -words still leave out', () => {
   assert.equal(T.normalizeTag({ name: 'kiwis', terms: '', flags: ['NZ'] }).flags[0], 'NZ', 'only flags is enough');
   assert.equal(T.normalizeTag({ name: 'none', terms: '', flags: [] }), null);
@@ -103,4 +114,40 @@ test('tag stats: finds recorded per day, kept 30 days, gone with their tag', () 
   assert.deepEqual(later.a, {}, 'older than 30 days: dropped');
   assert.deepEqual(Object.keys(T.recordFinds(hist, [tags[1]], 'g', [], (x) => x, day)), [], 'a deleted tag’s days go');
   assert.deepEqual(T.normalizeHistory({ a: { '2026-11-16': ['g/1', 'bad', 5] }, 'Bad Id': {} }), { a: { '2026-11-16': ['g/1'] } });
+});
+
+test('the per-post and per-tag caches give the same answers as a fresh match', () => {
+  const plain = (s) => s.replace(/<[^>]*>/g, '');
+  const tags = [
+    T.normalizeTag({ id: 'a', name: 'a', terms: 'rust, -crab' }),
+    T.normalizeTag({ id: 'b', name: 'b', terms: '/bo+rrow/i' }),
+    T.normalizeTag({ id: 'c', name: 'c', terms: 'art', whole: true }),
+    T.normalizeTag({ id: 'd', name: 'd', terms: 'café' }),
+    T.normalizeTag({ id: 'e', name: 'e', flags: ['NZ'] }),
+  ];
+  const posts = [
+    { no: 1, com: '<b>Rust</b> is fine' },
+    { no: 2, com: 'rust and a crab' },
+    { no: 3, sub: 'BOOORROW checker' },
+    { no: 4, com: 'start of the art' },
+    { no: 5, com: 'start only' },
+    { no: 6, com: 'un CAFE noir' },
+    { no: 7, com: 'kia ora', country: 'NZ' },
+  ];
+  const expect = { 1: ['a'], 2: [], 3: ['b'], 4: ['c'], 5: [], 6: ['d'], 7: ['e'] };
+  for (let round = 0; round < 3; round++) {
+    const labels = T.labelThreads(tags, posts, plain);
+    for (const p of posts) assert.deepEqual((labels.get(p.no) || []).map((t) => t.id), expect[p.no], `round ${round}, No. ${p.no}`);
+  }
+  // a post changed in place is read again
+  posts[4].com = 'art gallery';
+  assert.deepEqual(T.labelThreads(tags, posts, plain).get(5).map((t) => t.id), ['c']);
+  // another plain function gives its own text
+  assert.equal(T.matchesPost(tags[0], { no: 9, com: 'R<i>u</i>st' }, plain), true);
+  const p9 = { no: 9, com: 'R<i>u</i>st' };
+  assert.equal(T.matchesPost(tags[0], p9, plain), true);
+  assert.equal(T.matchesPost(tags[0], p9, (s) => s), false);
+  // an edited tag (a new object) is folded again
+  assert.equal(T.matchesPost(T.normalizeTag({ id: 'a', name: 'a', terms: 'fine' }), posts[0], plain), true);
+  assert.deepEqual(T.findAcross(tags[3], new Map([['g', posts]]), plain).map((f) => f.thread.no), [6]);
 });

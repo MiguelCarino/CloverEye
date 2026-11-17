@@ -18,6 +18,9 @@ pub enum Error {
     /// The same thread was asked for inside the 10 s floor and there is no
     /// cached copy to hand back.
     TooSoon { wait: Duration },
+    /// The queue is backing off for longer than `Config::max_wait` after a
+    /// failure: no request was made; ask again after `retry_in`.
+    Waiting { retry_in: Duration },
     /// The server answered 304 to a request that had no cached copy.
     NotModifiedWithoutCache,
     /// The body was not the JSON shape expected.
@@ -40,6 +43,9 @@ impl fmt::Display for Error {
             }
             Error::TooSoon { wait } => {
                 write!(f, "thread updates are limited to one per 10 s; {} ms left", wait.as_millis())
+            }
+            Error::Waiting { retry_in } => {
+                write!(f, "holding requests back after an error; next try in {} s", retry_in.as_secs().max(1))
             }
             Error::NotModifiedWithoutCache => write!(f, "304 without a cached copy"),
             Error::Decode(m) => write!(f, "could not read the response: {m}"),

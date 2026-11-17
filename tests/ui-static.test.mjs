@@ -187,3 +187,13 @@ test("every module that calls one of dom.js's helpers imports it", () => {
   }
   assert.deepEqual(missing, []);
 });
+
+test('a pane body takes its size from the pane, not from its content', () => {
+  // Without it a change inside a long thread (a status line, a new post)
+  // lays the whole thread out again, twice, for the grids around it
+  // (40 ms at 400 posts; see browse.js updateThreadView).
+  const css = readFileSync(join(UI, 'css/app.css'), 'utf8');
+  const rule = /\.pane > \.centre__body \{([^}]*)\}/.exec(css);
+  assert.ok(rule, 'the .pane > .centre__body rule');
+  assert.match(rule[1], /contain:\s*size;/);
+});

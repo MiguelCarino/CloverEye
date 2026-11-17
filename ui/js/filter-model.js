@@ -96,6 +96,9 @@ export function normalizeFilter(raw) {
     boards,
     action: ACTIONS.has(raw.action) ? raw.action : 'hide',
     enabled: raw.enabled !== false,
+    // a flag filter made since board flags go by their name (a code always
+    // means the country); older ones are fixed by fixBoardFlagFilters
+    ...(raw.field === 'flag' && raw.byName === true ? { byName: true } : {}),
   };
 }
 
@@ -159,8 +162,10 @@ export function fieldValue(post, field) {
     case 'md5':
       return post.md5 ? String(post.md5) : '';
     case 'flag':
-      // each on its own line; a filter matches any of them whole
-      return [post.country, post.country_name, post.board_flag, post.flag_name].filter(Boolean).map((v) => decodeEntities(String(v))).join('\n');
+      // each on its own line; a filter matches any of them whole. A board
+      // flag goes by its name only: its code (/pol/'s NZ or TR, /mlp/'s AU)
+      // is often a country's too, and a code always means the country.
+      return [post.country, post.country_name, post.flag_name].filter(Boolean).map((v) => decodeEntities(String(v))).join('\n');
     case 'capcode':
       return post.capcode ? String(post.capcode) : '';
     case 'ext':
@@ -371,8 +376,9 @@ export function quickFilters(post) {
   if (trip) out.push({ field: 'trip', value: trip, label: 'Filter this tripcode' });
   const id = fieldValue(post, 'id').trim();
   if (id) out.push({ field: 'id', value: id, label: 'Filter this ID' });
-  const flag = String(post?.country || post?.board_flag || '').trim();
-  if (flag) out.push({ field: 'flag', value: flag, label: `Filter this flag (${decodeEntities(String(post.country_name || post.flag_name || flag))})` });
+  // a country by its code, a board's own flag by its name (see fieldValue)
+  const flag = (post?.country ? String(post.country) : decodeEntities(String(post?.flag_name || ''))).trim();
+  if (flag) out.push({ field: 'flag', value: flag, label: `Filter this flag (${post.country ? decodeEntities(String(post.country_name || flag)) : flag})` });
   const ftag = fieldValue(post, 'ftag').trim();
   if (ftag) out.push({ field: 'ftag', value: ftag, label: `Filter this /f/ category (${ftag})` });
   const md5 = fieldValue(post, 'md5').trim();
@@ -381,7 +387,7 @@ export function quickFilters(post) {
 }
 
 /** The filter a "Filter this …" choice adds: hide, plain text, this board. */
-export const quickFilter = (board, { field, value }) => ({ field, pattern: value, regex: false, matchCase: field === 'md5', boards: isBoard(board) ? [board] : [], action: 'hide', enabled: true });
+export const quickFilter = (board, { field, value }) => ({ field, pattern: value, regex: false, matchCase: field === 'md5', boards: isBoard(board) ? [board] : [], action: 'hide', enabled: true, ...(field === 'flag' ? { byName: true } : {}) });
 
 // ------------------------------------------------------------- flags
 
@@ -428,6 +434,48 @@ export function flagChoices(boardList, chosen = [], locale = 'en') {
     for (const [code, name] of Object.entries(b.board_flags || {})) out.push({ kind: 'board', board: b.board, code, name: decodeEntities(String(name)) });
   }
   return out;
+}
+
+const escapeRegex = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Older flag filters (without `byName`) matched a code on a country flag
+ *  and on a board's own flag alike: "TR" hid Turkey and /pol/'s Tree
+ *  Hugger. Now a code means the country only, so each older plain filter
+ *  scoped to boards is made to mean what it meant, once the board list is
+ *  known: the flag's name where the code can only be a board flag (no
+ *  country flags on its boards, one name), else a regular expression that
+ *  matches the code or the flag's name, whole. Filters with boards missing
+ *  from `boardList` wait for a list that has them. Every one done is
+ *  marked `byName`, so running this again changes nothing. Returns the
+ *  same list when nothing changed. */
+export function fixBoardFlagFilters(filters, boardList) {
+  const byBoard = new Map((boardList || []).map((b) => [b.board, b]));
+  let changed = false;
+  const out = (Array.isArray(filters) ? filters : []).map((f) => {
+    if (f?.field !== 'flag' || f.byName) return f;
+    const code = String(f.pattern || '').trim();
+    const boards = f.boards || [];
+    // regex filters, and ones for every board, are kept as they are
+    if (f.regex || !boards.length || !code) {
+      changed = true;
+      return { ...f, byName: true };
+    }
+    const list = boards.map((b) => byBoard.get(b));
+    if (list.some((b) => !b)) return f;
+    const flagName = (b) => {
+      const name = Object.entries(b.board_flags || {}).find(([k]) => (f.matchCase ? k === code : k.toLowerCase() === code.toLowerCase()))?.[1];
+      return name ? decodeEntities(String(name)).trim() : '';
+    };
+    const names = [...new Set(list.map(flagName).filter(Boolean))];
+    changed = true;
+    if (!names.length) return { ...f, byName: true };
+    if (names.length === 1 && list.every((b) => !b.country_flags && flagName(b))) return { ...f, pattern: names[0], byName: true };
+    // the value is one line per code or name (see fieldValue)
+    const pattern = `(?:^|\\n)(?:${[code, ...names].map(escapeRegex).join('|')})(?:\\n|$)`;
+    if (filterProblem({ pattern, regex: true, matchCase: f.matchCase })) return { ...f, byName: true };
+    return { ...f, pattern, regex: true, byName: true };
+  });
+  return changed ? out : filters;
 }
 
 /** The boards with something of their own to filter on, and what. */

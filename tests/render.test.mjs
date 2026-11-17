@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { parseComment, commentText, quotedPosts, backlinks, decodeEntities, formatBytes } from '../ui/js/render.js';
+import { deadlinkRef } from '../ui/js/archive-model.js';
 
 const fx = (name) => JSON.parse(readFileSync(new URL(`../crates/fetch/tests/fixtures/${name}`, import.meta.url)));
 
@@ -36,16 +37,125 @@ test('cross-thread links also name their board and thread; same-thread ones do n
 
 test('spoilers, code, dead links and wbr', () => {
   const lines = parseComment('<s>secret</s> and <pre class="prettyprint">let x = 1;<br>x += 1;</pre><span class="deadlink">&gt;&gt;5</span>long<wbr>word');
-  assert.deepEqual(lines[0], [
-    { type: 'spoiler', text: 'secret' },
-    { type: 'text', text: ' and ' },
-    { type: 'code', text: 'let x = 1;' },
+  // a <pre> is one code segment, its <br>s are lines of the code
+  assert.deepEqual(lines, [
+    [
+      { type: 'spoiler', text: 'secret' },
+      { type: 'text', text: ' and ' },
+      { type: 'code', text: 'let x = 1;\nx += 1;' },
+      { type: 'deadlink', text: '>>5' },
+      { type: 'text', text: 'longword' },
+    ],
   ]);
-  assert.deepEqual(lines[1], [
-    { type: 'code', text: 'x += 1;' },
-    { type: 'deadlink', text: '>>5' },
-    { type: 'text', text: 'longword' },
+});
+
+test('a code block with blank lines stays one block', () => {
+  assert.deepEqual(parseComment('<pre class="prettyprint">int a;<br><br>int b;</pre>'), [[{ type: 'code', text: 'int a;\n\nint b;' }]]);
+  // a <br> right before </pre> is not a blank last line; text after it continues
+  assert.deepEqual(parseComment('<pre>a<br></pre>b'), [[{ type: 'code', text: 'a' }, { type: 'text', text: 'b' }]]);
+  assert.deepEqual(parseComment('<pre><br>a</pre>'), [[{ type: 'code', text: '\na' }]]);
+  assert.deepEqual(parseComment('<pre><br></pre>'), [[]]);
+  // two blocks side by side stay two; a <br> outside code is still a new line
+  assert.deepEqual(parseComment('<pre>a</pre><pre>b</pre>'), [[{ type: 'code', text: 'a' }, { type: 'code', text: 'b' }]]);
+  assert.deepEqual(parseComment('<pre>a</pre><br>b'), [[{ type: 'code', text: 'a' }], [{ type: 'text', text: 'b' }]]);
+  assert.equal(commentText('<pre>x<br><br>y</pre>'), 'x\n\ny');
+});
+
+test('what sits inside a spoiler is marked spoiler too', () => {
+  // a multi-line [spoiler] whose second line is greentext
+  assert.deepEqual(parseComment('<s>secret line<br><span class="quote">&gt;secret green</span></s>'), [
+    [{ type: 'spoiler', text: 'secret line' }],
+    [{ type: 'greentext', text: '>secret green', spoiler: true }],
   ]);
+  assert.deepEqual(parseComment('<s><a href="#p123" class="quotelink">&gt;&gt;123</a> hidden</s>'), [
+    [
+      { type: 'quotelink', text: '>>123', target: 123, spoiler: true },
+      { type: 'spoiler', text: ' hidden' },
+    ],
+  ]);
+  assert.deepEqual(parseComment('<s><span class="deadlink">&gt;&gt;99</span></s>'), [[{ type: 'deadlink', text: '>>99', spoiler: true }]]);
+  assert.deepEqual(parseComment('<s><pre>x</pre></s>'), [[{ type: 'code', text: 'x', spoiler: true }]]);
+  // a spoiler inside greentext keeps the spoiler type; plain segments get no flag
+  assert.deepEqual(parseComment('<span class="quote">&gt;a <s>b</s></span>'), [
+    [
+      { type: 'greentext', text: '>a ' },
+      { type: 'spoiler', text: 'b' },
+    ],
+  ]);
+  // marked and unmarked greentext do not join
+  assert.deepEqual(parseComment('<span class="quote">&gt;a<s><span class="quote">b</span></s></span>'), [
+    [
+      { type: 'greentext', text: '>a' },
+      { type: 'greentext', text: 'b', spoiler: true },
+    ],
+  ]);
+});
+
+test('board links name the board and the catalog search, not a post', () => {
+  assert.deepEqual(parseComment('<a href="//boards.4chan.org/g/" class="quotelink">&gt;&gt;&gt;/g/</a>'), [[{ type: 'boardlink', text: '>>>/g/', board: 'g' }]]);
+  assert.deepEqual(parseComment('<a href="//boards.4chan.org/g/catalog#s=fglt" class="quotelink">&gt;&gt;&gt;/g/fglt/</a>'), [
+    [{ type: 'boardlink', text: '>>>/g/fglt/', board: 'g', search: 'fglt' }],
+  ]);
+  const [[enc]] = parseComment('<a href="https://boards.4channel.org/V/catalog#s=fgl+t%2F" class="quotelink">x</a>');
+  assert.deepEqual(enc, { type: 'boardlink', text: 'x', board: 'v', search: 'fgl t/' });
+  const [[rel]] = parseComment('<a href="/tv/" class="quotelink">&gt;&gt;&gt;/tv/</a>');
+  assert.equal(rel.board, 'tv');
+  // a broken escape keeps the raw term
+  assert.equal(parseComment('<a href="/g/catalog#s=50%" class="quotelink">x</a>')[0][0].search, '50%');
+  // two side by side stay two
+  const [two] = parseComment('<a href="//boards.4chan.org/g/" class="quotelink">&gt;&gt;&gt;/g/</a><a href="//boards.4chan.org/v/" class="quotelink">&gt;&gt;&gt;/v/</a>');
+  assert.deepEqual(
+    two.map((s) => [s.type, s.board]),
+    [
+      ['boardlink', 'g'],
+      ['boardlink', 'v'],
+    ],
+  );
+  // an address that is neither a post nor a board is plain text, not a dead button
+  assert.deepEqual(parseComment('<a href="https://example.com/x" class="quotelink">&gt;&gt;&gt;x</a>'), [[{ type: 'text', text: '>>>x' }]]);
+  // board links are not quotes
+  assert.deepEqual(quotedPosts('<a href="//boards.4chan.org/g/" class="quotelink">&gt;&gt;&gt;/g/</a>'), []);
+});
+
+test('links side by side stay separate; one link split by <wbr> stays one', () => {
+  const [line] = parseComment('<a href="#p5" class="quotelink">&gt;&gt;5</a><a href="/a/thread/1#p5" class="quotelink">&gt;&gt;&gt;/a/5</a>');
+  assert.deepEqual(line, [
+    { type: 'quotelink', text: '>>5', target: 5 },
+    { type: 'quotelink', text: '>>>/a/5', target: 5, board: 'a', thread: 1 },
+  ]);
+  assert.deepEqual(parseComment('<a href="#p5" class="quotelink">&gt;&gt;5</a><a href="#p5" class="quotelink">&gt;&gt;5</a>')[0].length, 2);
+  // dead links each keep their own number, so each can get an archive button
+  const [dead] = parseComment('<span class="deadlink">&gt;&gt;1</span><span class="deadlink">&gt;&gt;2</span>');
+  assert.deepEqual(dead, [
+    { type: 'deadlink', text: '>>1' },
+    { type: 'deadlink', text: '>>2' },
+  ]);
+  assert.deepEqual(deadlinkRef(dead[0].text, 'g'), { board: 'g', post: 1 });
+  assert.deepEqual(deadlinkRef(dead[1].text, 'g'), { board: 'g', post: 2 });
+  assert.deepEqual(parseComment('<a href="#p123456" class="quotelink">&gt;&gt;123<wbr>456</a>'), [[{ type: 'quotelink', text: '>>123456', target: 123456 }]]);
+  assert.deepEqual(parseComment('<span class="deadlink">&gt;&gt;12<wbr>34</span>'), [[{ type: 'deadlink', text: '>>1234' }]]);
+  // ordinary links in text do not split it
+  assert.deepEqual(parseComment('see <a href="https://x.org">x</a> ok'), [[{ type: 'text', text: 'see x ok' }]]);
+});
+
+test('parsed comments are cached by their HTML and frozen', () => {
+  const html = '<a href="#p7" class="quotelink">&gt;&gt;7</a><br>cache me';
+  const a = parseComment(html);
+  const b = parseComment(html);
+  assert.equal(a, b);
+  assert.ok(Object.isFrozen(a) && Object.isFrozen(a[0]) && Object.isFrozen(a[0][0]));
+  assert.throws(() => {
+    a[0][0].text = 'changed';
+  }, TypeError);
+  assert.equal(parseComment(null), parseComment(''));
+  assert.equal(commentText(html), '>>7\ncache me');
+  assert.equal(commentText(html), commentText(html));
+  assert.equal(commentText(''), '');
+  // quotedPosts gives a fresh array each time (callers may keep it)
+  assert.notEqual(quotedPosts(html), quotedPosts(html));
+  // many more comments than one generation holds: still right
+  for (let i = 0; i < 9000; i++) assert.equal(commentText(`c${i}`), `c${i}`);
+  assert.deepEqual(parseComment(html), [[{ type: 'quotelink', text: '>>7', target: 7 }], [{ type: 'text', text: 'cache me' }]]);
 });
 
 test('unknown tags are dropped, text kept; no HTML survives', () => {

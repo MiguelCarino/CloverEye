@@ -3,7 +3,7 @@
 // scrolling or resizing. It sits on the page, not in the pane, so a thread
 // redrawing itself under it does not close it; its actions keep working.
 
-import { h } from './dom.js';
+import { h, isRestoreScroll } from './dom.js';
 
 let current = null; // { menu, anchor, key, cleanup }
 
@@ -19,14 +19,40 @@ export function placeMenu(anchor, size, view, gap = 4) {
   return { left: Math.round(left), top: Math.round(top) };
 }
 
+/** Whether `anchor` is the button of the open menu `cur` ({anchor, key}):
+ *  the same element, or the one a redraw drew in its place (the same
+ *  data-key). */
+export function isMenuAnchor(cur, anchor) {
+  if (!cur || !anchor) return false;
+  if (cur.anchor === anchor) return true;
+  return Boolean(cur.key) && cur.key === anchor.dataset?.key;
+}
+
+// The open menu's button: the thread may have redrawn, and the same button
+// is found again by its key.
+function liveAnchor() {
+  if (!current) return null;
+  const { anchor, key } = current;
+  if (anchor.isConnected) return anchor;
+  return key ? document.querySelector(`[data-key="${CSS.escape(key)}"]`) : null;
+}
+
+/** After a redraw: the open menu follows its button drawn anew (its
+ *  aria-expanded; a click on it closes the menu). */
+export function menuAnchorRedrawn() {
+  const btn = liveAnchor();
+  if (!btn || btn === current.anchor) return;
+  current.anchor = btn;
+  btn.setAttribute('aria-expanded', 'true');
+}
+
 export function closeMenu({ focus = false } = {}) {
   if (!current) return;
-  const { menu, anchor, key, cleanup } = current;
+  const btn = liveAnchor();
+  const { menu, cleanup } = current;
   current = null;
   cleanup();
   menu.remove();
-  // The thread may have redrawn: the same button is found again by its key.
-  const btn = anchor.isConnected ? anchor : key ? document.querySelector(`[data-key="${CSS.escape(key)}"]`) : null;
   btn?.setAttribute('aria-expanded', 'false');
   if (focus) btn?.focus();
 }
@@ -37,7 +63,7 @@ export function closeMenu({ focus = false } = {}) {
  * @param {string} label         the menu's accessible name
  */
 export function openMenu(anchor, items, label) {
-  const same = current?.anchor === anchor;
+  const same = isMenuAnchor(current, anchor);
   closeMenu();
   if (same || !items.length) return;
   const buttons = items.map((it) =>
@@ -82,11 +108,21 @@ export function openMenu(anchor, items, label) {
     e.preventDefault();
     e.stopImmediatePropagation();
   };
+  // a press on its button (or on the one a redraw drew in its place) is
+  // left to the button's click, which closes it
   const onDown = (e) => {
-    if (!menu.contains(e.target) && !anchor.contains(e.target)) closeMenu();
+    if (menu.contains(e.target) || liveAnchor()?.contains(e.target)) return;
+    closeMenu();
   };
+  // Scrolling closes it once its button moves: a pane redrawn and put back
+  // where it was (or kept in place as its pictures load), or another pane
+  // scrolled, leaves the button where it was, and the menu by it.
+  const at = { top: r.top, left: r.left };
   const onScroll = (e) => {
-    if (!menu.contains(e.target)) closeMenu();
+    if (menu.contains(e.target) || isRestoreScroll(e)) return;
+    const now = liveAnchor()?.getBoundingClientRect();
+    if (now && now.width && Math.abs(now.top - at.top) < 2 && Math.abs(now.left - at.left) < 2) return;
+    closeMenu();
   };
   const onResize = () => closeMenu();
   document.addEventListener('keydown', onKey, true);

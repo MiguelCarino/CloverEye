@@ -6,8 +6,9 @@
 // touch and pen never trigger it. Off when <html data-hover-preview="off">.
 //
 // The app redraws whole panes (thread updates, the watcher, unread marks,
-// a window resize) and puts the scroll back, so the thumbnail under a
-// resting pointer is often swapped for an identical new one. The preview
+// the window crossing the 900 px layout width) and puts the scroll back, so
+// the thumbnail under a resting pointer is often swapped for an identical
+// new one. The preview
 // follows the new element instead of closing and opening again, which made
 // it blink each time something redrew.
 

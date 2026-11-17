@@ -9,6 +9,10 @@ import { commentText } from './render.js';
 import * as B from './browse-model.js';
 import { postFlag } from './bridge.js';
 
+/** Title or excerpt runs (browse-model.js) with spoiler text in a
+ *  .seg-spoiler span, hidden until hovered or revealed, as on catalog cards. */
+const runsEl = (runs) => runs.map((r) => (r.spoiler ? h('span', { class: 'seg-spoiler', text: r.text }) : r.text));
+
 /**
  * The tag chips in a catalog's bar: press one to show only its threads.
  * @param {object} o
@@ -365,8 +369,8 @@ export function tagPage({ tag, boards, catalog, bridge, files = null, fileUrl = 
                 'button',
                 { type: 'button', class: 'catalog-card', 'data-key': `${k}tagpage-thread-${board}-${t.no}`, onclick: () => onOpen(board, t.no) },
                 h('span', { class: 'catalog-card__thumb' }, thumb ? h('img', { src: thumb, alt: '', loading: 'lazy', width: t.tn_w || 150, height: t.tn_h || 150 }) : h('span', { class: 'catalog-card__nofile', text: 'No file' })),
-                h('span', { class: 'catalog-card__title', translate: 'no', text: B.threadTitle(t) }),
-                t.sub ? h('span', { class: 'catalog-card__text', translate: 'no', text: B.excerpt(t) }) : null,
+                h('span', { class: 'catalog-card__title', translate: 'no' }, runsEl(B.titleRuns(t))),
+                t.sub ? h('span', { class: 'catalog-card__text', translate: 'no' }, runsEl(B.excerptRuns(t))) : null,
               ),
               h('div', { class: 'catalog-card__foot' }, h('span', { class: 'catalog-card__counts' }, h('span', { class: 'tag', translate: 'no', text: `/${board}/` }), h('span', { text: `R ${t.replies ?? 0}` }), h('span', { text: `I ${t.images ?? 0}` }))),
             );

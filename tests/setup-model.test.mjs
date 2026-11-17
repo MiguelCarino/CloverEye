@@ -589,3 +589,44 @@ test('boardHidden: NSFW boards only, and only while they are off', () => {
   assert.equal(M.boardHidden({ nsfw: { enabled: false } }, 'h', [{ board: 'h', ws_board: 0 }]), true);
   assert.equal(M.boardHidden({ ...off, nsfw: { enabled: true, confirmedAdultAt: now.toISOString() } }, 'b'), false);
 });
+
+test('keepSameLists: lists with the same entries keep their identity', () => {
+  const prev = { theme: 'dark', tags: [{ id: 'a' }], filters: [{ id: 'f' }], hiddenPosts: [], yous: [{ board: 'g', no: 1 }] };
+  const next = { theme: 'light', tags: [{ id: 'a' }], filters: [{ id: 'f2' }], hiddenPosts: [], yous: [{ board: 'g', no: 1 }] };
+  const out = M.keepSameLists(prev, next);
+  assert.equal(out.tags, prev.tags);
+  assert.equal(out.yous, prev.yous);
+  assert.equal(out.hiddenPosts, prev.hiddenPosts);
+  assert.equal(out.filters, next.filters, 'a changed list is the new one');
+  assert.equal(out.theme, 'light');
+  assert.notEqual(out, next);
+  const fresh = { tags: [{ id: 'b' }], filters: [], hiddenPosts: [1], yous: [] };
+  assert.equal(M.keepSameLists({ tags: [], filters: [1], hiddenPosts: [], yous: [2] }, fresh), fresh, 'nothing kept: the same object');
+});
+
+test('onlyWatchedDiffer: the watched list and read marks only, in any key order', () => {
+  const a = { theme: 'dark', favourites: ['g'], watched: [{ board: 'g', no: 1, title: 'A' }], lastRead: { 'g/1': 5 } };
+  assert.equal(M.onlyWatchedDiffer(a, { ...a }), true);
+  assert.equal(M.onlyWatchedDiffer(a, { ...a, watched: [{ board: 'g', no: 1, title: 'B', archived: true }] }), true, 'a title, archived');
+  assert.equal(M.onlyWatchedDiffer(a, { ...a, watched: [] , lastRead: {} }), true, 'unwatched, read marks');
+  assert.equal(M.onlyWatchedDiffer(a, { lastRead: {}, watched: [], favourites: ['g'], theme: 'dark' }), true, 'another key order');
+  assert.equal(M.onlyWatchedDiffer(a, { ...a, theme: 'light' }), false);
+  assert.equal(M.onlyWatchedDiffer(a, { ...a, favourites: ['g', 'v'] }), false);
+  assert.equal(M.onlyWatchedDiffer(a, null), false);
+});
+
+test('setupOnto: setup’s changes go over what other windows saved meanwhile', () => {
+  const start = M.normalizeSettings({ ...M.defaults(), theme: 'dark', favourites: ['g'] });
+  // setup changed the theme and stamped itself
+  const final = M.completeSetup({ ...start, theme: 'light' }, { now });
+  // another window watched a thread and hid a post while setup was open
+  const latest = M.normalizeSettings({ ...start, watched: [{ board: 'g', no: 123, title: 't', seen: 0 }], hiddenPosts: [{ board: 'g', no: 9 }] });
+  const s = M.setupOnto(start, final, latest);
+  assert.equal(s.theme, 'light', 'setup’s change');
+  assert.equal(s.setupVersion, final.setupVersion);
+  assert.equal(s.completedAt, final.completedAt);
+  assert.deepEqual(s.watched.map((w) => w.no), [123], 'the other window’s watch stays');
+  assert.deepEqual(s.hiddenPosts, [{ board: 'g', no: 9 }], 'and its hidden post');
+  // nothing known newer: setup's result as it is
+  assert.equal(M.setupOnto(start, final, null).theme, 'light');
+});

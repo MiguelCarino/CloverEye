@@ -3,6 +3,7 @@
 // (SCOPE §3.1: download all, throttled to 1 request/s). No DOM.
 
 import { saveName } from './gallery-model.js';
+import { postFileName } from './render.js';
 
 const BOARD = /^[a-z0-9]{1,10}$/;
 const EXTS = new Set(['.jpg', '.png', '.gif', '.webm', '.mp4', '.pdf']);
@@ -43,11 +44,10 @@ export function downloadJobs(posts, urlOf) {
     if (!hasSavableFile(p)) continue;
     const url = urlOf(p);
     if (!url) continue;
-    let name = saveName({ name: `${p.filename || p.tim}${p.ext}`, ext: p.ext });
-    if (seen.has(name.toLowerCase())) {
-      const dot = name.lastIndexOf('.');
-      name = `${dot > 0 ? name.slice(0, dot) : name}-${timOf(p)}${p.ext}`;
-    }
+    // the name as the post shows it (entities decoded), the stem cut to fit
+    const file = { name: postFileName(p), ext: p.ext };
+    let name = saveName(file);
+    if (seen.has(name.toLowerCase())) name = saveName(file, `-${timOf(p)}`);
     seen.add(name.toLowerCase());
     out.push({ no: p.no, url, name, size: num(p.fsize) ? p.fsize : 0 });
   }

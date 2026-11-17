@@ -374,6 +374,47 @@ export function fitSettings(s, budget = SETTINGS_BUDGET) {
   return out;
 }
 
+/** The lists other code caches what it works out for (by identity: the
+ *  filter marks, the hide tags, the (You)s). */
+const CACHED_LISTS = ['tags', 'filters', 'hiddenPosts', 'yous'];
+
+/** `next` with each of those lists taken from `prev` when it holds the same
+ *  entries, so settings that came back from another window with an
+ *  unrelated change keep the caches. Returns `next` itself when no list
+ *  can be kept. */
+export function keepSameLists(prev, next) {
+  if (!isObj(prev) || !isObj(next)) return next;
+  let out = next;
+  for (const k of CACHED_LISTS) {
+    if (prev[k] === next[k] || !Array.isArray(prev[k]) || !Array.isArray(next[k]) || prev[k].length !== next[k].length) continue;
+    if (JSON.stringify(prev[k]) !== JSON.stringify(next[k])) continue;
+    if (out === next) out = { ...next };
+    out[k] = prev[k];
+  }
+  return out;
+}
+
+/** JSON with every object's keys sorted (settings from another window
+ *  come with their own key order). */
+function sortedJson(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
+  if (Array.isArray(v)) return `[${v.map((x) => (x === undefined ? 'null' : sortedJson(x))).join(',')}]`;
+  return `{${Object.keys(v)
+    .sort()
+    .filter((k) => v[k] !== undefined)
+    .map((k) => `${JSON.stringify(k)}:${sortedJson(v[k])}`)
+    .join(',')}}`;
+}
+
+/** True when `a` and `b` differ at most in the watched threads (a title,
+ *  archived, 404, which ones) and the read marks: what the sidebar and a
+ *  thread's Watch button show, nothing else. */
+export function onlyWatchedDiffer(a, b) {
+  if (!isObj(a) || !isObj(b)) return false;
+  const rest = (s) => sortedJson({ ...s, watched: null, lastRead: null });
+  return rest(a) === rest(b);
+}
+
 const keyOf = (board, no) => `${board}/${no}`;
 
 export const isWatched = (s, board, no) => (s?.watched || []).some((w) => w.board === board && w.no === no);
@@ -566,6 +607,17 @@ export function completeSetup(draft, { skipped = false, now = new Date(), versio
   s.completedAt = now.toISOString();
   s.skipped = skipped;
   return s;
+}
+
+/** Setup's result laid over the settings as they are now: setup started
+ *  from `start` and ended with `final`, and `latest` is what this window
+ *  knows now (other windows may have saved while setup was open). Only the
+ *  keys setup changed come from `final`; the rest (a thread watched, a post
+ *  hidden, a filter added elsewhere meanwhile) stay as in `latest`. */
+export function setupOnto(start, final, latest) {
+  const merged = { ...(isObj(latest) ? latest : final) };
+  for (const k of Object.keys(final)) if (sortedJson(final[k]) !== sortedJson(start?.[k])) merged[k] = final[k];
+  return fitSettings(normalizeSettings(merged));
 }
 
 /** Where Done goes: the first favourite the person may see, or the board

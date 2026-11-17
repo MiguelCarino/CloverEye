@@ -10,7 +10,7 @@
 // rules are in quote-model.js and archive-model.js; text only through
 // textContent (renderPost builds nodes).
 
-import { h, icon } from './dom.js';
+import { h, icon, isRestoreScroll } from './dom.js';
 import * as Q from './quote-model.js';
 import { deadlinkRef } from './archive-model.js';
 
@@ -51,7 +51,7 @@ function asCopy(card, extraClass) {
  *   jumping to another thread's post (opens that thread)
  * @param {CrossThreads | null} [o.cross]  other threads' posts and archive links; without it,
  *   links to other threads only jump and dead links get no archive button
- * @returns {{ onQuote: (target: number, e?: Event) => void, attach: (list: HTMLElement) => void }}
+ * @returns {{ onQuote: (target: number, e?: Event) => void, attach: (list: HTMLElement) => void, add: (card: HTMLElement) => void }}
  *
  * @typedef {object} CrossThreads
  * @property {(board: string, thread: number) => object | undefined} entry  the cached thread
@@ -84,7 +84,7 @@ export function quoteLinks({ key, board, thread, posts, render, jump, mode, keyP
         const own = Q.childPath(path, 'x', t.no, nth);
         btn.dataset.quotePath = own;
         btn.dataset.key = `${keyPrefix}quote-${Q.pathSlug(own)}`;
-        if (mode() !== 'jump') btn.setAttribute('aria-expanded', 'false');
+        if (mode() !== 'jump' && !boxes.get(btn)?.isConnected) btn.setAttribute('aria-expanded', 'false');
         continue;
       }
       if (t.kind !== 'local') continue;
@@ -96,7 +96,8 @@ export function quoteLinks({ key, board, thread, posts, render, jump, mode, keyP
       btn.dataset.quotePath = own;
       btn.dataset.key = `${keyPrefix}quote-${Q.pathSlug(own)}`;
       if (!Q.canExpand(path, t.no)) btn.classList.add('seg-quotelink--loop');
-      else if (mode() !== 'jump') btn.setAttribute('aria-expanded', 'false');
+      // decorated again by add(): a copy open below it stays open
+      else if (mode() !== 'jump' && !boxes.get(btn)?.isConnected) btn.setAttribute('aria-expanded', 'false');
     }
   }
 
@@ -233,7 +234,33 @@ export function quoteLinks({ key, board, thread, posts, render, jump, mode, keyP
     setState(keep);
   }
 
-  return { onQuote, attach };
+  /**
+   * One top-level card of a list that attach() already wired, drawn or
+   * changed since: a post appended by a thread update, or a post whose
+   * "Replies" row was drawn again. Its links get their paths and dead links
+   * their archive buttons. Copies already open in the card stay as they are
+   * (a video playing in one keeps playing); a link drawn anew takes over the
+   * copy its old self had open, or opens it again if that copy is gone.
+   */
+  function add(card) {
+    const no = postNo(card);
+    if (!no || !card?.classList?.contains('post')) return;
+    decorate(card, String(no));
+    for (const path of Q.replayOrder(state())) {
+      if (Q.parsePath(path)?.root !== no) continue;
+      const btn = card.querySelector(`${LINK}[data-quote-path="${CSS.escape(path)}"]`);
+      if (!btn || boxes.get(btn)?.isConnected) continue;
+      const orphan = card.querySelector(`.quote-inline[data-quote-path="${CSS.escape(path)}"]`);
+      if (orphan) {
+        boxes.set(btn, orphan);
+        btn.setAttribute('aria-expanded', 'true');
+      } else {
+        toggle(btn, { replay: true });
+      }
+    }
+  }
+
+  return { onQuote, attach, add };
 }
 
 // ------------------------------------------------ other threads, dead links
@@ -322,10 +349,26 @@ export function installQuotePreview(doc = document) {
   let target = null;
   let timer = null;
   let byMouse = false;
+  let at = null; // where the link was when it was hovered or shown
+
+  /** The link the preview is for. A redraw (a thread update) draws the
+   *  link anew: the new one, found by its data-key, takes its place. */
+  function live() {
+    if (!target || target.isConnected) return target;
+    const key = target.dataset.key;
+    const again = key ? doc.querySelector(`${LINK}[data-key="${CSS.escape(key)}"]`) : null;
+    if (again) target = again;
+    return again;
+  }
+  const sameLink = (a, b) => Boolean(a && b && (a === b || (a.dataset.key && a.dataset.key === b.dataset.key && !a.isConnected)));
+  const rectOf = (el) => {
+    const r = el.getBoundingClientRect();
+    return { top: r.top, left: r.left };
+  };
 
   function show() {
     timer = null;
-    if (!target?.isConnected || doc.documentElement.dataset.quotePreview === 'off') return hide();
+    if (!live() || doc.documentElement.dataset.quotePreview === 'off') return hide();
     if (target.getAttribute('aria-expanded') === 'true') return; // already open below the link
     const ctx = contexts.get(target.closest('.thread'));
     const content = ctx?.preview(target);
@@ -335,7 +378,9 @@ export function installQuotePreview(doc = document) {
     const vh = doc.documentElement.clientHeight;
     Object.assign(box.style, { left: '0px', top: '0px', width: `${Q.previewWidth(vw)}px`, maxHeight: '', visibility: 'hidden' });
     box.hidden = false;
-    const p = Q.placeQuotePreview({ link: target.getBoundingClientRect(), w: box.offsetWidth, h: box.offsetHeight, vw, vh });
+    const link = target.getBoundingClientRect();
+    at = { top: link.top, left: link.left };
+    const p = Q.placeQuotePreview({ link, w: box.offsetWidth, h: box.offsetHeight, vw, vh });
     Object.assign(box.style, { left: `${p.left}px`, top: `${p.top}px`, width: `${p.width}px`, maxHeight: `${p.maxHeight}px`, visibility: '' });
   }
 
@@ -343,6 +388,7 @@ export function installQuotePreview(doc = document) {
     clearTimeout(timer);
     timer = null;
     target = null;
+    at = null;
     if (!box.hidden) {
       box.hidden = true;
       box.replaceChildren(); // stops a video and drops the files
@@ -350,16 +396,22 @@ export function installQuotePreview(doc = document) {
   }
   /** Another thread arrived: the preview waiting for it is drawn again. */
   function refresh(t) {
-    if (t !== target || timer) return;
+    if (!sameLink(target, t) || timer) return;
     show();
   }
   preview = { hide, refresh };
 
   function begin(t, mouse) {
     if (t === target) return;
+    // the same link drawn anew under the pointer: keep the preview
+    if (sameLink(target, t)) {
+      target = t;
+      return;
+    }
     hide();
     target = t;
     byMouse = mouse;
+    at = rectOf(t);
     timer = setTimeout(show, DELAY_MS);
   }
 
@@ -371,6 +423,9 @@ export function installQuotePreview(doc = document) {
   doc.addEventListener('pointerout', (e) => {
     if (!target || !byMouse) return;
     if (e.relatedTarget && target.contains(e.relatedTarget)) return;
+    // the link was redrawn and the pointer is over its new self
+    const into = e.relatedTarget?.closest?.(LINK);
+    if (into && into !== target && sameLink(target, into)) return;
     hide();
   });
   doc.addEventListener('focusin', (e) => {
@@ -400,11 +455,20 @@ export function installQuotePreview(doc = document) {
     true,
   );
   // Scrolling hides a preview on screen; one still waiting for a link that
-  // focus has just scrolled into view is placed when it shows.
+  // focus has just scrolled into view is placed when it shows. A redraw
+  // putting a pane's scroll back (dom.js restoreScroll), or any scroll that
+  // leaves the link where it was, keeps it.
   doc.addEventListener(
     'scroll',
-    () => {
-      if (!box.hidden || byMouse) hide();
+    (e) => {
+      if (!target || isRestoreScroll(e)) return;
+      if (box.hidden && !byMouse) return;
+      const el = live();
+      if (el && at) {
+        const r = el.getBoundingClientRect();
+        if (r.width && Math.abs(r.top - at.top) < 2 && Math.abs(r.left - at.left) < 2) return;
+      }
+      hide();
     },
     true,
   );

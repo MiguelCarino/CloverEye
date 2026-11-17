@@ -412,50 +412,92 @@ pub async fn open_window(app: tauri::AppHandle, panes: String) -> Result<String,
     Ok(label)
 }
 
-/// Only files from the site's image host, by board and file number.
-pub fn media_url_ok(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://i.4cdn.org/") else { return false };
+/// The extension of a file on the image host ("jpg", "webm"...), from its
+/// checked address: the server's own, never the uploader's file name. None
+/// for any other address: only files from the site's image host, by board
+/// and file number, are saved.
+pub fn media_ext(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("https://i.4cdn.org/")?;
     let mut parts = rest.split('/');
-    let (Some(board), Some(file), None) = (parts.next(), parts.next(), parts.next()) else { return false };
-    let Some((stem, ext)) = file.rsplit_once('.') else { return false };
-    clovereye_fetch::valid_board(board)
+    let (Some(board), Some(file), None) = (parts.next(), parts.next(), parts.next()) else { return None };
+    let (stem, ext) = file.rsplit_once('.')?;
+    (clovereye_fetch::valid_board(board)
         && (8..=20).contains(&stem.len())
         && stem.bytes().all(|c| c.is_ascii_digit())
-        && ["jpg", "png", "gif", "webm", "mp4", "pdf"].contains(&ext)
+        && ["jpg", "png", "gif", "webm", "mp4", "pdf"].contains(&ext))
+    .then_some(ext)
 }
 
-/// A file name safe on every desktop: no separators or control characters.
+/// Longest file name kept, in bytes.
+const NAME_BYTES: usize = 150;
+
+/// A dot or any whitespace: never kept at either end of a file name.
+fn name_edge(c: char) -> bool {
+    c == '.' || c.is_whitespace()
+}
+
+/// `s` cut to at most `max` bytes on a character boundary, with no
+/// trailing dots or whitespace (Windows drops them, changing the name).
+fn cut_bytes(s: &str, max: usize) -> &str {
+    let mut cut = s.len().min(max);
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    s[..cut].trim_end_matches(name_edge)
+}
+
+/// A file name safe on every desktop: no separators or control characters,
+/// at most 150 bytes. A longer name is cut in its stem, so an extension of
+/// up to five letters or digits stays on the end. A name of 150 bytes or
+/// less is only cleaned, and the result is the same when cleaned again.
 pub fn safe_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| if c.is_control() || "\\/:*?\"<>|".contains(c) { '_' } else { c })
         .collect();
-    let trimmed = cleaned.trim().trim_matches('.').to_string();
-    let mut s = if trimmed.is_empty() { "file".to_string() } else { trimmed };
-    if s.len() > 150 {
-        let mut cut = 150;
-        while !s.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        s.truncate(cut);
+    let trimmed = cleaned.trim_matches(name_edge).to_string();
+    let s = if trimmed.is_empty() { "file".to_string() } else { trimmed };
+    if s.len() <= NAME_BYTES {
+        return s;
     }
-    s
+    match s.rsplit_once('.') {
+        Some((stem, ext)) if (1..=5).contains(&ext.len()) && ext.bytes().all(|c| c.is_ascii_alphanumeric()) && !stem.is_empty() => {
+            format!("{}.{ext}", cut_bytes(stem, NAME_BYTES - 1 - ext.len()))
+        }
+        _ => cut_bytes(&s, NAME_BYTES).to_string(),
+    }
 }
 
-/// `name`, or `name-2`, `name-3`... so a save never overwrites a file.
-pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
-    let first = dir.join(name);
-    if !first.exists() {
-        return first;
-    }
-    let (stem, ext) = match name.rsplit_once('.') {
-        Some((s, e)) => (s.to_string(), format!(".{e}")),
-        None => (name.to_string(), String::new()),
+/// The name to save a file from the image host under: the person's (the
+/// uploader's) name, cleaned and cut in its stem, always ending in the
+/// server's own extension `ext`. "x.hta.zzz" saved from a .jpg is
+/// "x.hta.zzz.jpg", never "x.hta".
+pub fn save_name(name: &str, ext: &str) -> String {
+    let n = safe_name(name);
+    let stem = match n.rsplit_once('.') {
+        Some((stem, tail)) if tail.eq_ignore_ascii_case(ext) => stem,
+        _ => n.as_str(),
     };
-    (2..10_000)
-        .map(|i| dir.join(format!("{stem}-{i}{ext}")))
-        .find(|p| !p.exists())
-        .unwrap_or(first)
+    let stem = cut_bytes(stem.trim_end_matches(name_edge), NAME_BYTES - 1 - ext.len());
+    let stem = if stem.is_empty() { "file" } else { stem };
+    format!("{stem}.{ext}")
+}
+
+/// The names offline::write_new tries, in order: `name`, then
+/// `name-2` ... `name-9999`, then names with the time and a count in them.
+pub(crate) fn name_candidates(name: &str) -> impl Iterator<Item = String> + '_ {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s, format!(".{e}")),
+        _ => (name, String::new()),
+    };
+    let ext2 = ext.clone();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::iter::once(name.to_string())
+        .chain((2..10_000).map(move |i| format!("{stem}-{i}{ext}")))
+        .chain((0u64..).map(move |i| format!("{stem}-{nanos}-{i}{ext2}")))
 }
 
 /// Saves one file from the image host into the download folder (Settings →
@@ -463,14 +505,15 @@ pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
 /// because the person asked for it.
 #[tauri::command]
 pub async fn save_media(app: tauri::AppHandle, url: String, name: String, dir: Option<String>) -> Result<String, String> {
-    if !media_url_ok(&url) {
+    let Some(ext) = media_ext(&url) else {
         return Err("Only files from the image host can be saved.".into());
-    }
+    };
     let folder = match dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
         Some(d) if Path::new(d).is_absolute() => PathBuf::from(d),
         _ => app.path().download_dir().map_err(|e| e.to_string())?.join("CloverEye"),
     };
-    let name = safe_name(&name);
+    // The server's extension, never one from the uploader's name.
+    let name = save_name(&name, ext);
     // Through the download gate every file download in the app shares:
     // at least 1 s apart, also while Download all or Save offline runs.
     crate::offline::gated(&app, move || {
@@ -479,8 +522,7 @@ pub async fn save_media(app: tauri::AppHandle, url: String, name: String, dir: O
             Err(e) if e == "not-found" => return Err("The file is gone from the site.".into()),
             other => other?,
         };
-        let path = unique_path(&folder, &name);
-        crate::offline::write_atomic(&path, &body)?;
+        let path = crate::offline::write_new(&folder, &name, &body)?;
         Ok(path.display().to_string())
     })
     .await
@@ -489,6 +531,10 @@ pub async fn save_media(app: tauri::AppHandle, url: String, name: String, dir: O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn media_url_ok(url: &str) -> bool {
+        media_ext(url).is_some()
+    }
 
     #[test]
     fn a_crashing_helper_page_is_reloaded_at_most_twice_a_minute() {
@@ -517,16 +563,90 @@ mod tests {
     }
 
     #[test]
-    fn names_are_safe_and_unique() {
+    fn names_are_safe() {
         assert_eq!(safe_name("a/b\\c:d*?.png"), "a_b_c_d__.png");
         assert_eq!(safe_name("  ..  "), "file");
-        assert_eq!(safe_name(&"é".repeat(200)).len() <= 150, true);
-        let dir = std::env::temp_dir().join(format!("ce-unique-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("x.png"), b"1").unwrap();
-        std::fs::write(dir.join("x-2.png"), b"1").unwrap();
-        assert_eq!(unique_path(&dir, "x.png"), dir.join("x-3.png"));
-        assert_eq!(unique_path(&dir, "y.png"), dir.join("y.png"));
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(safe_name(&"é".repeat(200)).len() <= 150);
+    }
+
+    #[test]
+    fn taken_names_get_a_number_then_the_time() {
+        // offline::write_new tries these in order (its tests check that a
+        // file or link already there is never written through)
+        let mut c = name_candidates("x.png");
+        assert_eq!(c.next().as_deref(), Some("x.png"));
+        assert_eq!(c.next().as_deref(), Some("x-2.png"));
+        let late = name_candidates("x.png").nth(9_999).unwrap();
+        assert!(late.starts_with("x-") && late.ends_with(".png") && late != "x-9999.png", "{late}");
+        let mut no_ext = name_candidates("README");
+        assert_eq!(no_ext.nth(1).as_deref(), Some("README-2"));
+        assert_eq!(name_candidates(".png").nth(1).as_deref(), Some(".png-2"));
+    }
+
+    #[test]
+    fn the_extension_comes_from_the_address() {
+        assert_eq!(media_ext("https://i.4cdn.org/g/1793731659876000.webm"), Some("webm"));
+        assert_eq!(media_ext("https://i.4cdn.org/g/1793731659876000.exe"), None);
+        assert_eq!(media_ext("https://evil.example/g/1793731659876000.jpg"), None);
+    }
+
+    #[test]
+    fn long_names_are_cut_in_the_stem_and_keep_their_extension() {
+        // 51 CJK characters (153 bytes) + .jpg: the extension stays
+        let cjk = format!("{}.jpg", "日".repeat(51));
+        let n = safe_name(&cjk);
+        assert!(n.len() <= 150 && n.ends_with(".jpg"), "{n}");
+        assert!(n.starts_with("日日日"));
+        // a long tail that is not an extension is cut like any text
+        let n = safe_name(&format!("a.{}", "z".repeat(200)));
+        assert_eq!(n.len(), 150);
+        // names of 150 bytes or less are only cleaned
+        let short = format!("{}.png", "b".repeat(146));
+        assert_eq!(safe_name(&short), short);
+        // a cut never leaves a trailing dot or space
+        let n = safe_name(&format!("{}{}.jpg", "c".repeat(140), " .".repeat(20)));
+        assert!(n.ends_with("c.jpg"), "{n}");
+    }
+
+    #[test]
+    fn safe_name_is_the_same_when_run_again() {
+        for name in [
+            format!("{}.jpg", "日".repeat(60)),
+            format!("{}.hta{}", "A".repeat(116), "z".repeat(40)),
+            "a/b\\c:d*?.png".to_string(),
+            "  ..  ".to_string(),
+            format!("x.{}", "é".repeat(120)),
+            // a cut that ends on wide or no-break space, and dots and
+            // spaces mixed at the ends
+            format!("{}\u{3000}{}", "a".repeat(147), "b".repeat(10)),
+            format!("{}\u{a0}{}.png", "a".repeat(145), "b".repeat(10)),
+            ". x . ".to_string(),
+            "\u{3000}.cat.jpg.\u{a0}".to_string(),
+        ] {
+            let once = safe_name(&name);
+            assert_eq!(safe_name(&once), once, "{name}");
+        }
+    }
+
+    #[test]
+    fn saved_files_always_end_in_the_servers_extension() {
+        // the uploader's name hides .hta past the cut: still saved as .jpg
+        let sly = format!("{}.hta{}", "A".repeat(116), "z".repeat(40));
+        let n = save_name(&format!("{sly}.jpg"), "jpg");
+        assert!(n.ends_with(".jpg") && n.len() <= 150, "{n}");
+        let n = save_name(&format!("{}.hta", "A".repeat(116)), "jpg");
+        assert!(n.ends_with(".hta.jpg"), "{n}");
+        // the right extension is not doubled; case is the server's
+        assert_eq!(save_name("cat.jpg", "jpg"), "cat.jpg");
+        assert_eq!(save_name("cat.JPG", "jpg"), "cat.jpg");
+        // a wrong or missing one gets the real one added
+        assert_eq!(save_name("cat.png", "jpg"), "cat.png.jpg");
+        assert_eq!(save_name("v1.2", "webm"), "v1.2.webm");
+        assert_eq!(save_name("", "gif"), "file.gif");
+        assert_eq!(save_name("...", "pdf"), "file.pdf");
+        // 60 CJK characters + .jpg keeps .jpg (the library can take it)
+        let n = save_name(&format!("{}.jpg", "日".repeat(60)), "jpg");
+        assert!(n.ends_with(".jpg") && n.len() <= 150, "{n}");
+        assert_eq!(safe_name(&n), n, "a saved name passes safe_name unchanged");
     }
 }

@@ -253,7 +253,70 @@ test('flags, capcodes and file types can be filtered', () => {
   assert.deepEqual(run('ext', '.WEBM'), [4], 'with or without the dot');
   assert.deepEqual(run('ext', 'webm'), [4]);
   assert.ok(F.quickFilters(nz).some((q) => q.field === 'flag' && q.value === 'NZ'));
-  assert.ok(F.quickFilters(templar).some((q) => q.field === 'flag' && q.value === 'TM'));
+  assert.ok(F.quickFilters(templar).some((q) => q.field === 'flag' && q.value === 'Templar'), 'a board flag by its name');
+});
+
+test('a country code never matches a board flag that reuses it, and the reverse', () => {
+  const nazi = { no: 1, board_flag: 'NZ', flag_name: 'Nazi', com: 'a' };
+  const kiwi = { no: 2, country: 'NZ', country_name: 'New Zealand', com: 'b' };
+  const tree = { no: 3, board_flag: 'TR', flag_name: 'Tree Hugger', com: 'c' };
+  const turk = { no: 4, country: 'TR', country_name: 'Turkey', com: 'd' };
+  const autumn = { no: 5, board_flag: 'AU', flag_name: 'Autumn Blaze', com: 'e' };
+  const all = [nazi, kiwi, tree, turk, autumn];
+  const run = (f) => [...F.markPosts(all, F.compileFilters([{ id: 'x', regex: false, matchCase: false, boards: [], action: 'discard', enabled: true, ...f }], 'pol')).keys()];
+  assert.deepEqual(run({ field: 'flag', pattern: 'NZ' }), [2], 'the picker’s New Zealand leaves the Nazi flag alone');
+  assert.deepEqual(run({ field: 'flag', pattern: 'AU' }), [], 'Australia is not Autumn Blaze');
+  assert.deepEqual(run({ field: 'flag', pattern: 'Nazi' }), [1]);
+  const quick = F.quickFilters(tree).find((q) => q.field === 'flag');
+  assert.equal(quick.value, 'Tree Hugger');
+  assert.deepEqual(run(F.quickFilter('pol', quick)), [3], '“Filter this flag” on a Tree Hugger post leaves Turkey alone');
+  assert.deepEqual(run(F.quickFilter('pol', F.quickFilters(turk).find((q) => q.field === 'flag'))), [4]);
+});
+
+test('older flag filters keep what they meant: a board flag’s code becomes its name, or the code and the name where a country can have it too', () => {
+  const boards = [
+    { board: 'mlp', board_flags: { AU: 'Autumn Blaze', TS: 'Twilight &amp; co' } },
+    { board: 'pol', country_flags: 1, board_flags: { TR: 'Tree Hugger', NZ: 'Nazi' } },
+    { board: 'int', country_flags: 1 },
+  ];
+  const list = [
+    { id: 'a', field: 'flag', pattern: 'AU', regex: false, boards: ['mlp'] },
+    { id: 'b', field: 'flag', pattern: 'TS', regex: false, boards: ['mlp'] },
+    { id: 'c', field: 'flag', pattern: 'TR', regex: false, boards: ['pol'] },
+    { id: 'd', field: 'flag', pattern: 'AU', regex: false, boards: [] },
+    { id: 'e', field: 'com', pattern: 'AU', regex: false, boards: ['mlp'] },
+    { id: 'f', field: 'flag', pattern: 'FR', regex: false, boards: ['int'] },
+    { id: 'g', field: 'flag', pattern: 'AU', regex: false, boards: ['gone'] },
+    { id: 'h', field: 'flag', pattern: 'NZ', regex: false, boards: ['pol'], byName: true },
+  ];
+  const out = F.fixBoardFlagFilters(list, boards);
+  assert.deepEqual(
+    out.map((f) => [f.id, f.pattern, f.regex, f.byName === true]),
+    [
+      ['a', 'Autumn Blaze', false, true],
+      ['b', 'Twilight & co', false, true],
+      ['c', '(?:^|\\n)(?:TR|Tree Hugger)(?:\\n|$)', true, true],
+      ['d', 'AU', false, true],
+      ['e', 'AU', false, false],
+      ['f', 'FR', false, true],
+      ['g', 'AU', false, false],
+      ['h', 'NZ', false, true],
+    ],
+  );
+  assert.equal(out[6], list[6], 'a board not in the list yet: waits');
+  assert.equal(out[7], list[7], 'a filter made since is left alone');
+  assert.equal(F.fixBoardFlagFilters(out, boards), out, 'once is enough');
+  // /pol/'s old "TR" still hides Turkey and the Tree Hugger, as it did
+  const posts = [
+    { no: 1, board_flag: 'TR', flag_name: 'Tree Hugger' },
+    { no: 2, country: 'TR', country_name: 'Turkey' },
+    { no: 3, board_flag: 'NZ', flag_name: 'Nazi' },
+    { no: 4, country: 'TRX', country_name: 'Not TR' },
+  ];
+  assert.deepEqual([...F.markPosts(posts, F.compileFilters(F.normalizeFilters([out[2]]), 'pol')).keys()], [1, 2]);
+  assert.equal(F.normalizeFilters(out)[2].byName, true, 'kept when the settings are read again');
+  assert.equal(F.normalizeFilter({ field: 'com', pattern: 'x', byName: true }).byName, undefined, 'flag filters only');
+  assert.equal(F.quickFilter('pol', { field: 'flag', value: 'Tree Hugger' }).byName, true, '“Filter this flag” makes them by name');
 });
 
 test('the filter list stays inside its share of the settings file', () => {

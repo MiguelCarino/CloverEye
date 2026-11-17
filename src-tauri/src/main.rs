@@ -14,7 +14,7 @@ use clovereye_fetch::models::{BoardsResponse, Catalog, Thread};
 use clovereye_fetch::{live_client, Endpoint, Error as FetchError, Freshness, LiveClient};
 use clovereye_ffcheck::FfmpegCheck;
 use serde_json::Value;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, EventTarget, Manager};
 
 mod ai;
 mod diag;
@@ -71,17 +71,21 @@ fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 #[tauri::command]
 async fn get_settings(app: tauri::AppHandle) -> Result<Option<Value>, String> {
     let path = settings_path(&app)?;
-    match std::fs::read(&path) {
-        Ok(bytes) => Ok(serde_json::from_slice::<Value>(&bytes).ok().filter(Value::is_object)),
+    // read through a cap: a file larger than any the app writes reads as corrupt
+    match offline::read_capped(&path, MAX_SETTINGS_BYTES * 4) {
+        Ok(Some(bytes)) => Ok(serde_json::from_slice::<Value>(&bytes).ok().filter(Value::is_object)),
+        Ok(None) => Ok(None),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("reading {}: {e}", path.display())),
     }
 }
 
-/// Stores the settings object. Written to a temporary file and renamed, so
-/// a crash mid-write never leaves half a file.
+/// Stores the settings object. Written to a unique temporary file, synced
+/// and renamed, so a crash mid-write never leaves half a file. Saves from
+/// every window go one at a time, each with its event, so the windows get
+/// the 'settings-changed' events in the order the file was written.
 #[tauri::command]
-async fn set_settings(app: tauri::AppHandle, settings: Value) -> Result<(), String> {
+async fn set_settings(app: tauri::AppHandle, webview: tauri::Webview, settings: Value) -> Result<(), String> {
     if !settings.is_object() {
         return Err("settings must be a JSON object".into());
     }
@@ -93,12 +97,23 @@ async fn set_settings(app: tauri::AppHandle, settings: Value) -> Result<(), Stri
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &bytes).map_err(|e| format!("writing {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("saving {}: {e}", path.display()))?;
+    // No .await below: a std Mutex held across the write and the emit.
+    static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = SAVE.lock().unwrap_or_else(|e| e.into_inner());
+    offline::write_atomic(&path, &bytes)?;
     // Every window keeps the same settings: the others reload from this.
-    let _ = app.emit("settings-changed", &settings);
+    // The window that saved is skipped when it listens on itself (a
+    // listener on every target, `event.listen`, still gets it).
+    let _ = app.emit_filter("settings-changed", &settings, others(webview.label()));
     Ok(())
+}
+
+/// An emit filter for every listener but those of window `label`.
+fn others(label: &str) -> impl Fn(&EventTarget) -> bool + '_ {
+    move |t| match t {
+        EventTarget::Window { label: l } | EventTarget::Webview { label: l } | EventTarget::WebviewWindow { label: l } | EventTarget::AnyLabel { label: l } => l != label,
+        _ => true,
+    }
 }
 
 /// Read-only ffmpeg check: `-version`, `-encoders`, `-filters`. Never
@@ -253,6 +268,16 @@ async fn open_post_window(app: tauri::AppHandle, board: String, thread: Option<u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_changes_skip_the_window_that_saved() {
+        let f = others("main");
+        assert!(!f(&EventTarget::WebviewWindow { label: "main".into() }));
+        assert!(!f(&EventTarget::AnyLabel { label: "main".into() }));
+        assert!(f(&EventTarget::WebviewWindow { label: "w-2".into() }));
+        assert!(f(&EventTarget::Webview { label: "w-2".into() }));
+        assert!(f(&EventTarget::App));
+    }
 
     #[test]
     fn post_urls() {

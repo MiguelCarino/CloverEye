@@ -54,6 +54,28 @@ export function clear(el) {
   return el;
 }
 
+// A redrawn pane is put back where it was scrolled to. That fires a scroll
+// event a frame later, which is not the person scrolling: a menu or a
+// preview that closes on scroll asks isRestoreScroll() first.
+const restored = new WeakMap(); // element → the scrollTop it was put back to
+
+/** Puts an element back at a scroll position, as a redraw does. */
+export function restoreScroll(el, top) {
+  el.scrollTop = top;
+  restored.set(el, el.scrollTop);
+}
+
+/** Whether a scroll event is only restoreScroll() taking effect: the
+ *  element is still where it was put back. Once it is scrolled anywhere
+ *  else, its scroll events count as the person's again. */
+export function isRestoreScroll(e) {
+  const el = e?.target;
+  if (!el || !restored.has(el)) return false;
+  if (el.scrollTop === restored.get(el)) return true;
+  restored.delete(el);
+  return false;
+}
+
 const ICONS = {
   check: ['M5 12.5l4.5 4.5L19 7.5'],
   x: ['M6 6l12 12', 'M18 6L6 18'],

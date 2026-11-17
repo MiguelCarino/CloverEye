@@ -188,24 +188,55 @@ pub fn soup_version() -> (u32, u32, u32) {
 #[cfg(not(target_os = "linux"))]
 fn webkit_lines(_out: &mut String) {}
 
-/// Runs a read-only command for at most `limit`; its output, or None.
-#[cfg(target_os = "linux")]
-fn run_for(cmd: &str, args: &[&str], limit: Duration) -> Option<String> {
-    use std::process::{Command, Stdio};
-    let mut child = Command::new(cmd).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
+/// Runs an already set-up command for at most `limit`: its output (stdout
+/// and stderr apart), or None when it could not start or did not finish
+/// in time. A late child is killed and reaped on a thread of its own, so
+/// a process stuck in the kernel (a GPU that fell off the bus) never
+/// holds the caller.
+pub(crate) fn output_within(cmd: &mut std::process::Command, limit: Duration) -> Option<std::process::Output> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
+    // Read both pipes as the child writes, so a full pipe never stalls it.
+    let reader = |pipe: Option<Box<dyn Read + Send>>| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Some(mut pipe) = pipe {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = pipe.read_to_end(&mut buf);
+                let _ = tx.send(buf);
+            });
+        }
+        rx
+    };
+    let out = reader(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let err = reader(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
     let deadline = std::time::Instant::now() + limit;
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
             _ => {
                 let _ = child.kill();
-                let _ = child.wait();
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
                 return None;
             }
         }
-    }
-    let out = child.wait_with_output().ok()?;
+    };
+    // The pipes close when the child exits (unless it left a process
+    // holding them: then whatever came by the deadline).
+    let left = deadline.saturating_duration_since(std::time::Instant::now()).max(Duration::from_millis(200));
+    let stdout = out.recv_timeout(left).unwrap_or_default();
+    let stderr = err.recv_timeout(Duration::from_millis(200)).unwrap_or_default();
+    Some(std::process::Output { status, stdout, stderr })
+}
+
+/// Runs a read-only command for at most `limit`; its output, or None.
+#[cfg(target_os = "linux")]
+fn run_for(cmd: &str, args: &[&str], limit: Duration) -> Option<String> {
+    let out = output_within(std::process::Command::new(cmd).args(args), limit)?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
     Some(text)
@@ -303,8 +334,7 @@ pub async fn diagnostics_save(app: tauri::AppHandle, dir: Option<String>) -> Res
     tauri::async_runtime::spawn_blocking(move || {
         let text = report(&app);
         std::fs::create_dir_all(&folder).map_err(|e| format!("creating {}: {e}", folder.display()))?;
-        let path = crate::extra::unique_path(&folder, &format!("clovereye-diagnostics-{}.txt", stamp_for_name(now_secs())));
-        std::fs::write(&path, text).map_err(|e| format!("writing {}: {e}", path.display()))?;
+        let path = crate::offline::write_new(&folder, &format!("clovereye-diagnostics-{}.txt", stamp_for_name(now_secs())), text.as_bytes())?;
         Ok(path.display().to_string())
     })
     .await
@@ -326,6 +356,42 @@ pub fn diagnostics_note(webview: tauri::Webview, line: String) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_that_does_not_finish_in_time_is_killed_and_does_not_hold_the_caller() {
+        let t0 = std::time::Instant::now();
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("30");
+        assert!(output_within(&mut cmd, Duration::from_millis(200)).is_none());
+        assert!(t0.elapsed() < Duration::from_secs(5), "waited {:?}", t0.elapsed());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_quick_command_gives_its_output_with_stdout_and_stderr_apart() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "echo out; echo err >&2; exit 3"]);
+        let o = output_within(&mut cmd, Duration::from_secs(10)).unwrap();
+        assert_eq!(o.stdout, b"out\n");
+        assert_eq!(o.stderr, b"err\n");
+        assert_eq!(o.status.code(), Some(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_that_writes_more_than_a_pipe_holds_still_finishes() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "head -c 300000 /dev/zero"]);
+        let o = output_within(&mut cmd, Duration::from_secs(10)).unwrap();
+        assert_eq!(o.stdout.len(), 300_000);
+    }
+
+    #[test]
+    fn a_missing_command_is_none() {
+        let mut cmd = std::process::Command::new("clovereye-no-such-command");
+        assert!(output_within(&mut cmd, Duration::from_secs(1)).is_none());
+    }
 
     #[test]
     fn utc_dates() {

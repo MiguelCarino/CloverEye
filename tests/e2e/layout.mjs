@@ -3,13 +3,15 @@
 // overlapping controls and console errors; saves screenshots.
 // usage: SHOTS_DIR=dir node tests/e2e/layout.mjs [chromium|firefox] [widths comma list]
 // Playwright is not a dependency of this repo: point PLAYWRIGHT at its index.mjs.
+// The ui/ folder is served from disk at https://ce.test/ (serve.mjs); set
+// BASE_URL to use a running server instead.
 const pw = await import(process.env.PLAYWRIGHT || 'playwright');
+import { BASE, serveUi } from './serve.mjs';
 import { mkdirSync } from 'node:fs';
 
 const which = process.argv[2] || 'chromium';
 const widths = (process.argv[3] || '360,800,1280,1920').split(',').map(Number);
 const HEIGHT = { 360: 740, 800: 600, 1280: 800, 1920: 1080 };
-const BASE = process.env.BASE_URL || 'http://127.0.0.1:7397/';
 const OUT = process.env.SHOTS_DIR || 'shots';
 mkdirSync(OUT, { recursive: true });
 
@@ -43,7 +45,9 @@ async function audit(page, label) {
       if ((b.right > W + 1 || b.left < -1) && !clippedByAncestor(el)) out.offscreen.push(`${desc(el)} ${Math.round(b.left)}..${Math.round(b.right)}`);
       const s = getComputedStyle(el);
       const hasText = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
-      if (hasText && /(hidden|clip)/.test(s.overflowX + s.overflow) && el.scrollWidth > el.clientWidth + 1 && s.textOverflow !== 'ellipsis') out.clipped.push(`${desc(el)} "${el.textContent.trim().slice(0, 40)}" ${el.scrollWidth}>${el.clientWidth}`);
+      // text for screen readers only (.visually-hidden) is clipped on purpose
+      const srOnly = Boolean(el.closest('.visually-hidden'));
+      if (hasText && !srOnly && /(hidden|clip)/.test(s.overflowX + s.overflow) && el.scrollWidth > el.clientWidth + 1 && s.textOverflow !== 'ellipsis') out.clipped.push(`${desc(el)} "${el.textContent.trim().slice(0, 40)}" ${el.scrollWidth}>${el.clientWidth}`);
     }
     // Overlap between interactive controls and text blocks that are not nested.
     const ctl = all.filter((el) => el.matches('button, a, input:not([type=radio]):not([type=checkbox]), select, .segmented label, h1, h2, p, .pill, kbd, .progress__label, .check__state, dt, dd'));
@@ -103,6 +107,7 @@ const browser = await pw[which].launch();
 for (const width of widths) {
   for (const scheme of ['dark', 'light']) {
     const ctx = await browser.newContext({ viewport: { width, height: HEIGHT[width] || 800 }, colorScheme: scheme });
+    await serveUi(ctx);
     const page = await ctx.newPage();
     page._errors = [];
     page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') page._errors.push(`${m.type()}: ${m.text()}`); });
@@ -116,7 +121,8 @@ for (const width of widths) {
     const openRail = async () => {
       if (narrow) { await page.locator('[data-key="rail-toggle"]').click(); await page.waitForTimeout(250); }
     };
-    const steps = ['1-welcome', '2-look', '3-boards', '4-video', '5-watching', '6-files', '7-done'];
+    // setup version 3: Your stats and Assistant come before Done
+    const steps = ['1-welcome', '2-look', '3-boards', '4-video', '5-watching', '6-files', '7-stats', '8-assistant', '9-done'];
     for (let i = 0; i < steps.length; i++) {
       if (i === 1) await page.waitForSelector('.preview .post');
       if (i === 2) await page.waitForSelector('.board-tile');
@@ -157,7 +163,9 @@ for (const width of widths) {
     await page.waitForSelector('.catalog-card');
     await page.waitForTimeout(400);
     await audit(page, tag('8-catalog'));
-    await page.locator('.catalog-card').nth(1).click();
+    // a recorded thread with files (the mock's clock puts made-up threads,
+    // with no file, at the top of the catalog)
+    await page.locator('.catalog-card[data-key="thread-500073"]').click();
     await page.waitForSelector('.thread .post');
     await page.waitForTimeout(300);
     await audit(page, tag('8b-thread'));

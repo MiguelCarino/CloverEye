@@ -69,6 +69,49 @@ function withoutReadMarks(s) {
 export const onlyReadMarksDiffer = (a, b) => withoutReadMarks(a) === withoutReadMarks(b);
 
 /**
+ * `incoming` settings (saved by another window) with no read mark lower
+ * than in `local`: each thread's lastRead and each watched thread's `seen`
+ * take the higher of the two. Threads `incoming` no longer has are left
+ * out (dropped there as the oldest, or unwatched). Returns `incoming`
+ * itself when it is already as far everywhere.
+ */
+export function keepReadMarks(local, incoming) {
+  if (!incoming || typeof incoming !== 'object' || !local || typeof local !== 'object') return incoming;
+  const mine = local.lastRead || {};
+  let lastRead = null;
+  for (const [k, v] of Object.entries(incoming.lastRead || {})) {
+    if (isNo(mine[k]) && mine[k] > v) {
+      if (!lastRead) lastRead = { ...incoming.lastRead };
+      lastRead[k] = mine[k];
+    }
+  }
+  const seenOf = new Map((Array.isArray(local.watched) ? local.watched : []).map((w) => [readKey(w?.board, w?.no), w?.seen || 0]));
+  let raised = false;
+  const watched = Array.isArray(incoming.watched)
+    ? incoming.watched.map((w) => {
+        const s = seenOf.get(readKey(w?.board, w?.no)) || 0;
+        if (!w || s <= (w.seen || 0)) return w;
+        raised = true;
+        return { ...w, seen: s };
+      })
+    : incoming.watched;
+  if (!lastRead && !raised) return incoming;
+  return { ...incoming, ...(lastRead ? { lastRead } : {}), ...(raised ? { watched } : {}) };
+}
+
+/** True when two settings hold the same read marks (lastRead in any order,
+ *  and each watched thread's `seen`). */
+export function sameReadMarks(a, b) {
+  const ra = a?.lastRead || {};
+  const rb = b?.lastRead || {};
+  const ka = Object.keys(ra);
+  if (ka.length !== Object.keys(rb).length || ka.some((k) => ra[k] !== rb[k])) return false;
+  const wa = Array.isArray(a?.watched) ? a.watched : [];
+  const wb = Array.isArray(b?.watched) ? b.watched : [];
+  return wa.length === wb.length && wa.every((w, i) => (w?.seen || 0) === (wb[i]?.seen || 0));
+}
+
+/**
  * The posts after `read` that count as unread: not hidden (`skip`) and not
  * the person's own.
  * @param {Array<{no: number}>} posts

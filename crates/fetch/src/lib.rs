@@ -3,7 +3,8 @@
 //! Everything the app reads from `a.4cdn.org` goes through one [`Client`]:
 //!
 //! * **one queue** for the whole app: requests are serialised behind a mutex,
-//!   so there are never parallel bursts;
+//!   so there are never parallel bursts. The bookkeeping has its own short
+//!   lock, so a throttled read never waits behind a sleep or a request;
 //! * a **hard floor of 1 request per second** between requests (it can be
 //!   configured slower, never faster);
 //! * a **10 second floor per thread**: asking for the same thread sooner
@@ -13,7 +14,9 @@
 //! * **back-off** on `429`, `5xx`, any other unexpected status (403, an
 //!   unfollowed 3xx...) and transport errors. A server's `Retry-After`
 //!   (seconds or an HTTP date) is waited in full; only the self-chosen
-//!   exponential delay is capped (five minutes by default);
+//!   exponential delay is capped (five minutes by default). The app's
+//!   client does not sleep out a back-off longer than 15 s: such a request
+//!   returns [`Error::Waiting`] at once, with no request made;
 //! * **no redirects followed**: a follow-up GET would skip the queue;
 //! * a **memory-only cache** bounded by entry count and total bytes;
 //! * an honest `User-Agent: CloverEye/<version>` and nothing else that
@@ -40,7 +43,12 @@ pub use transport::{Request, Response, Transport, UreqTransport};
 /// The default client: real network, real clock.
 pub type LiveClient = Client<UreqTransport, SystemClock>;
 
+/// The live client's `Config::max_wait`: a longer back-off is reported to
+/// the UI at once instead of leaving its pane loading for minutes.
+pub const LIVE_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Builds the default client with the default (and minimum) limits.
 pub fn live_client() -> LiveClient {
-    Client::new(UreqTransport::new(), SystemClock::new(), Config::default())
+    let config = Config { max_wait: Some(LIVE_MAX_WAIT), ..Config::default() };
+    Client::new(UreqTransport::new(), SystemClock::new(), config)
 }

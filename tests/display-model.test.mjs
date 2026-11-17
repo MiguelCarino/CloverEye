@@ -127,3 +127,10 @@ test('isImageFile and isVideoFile', () => {
   assert.equal(D.isVideoFile({ ext: '.mp4' }), true);
   assert.equal(D.isVideoFile({}), false);
 });
+
+test('localTime keeps one formatter per language and time zone, with the same text', () => {
+  const opts = { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'UTC' };
+  for (let i = 0; i < 3; i++) assert.equal(D.localTime(T + i, 'en-GB', 'UTC'), new Date((T + i) * 1000).toLocaleString('en-GB', opts));
+  assert.equal(D.localTime(T, 'ja', 'Asia/Tokyo'), new Date(T * 1000).toLocaleString('ja', { ...opts, timeZone: 'Asia/Tokyo' }), 'another language and zone: its own');
+  assert.ok(D.localTime(T, 'en-GB', 'Not/AZone'), 'a bad time zone falls back instead of throwing');
+});

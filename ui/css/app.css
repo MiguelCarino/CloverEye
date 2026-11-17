@@ -1691,6 +1691,7 @@ dialog[open] {
 
   .centre__head,
   .centre__body {
+    --body-pad-x: var(--space-4);
     padding-left: var(--space-4);
     padding-right: var(--space-4);
   }
@@ -1976,10 +1977,10 @@ dialog[open] {
    to them brings them back. */
 .browse__tools--thread {
   position: sticky;
-  top: calc(-1 * var(--space-5));
+  top: calc(-1 * var(--body-pad-y, var(--space-5)));
   z-index: 6;
-  margin: calc(-1 * var(--space-5)) calc(-1 * var(--space-5)) 0;
-  padding: var(--space-3) var(--space-5);
+  margin: calc(-1 * var(--body-pad-y, var(--space-5))) calc(-1 * var(--body-pad-x, var(--space-5))) 0;
+  padding: var(--space-3) var(--body-pad-x, var(--space-5));
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   transition:
@@ -1991,10 +1992,10 @@ dialog[open] {
    scrolling: never tucked, so a search is always one click away. */
 .browse__tools--sticky {
   position: sticky;
-  top: calc(-1 * var(--space-5));
+  top: calc(-1 * var(--body-pad-y, var(--space-5)));
   z-index: 6;
-  margin: calc(-1 * var(--space-5)) calc(-1 * var(--space-5)) 0;
-  padding: var(--space-3) var(--space-5);
+  margin: calc(-1 * var(--body-pad-y, var(--space-5))) calc(-1 * var(--body-pad-x, var(--space-5))) 0;
+  padding: var(--space-3) var(--body-pad-x, var(--space-5));
   background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
@@ -2046,6 +2047,31 @@ dialog[open] {
 
 .catalog__item:hover {
   border-color: var(--accent-line);
+}
+
+/* Cards out of sight are not laid out or painted (a catalog has 150 of
+   them): each holds the place of a card of about this height, then of its
+   own height once it was shown. A redraw puts the catalog back by its first
+   card in sight (shell.js capture), not by pixels. Posts are left alone: a
+   thread jumps to posts and marks read by where they are. */
+.catalog__item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 180px auto 300px;
+}
+
+/* while a redrawn catalog is put back where it was (by its first card in
+   sight: the browser's own scroll anchoring would move it again) */
+.is-placing {
+  overflow-anchor: none;
+}
+
+.is-placing .catalog__item {
+  content-visibility: visible;
+}
+
+/* the card's paint is kept inside it: its focus ring goes inside too */
+.catalog__item .catalog-card:focus-visible {
+  outline-offset: -2px;
 }
 
 .catalog-card {
@@ -2132,8 +2158,11 @@ dialog[open] {
   overflow: hidden;
 }
 
+/* a column (not a grid): a thread of hundreds of posts drawn again is laid
+   out in a quarter less time */
 .thread {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: var(--space-2);
   min-width: 0;
 }
@@ -2916,14 +2945,27 @@ video.post__media {
   flex: none;
 }
 
+/* --body-pad-*: the padding, for the sticky bars that cover it */
 .pane .centre__body {
+  --body-pad-y: var(--space-4);
+  --body-pad-x: var(--space-4);
   padding: var(--space-4);
+}
+
+/* A pane's body takes the size its pane gives it, never its content's: a
+   change inside a long thread (a status line, a new post) is then laid out
+   on its own, not the whole thread twice over for the grid (40 ms → 1 ms
+   on a 400-post thread). */
+.pane > .centre__body {
+  contain: size;
 }
 
 .workspace__grid:has(.workspace__row:nth-child(2)) .pane .centre__body,
 .workspace__row[style*='--cols: 3'] .pane .centre__body,
 .workspace__row[style*='--cols: 4'] .pane .centre__body,
 .workspace__row[style*='--cols: 5'] .pane .centre__body {
+  --body-pad-y: var(--space-3);
+  --body-pad-x: var(--space-3);
   padding: var(--space-3);
 }
 
@@ -2985,6 +3027,8 @@ video.post__media {
   /* leaves the panes' header buttons uncovered */
   max-height: min(640px, calc(100vh - var(--titlebar-h) - 150px));
   display: grid;
+  /* minmax(0, ...) keeps a wide row (the foot's buttons) inside the box */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
   background: var(--surface);
   border: 1px solid var(--border-strong);
@@ -3015,6 +3059,7 @@ video.post__media {
 .composer__foot {
   border-top: 1px solid var(--border);
   justify-content: space-between;
+  flex-wrap: wrap;
 }
 
 /* the resize grip: top-left, since the form is anchored bottom-right */
@@ -3913,6 +3958,30 @@ video.post__media {
   object-fit: cover;
 }
 
+/* a strip thumb with no picture: "Spoiler", or the file's extension in
+   work mode (the gallery is always dark) */
+.gallery__face {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 0 4px;
+  color: #b8b8c6;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "Show this file" on the stage, centred like the file itself */
+.gallery__reveal {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: fit-content;
+  height: fit-content;
+}
+
 /* the download, shown on the save button */
 .gallery__save {
   position: relative;
@@ -4123,6 +4192,16 @@ video.post__media {
 
 .post-stub__show:hover {
   color: var(--text);
+}
+
+/* A hidden post where a quote link shows it (a preview, an inline copy):
+   the line only, nothing to press. */
+.post-stub--copy .post-stub__show {
+  cursor: default;
+}
+
+.post-stub--copy .post-stub__show:hover {
+  color: inherit;
 }
 
 .post--highlight,
@@ -4386,6 +4465,68 @@ video.post__media {
   font-family: var(--font-mono);
   font-size: 0.85em;
   text-decoration: line-through;
+}
+
+/* Board links (">>>/g/", ">>>/g/catalog#s=term"): open that board's
+   catalog; drawn like a quote link (setup.js renderPost). */
+button.seg-boardlink {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--quotelink-bg);
+  color: var(--quotelink);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  font-weight: 600;
+  text-decoration: none;
+  border: 0;
+  cursor: pointer;
+}
+
+/* Greentext, links, dead links and code inside a spoiler (render.js marks
+   them spoiler: true) stay hidden with it. After the rules above, so these
+   win on source order; hovering or focusing one shows it as it would be. */
+.seg-spoiler.seg-greentext,
+.seg-spoiler.seg-quotelink,
+button.seg-spoiler.seg-boardlink,
+.seg-spoiler.seg-deadlink,
+.seg-spoiler.seg-code {
+  color: transparent;
+  background: var(--spoiler);
+}
+
+.seg-spoiler.seg-greentext:is(:hover, :focus-within),
+:root[data-reveal-spoilers='on'] .seg-spoiler.seg-greentext {
+  color: var(--greentext);
+  background: none;
+}
+
+.seg-spoiler.seg-quotelink:is(:hover, :focus-visible),
+button.seg-spoiler.seg-boardlink:is(:hover, :focus-visible),
+:root[data-reveal-spoilers='on'] .seg-spoiler.seg-quotelink,
+:root[data-reveal-spoilers='on'] button.seg-spoiler.seg-boardlink {
+  color: var(--quotelink);
+  background: var(--quotelink-bg);
+}
+
+/* an opened quote stays shown, in its open colours */
+.seg-spoiler.seg-quotelink[aria-expanded='true'],
+:root[data-reveal-spoilers='on'] .seg-spoiler.seg-quotelink[aria-expanded='true'] {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+
+.seg-spoiler.seg-deadlink:hover,
+:root[data-reveal-spoilers='on'] .seg-spoiler.seg-deadlink {
+  color: var(--text-faint);
+  background: none;
+}
+
+.seg-spoiler.seg-code:is(:hover, :focus-within),
+:root[data-reveal-spoilers='on'] .seg-spoiler.seg-code {
+  color: inherit;
+  background: var(--bg-sunken);
 }
 
 .archive-link--icon {

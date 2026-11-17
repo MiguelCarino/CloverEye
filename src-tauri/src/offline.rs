@@ -37,6 +37,8 @@ const THREAD: &str = "thread.json";
 const EXTS: [&str; 6] = [".jpg", ".png", ".gif", ".webm", ".mp4", ".pdf"];
 const MAX_FILE: u64 = 64 * 1024 * 1024;
 const MAX_THREAD_JSON: usize = 32 * 1024 * 1024;
+/// index.json is read only up to this; a larger one is left as it is.
+const MAX_INDEX: usize = 32 * 1024 * 1024;
 /// Downloads go out one at a time, at least this far apart.
 const GAP: Duration = Duration::from_secs(1);
 /// What one range request of a saved video gets at most.
@@ -266,12 +268,40 @@ pub fn find_thread_dir(root: &Path, board: &str, no: u64) -> Option<PathBuf> {
     None
 }
 
-fn read_index(root: &Path) -> Vec<Value> {
-    std::fs::read(root.join(INDEX))
+/// A file's bytes, read through a cap so a huge file is never read whole:
+/// Ok(None) when it is larger than `max`. Errors (NotFound...) as they are.
+pub(crate) fn read_capped(path: &Path, max: usize) -> std::io::Result<Option<Vec<u8>>> {
+    let file = std::fs::File::open(path)?;
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut bytes = Vec::with_capacity(len.min(max as u64 + 1) as usize);
+    file.take(max as u64 + 1).read_to_end(&mut bytes)?;
+    Ok((bytes.len() <= max).then_some(bytes))
+}
+
+/// Saving a thread refuses to replace an index.json it could not read (it
+/// would come back with one thread in it); a delete leaves such a file be.
+const INDEX_UNREADABLE: &str = "index.json in the saved threads folder can’t be read, so it was not replaced.";
+
+/// index.json's threads: Ok(None) when there is none yet; an error when it
+/// cannot be read, is larger than MAX_INDEX or is not an index (no
+/// "threads" list). Such a file is never taken for an empty index.
+fn read_index(root: &Path) -> Result<Option<Vec<Value>>, String> {
+    let bytes = match read_capped(&root.join(INDEX), MAX_INDEX) {
+        Ok(Some(b)) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Ok(None) | Err(_) => return Err(INDEX_UNREADABLE.to_string()),
+    };
+    serde_json::from_slice::<Value>(&bytes)
         .ok()
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
         .and_then(|v| v.get("threads").and_then(Value::as_array).cloned())
-        .unwrap_or_default()
+        .map(Some)
+        .ok_or_else(|| INDEX_UNREADABLE.to_string())
+}
+
+/// index.json's threads, only to show them: none when it is missing or
+/// cannot be read (the folders still list).
+fn index_entries(root: &Path) -> Vec<Value> {
+    read_index(root).ok().flatten().unwrap_or_default()
 }
 
 /// The ending of the temporary files a write goes through.
@@ -306,6 +336,32 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         let _ = std::fs::remove_file(&tmp);
         format!("saving {}: {e}", path.display())
     })
+}
+
+/// Writes `bytes` as a new file in `dir` named `name`, or `name-2`... when
+/// that is taken, and returns its path. Never replaces a file: the name is
+/// first claimed by creating it empty (create_new, so a file or link that
+/// appears in the meantime makes it try the next name), then the bytes go
+/// through a temporary file renamed onto that claim. For files that must
+/// replace (indexes, thread.json), use write_atomic.
+pub(crate) fn write_new(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    // name..name-9999, then a hundred with the time in them
+    for candidate in crate::extra::name_candidates(name).take(10_099) {
+        let path = dir.join(&candidate);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(claim) => drop(claim),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).map_err(|e| format!("writing {}: {e}", path.display())),
+        }
+        return match write_atomic(&path, bytes) {
+            Ok(()) => Ok(path),
+            Err(e) => {
+                let _ = std::fs::remove_file(&path);
+                Err(e)
+            }
+        };
+    }
+    Err(format!("There are too many files named {name} in {}.", dir.display()))
 }
 
 fn write_index(root: &Path, threads: &[Value]) -> Result<(), String> {
@@ -358,7 +414,7 @@ fn check_thread(board: &str, no: u64) -> Result<(), String> {
 pub async fn offline_list(app: tauri::AppHandle, dir: Option<String>) -> Result<Value, String> {
     let root = root_of(&app, dir.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || {
-        let index = read_index(&root);
+        let index = index_entries(&root);
         let mut out = Vec::new();
         let Ok(entries) = std::fs::read_dir(&root) else { return Ok(json!([])) };
         for e in entries.flatten() {
@@ -407,9 +463,11 @@ pub async fn offline_read(app: tauri::AppHandle, dir: Option<String>, board: Str
     let root = root_of(&app, dir.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || {
         let folder = find_thread_dir(&root, &board, no).ok_or("not-saved")?;
-        let bytes = std::fs::read(folder.join(THREAD)).map_err(|_| "not-saved".to_string())?;
+        let Some(bytes) = read_capped(&folder.join(THREAD), MAX_THREAD_JSON).map_err(|_| "not-saved".to_string())? else {
+            return Err("The saved thread is larger than CloverEye reads (32 MB).".to_string());
+        };
         let thread: Value = serde_json::from_slice(&bytes).map_err(|e| format!("The saved thread is damaged: {e}"))?;
-        let meta = read_index(&root).into_iter().find(|v| same_thread(v, &board, no));
+        let meta = index_entries(&root).into_iter().find(|v| same_thread(v, &board, no));
         Ok(json!({
             "thread": thread,
             "folder": folder.display().to_string(),
@@ -444,6 +502,8 @@ pub async fn offline_write_thread(app: tauri::AppHandle, dir: Option<String>, bo
         let state = handle.state::<OfflineState>();
         let _lock = state.index.lock().unwrap();
         ensure_dir(&root)?;
+        // an index.json that cannot be read is kept, and nothing is written
+        let index = read_index(&root)?.unwrap_or_default();
         let folder = match find_thread_dir(&root, &board, no) {
             Some(f) => f,
             None => root.join(thread_dir_name(&board, no, &title)),
@@ -452,7 +512,7 @@ pub async fn offline_write_thread(app: tauri::AppHandle, dir: Option<String>, bo
         real_dir(&folder.join("files"))?;
         real_dir(&folder.join("thumbs"))?;
         write_atomic(&folder.join(THREAD), &bytes)?;
-        let mut index: Vec<Value> = read_index(&root).into_iter().filter(|v| !same_thread(v, &board, no)).collect();
+        let mut index: Vec<Value> = index.into_iter().filter(|v| !same_thread(v, &board, no)).collect();
         index.push(json!({
             "board": board,
             "no": no,
@@ -561,9 +621,11 @@ pub async fn offline_delete(app: tauri::AppHandle, dir: Option<String>, board: S
             }
             std::fs::remove_dir_all(&folder).map_err(|e| format!("deleting {}: {e}", folder.display()))?;
         }
-        let index: Vec<Value> = read_index(&root).into_iter().filter(|v| !same_thread(v, &board, no)).collect();
-        if root.join(INDEX).exists() {
-            write_index(&root, &index)?;
+        // its entry goes from index.json; one that cannot be read is left as
+        // it is (the folder is gone, and the list comes from the folders)
+        if let Ok(Some(index)) = read_index(&root) {
+            let kept: Vec<Value> = index.into_iter().filter(|v| !same_thread(v, &board, no)).collect();
+            write_index(&root, &kept)?;
         }
         Ok(())
     })
@@ -577,14 +639,16 @@ pub async fn offline_delete(app: tauri::AppHandle, dir: Option<String>, board: S
 /// name and `size` is already there. { status, path }.
 #[tauri::command]
 pub async fn download_file(app: tauri::AppHandle, url: String, name: String, dir: Option<String>, size: Option<u64>) -> Result<Value, String> {
-    if !crate::extra::media_url_ok(&url) {
+    let Some(ext) = crate::extra::media_ext(&url) else {
         return Err("Only files from the image host can be saved.".into());
-    }
+    };
     let folder = match dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
         Some(d) if Path::new(d).is_absolute() => PathBuf::from(d),
         _ => app.path().download_dir().map_err(|e| e.to_string())?.join("CloverEye"),
     };
-    let name = crate::extra::safe_name(&name);
+    // The server's extension, never one from the uploader's name; worked
+    // out before the skip check so a re-run finds the same name.
+    let name = crate::extra::save_name(&name, ext);
     ensure_dir(&folder)?;
     let same = folder.join(&name);
     if let (Some(s), Ok(m)) = (size.filter(|s| *s > 0), std::fs::symlink_metadata(&same)) {
@@ -594,8 +658,7 @@ pub async fn download_file(app: tauri::AppHandle, url: String, name: String, dir
     }
     gated(&app, move || {
         let body = download(&url)?;
-        let path = crate::extra::unique_path(&folder, &name);
-        write_atomic(&path, &body)?;
+        let path = write_new(&folder, &name, &body)?;
         Ok(json!({ "status": "saved", "path": path.display().to_string() }))
     })
     .await
@@ -651,7 +714,7 @@ pub fn protocol(ctx: UriSchemeContext<'_, tauri::Wry>, request: Request<Vec<u8>>
                 .body(buf);
             return responder.respond(res.unwrap());
         }
-        let mut buf = Vec::with_capacity(len as usize);
+        let mut buf = Vec::with_capacity(len.min(MAX_FILE) as usize);
         if file.take(MAX_FILE).read_to_end(&mut buf).is_err() {
             return respond_status(responder, StatusCode::INTERNAL_SERVER_ERROR);
         }
@@ -662,6 +725,45 @@ pub fn protocol(ctx: UriSchemeContext<'_, tauri::Wry>, request: Request<Vec<u8>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_new_never_replaces_a_file() {
+        let dir = std::env::temp_dir().join(format!("ce-write-new-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("x.png"), b"old").unwrap();
+        let p = write_new(&dir, "x.png", b"new").unwrap();
+        assert_eq!(p, dir.join("x-2.png"));
+        assert_eq!(std::fs::read(dir.join("x.png")).unwrap(), b"old");
+        assert_eq!(std::fs::read(&p).unwrap(), b"new");
+        assert_eq!(write_new(&dir, "y.png", b"y").unwrap(), dir.join("y.png"));
+        // every numbered name taken: one with the time in it, not x.png again
+        for i in 3..10_000 {
+            std::fs::write(dir.join(format!("x-{i}.png")), b"").unwrap();
+        }
+        let p = write_new(&dir, "x.png", b"last").unwrap();
+        let name = p.file_name().unwrap().to_str().unwrap().to_string();
+        assert!(name.starts_with("x-") && name.ends_with(".png") && name != "x-9999.png", "{name}");
+        assert_eq!(std::fs::read(&p).unwrap(), b"last");
+        assert_eq!(std::fs::read(dir.join("x.png")).unwrap(), b"old");
+        // a dangling link is never written through
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("elsewhere"), dir.join("z.png")).unwrap();
+            assert_eq!(write_new(&dir, "z.png", b"z").unwrap(), dir.join("z-2.png"));
+            assert!(!dir.join("elsewhere").exists());
+        }
+        // no temporary files left behind
+        let temps = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(TMP_SUFFIX)).count();
+        assert_eq!(temps, 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_new_reports_a_folder_it_cannot_write() {
+        let dir = std::env::temp_dir().join(format!("ce-write-new-missing-{}", std::process::id())).join("no").join("such");
+        assert!(write_new(&dir, "x.png", b"1").is_err());
+    }
 
     #[test]
     fn boards_numbers_and_extensions_are_checked() {
@@ -703,7 +805,7 @@ mod tests {
         assert_eq!(file_url("g", "full", 17, ".png").unwrap(), "https://i.4cdn.org/g/17.png");
         assert_eq!(file_url("g", "thumb", 17, ".png").unwrap(), "https://i.4cdn.org/g/17s.jpg");
         assert!(file_url("../x", "full", 17, ".png").is_err());
-        assert!(crate::extra::media_url_ok(&file_url("wsg", "full", 1793731659876000, ".webm").unwrap()));
+        assert!(crate::extra::media_ext(&file_url("wsg", "full", 1793731659876000, ".webm").unwrap()).is_some());
     }
 
     #[test]
@@ -774,9 +876,47 @@ mod tests {
         }
         // the index round-trips
         write_index(&root, &[json!({ "board": "g", "no": 123, "title": "t", "savedAt": 5 })]).unwrap();
-        let idx = read_index(&root);
+        let idx = read_index(&root).unwrap().unwrap();
         assert!(same_thread(&idx[0], "g", 123) && !same_thread(&idx[0], "g", 1234));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn an_index_that_cannot_be_read_is_never_taken_for_an_empty_one() {
+        let root = std::env::temp_dir().join(format!("ce-offline-index-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(read_index(&root), Ok(None), "none yet");
+        assert!(index_entries(&root).is_empty());
+        let p = root.join(INDEX);
+        for bad in [&b"{\"threads\": ["[..], b"[1, 2]", b"{\"version\": 1}", b""] {
+            std::fs::write(&p, bad).unwrap();
+            assert_eq!(read_index(&root), Err(INDEX_UNREADABLE.to_string()), "{}", String::from_utf8_lossy(bad));
+            assert!(index_entries(&root).is_empty(), "shown as no entries");
+        }
+        // larger than the cap: refused without being read whole (a sparse file)
+        std::fs::File::create(&p).unwrap().set_len(MAX_INDEX as u64 + 1).unwrap();
+        assert_eq!(read_index(&root), Err(INDEX_UNREADABLE.to_string()));
+        assert_eq!(std::fs::metadata(&p).unwrap().len(), MAX_INDEX as u64 + 1, "left as it is");
+        std::fs::remove_file(&p).unwrap();
+        std::fs::create_dir(&p).unwrap();
+        assert!(read_index(&root).is_err(), "a folder in its place");
+        std::fs::remove_dir(&p).unwrap();
+        std::fs::write(&p, br#"{"version":1,"threads":[{"board":"g","no":5}]}"#).unwrap();
+        assert_eq!(read_index(&root).unwrap().unwrap().len(), 1);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn capped_reads_stop_past_the_cap() {
+        let dir = std::env::temp_dir().join(format!("ce-capped-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a"), b"12345").unwrap();
+        assert_eq!(read_capped(&dir.join("a"), 5).unwrap(), Some(b"12345".to_vec()));
+        assert_eq!(read_capped(&dir.join("a"), 4).unwrap(), None);
+        assert_eq!(read_capped(&dir.join("none"), 4).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

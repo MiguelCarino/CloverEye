@@ -1,10 +1,13 @@
 // Functional end-to-end pass of the CloverEye first-time setup (mock bridge).
 // usage: node tests/e2e/setup-flow.mjs [chromium|firefox]
 // Playwright is not a dependency of this repo: point PLAYWRIGHT at its index.mjs.
+// The ui/ folder is served from disk at https://ce.test/ (serve.mjs); set
+// BASE_URL to use a running server instead.
 const pw = await import(process.env.PLAYWRIGHT || 'playwright');
+import { BASE, serveUi, uiText } from './serve.mjs';
+import { VERSION } from '../../ui/js/version.js';
 
 const which = process.argv[2] || 'chromium';
-const BASE = process.env.BASE_URL || 'http://127.0.0.1:7397/';
 const results = [];
 let failures = 0;
 function check(name, cond, extra = '') {
@@ -16,6 +19,7 @@ const browser = await pw[which].launch();
 
 async function newPage(viewport = { width: 1280, height: 800 }) {
   const ctx = await browser.newContext({ viewport });
+  await serveUi(ctx);
   const page = await ctx.newPage();
   page._errors = [];
   page._outside = [];
@@ -28,6 +32,10 @@ async function newPage(viewport = { width: 1280, height: 800 }) {
 const stepLabel = (page) => page.locator('#progressCount').textContent();
 const nextBtn = (page) => page.locator('#nextBtn');
 const settled = (page) => page.waitForTimeout(300);
+// Minimising leaves a copy of the open form folding into the pill for a
+// moment (compose.js setMin/leave: aria-hidden, removed when it ends).
+const ghostGone = (page) =>
+  page.waitForFunction(() => !document.querySelector('.composer[aria-hidden="true"]'), null, { timeout: 2000 }).then(() => true, () => false);
 
 // ---------------------------------------------------------------- mouse run
 {
@@ -35,10 +43,11 @@ const settled = (page) => page.waitForTimeout(300);
   await page.goto(BASE);
   await page.waitForSelector('#setup:not([hidden]) .step__title');
   check('setup shown on first launch', await page.locator('#setup').isVisible());
-  check('step 1 is Welcome', (await stepLabel(page)).includes('Step 1 of 7 · Welcome'), await stepLabel(page));
+  check('step 1 is Welcome', (await stepLabel(page)).includes('Step 1 of 9 · Welcome'), await stepLabel(page));
   check('Back disabled on step 1', await page.locator('#backBtn').isDisabled());
   check('welcome says no request made', (await page.locator('.fact').first().textContent()).includes('in step 3'));
-  check('7 progress steps, no Content step', (await page.locator('#progress li').count()) === 7 && (await page.locator('#progress button:has-text("Content")').count()) === 0);
+  // setup version 3: Welcome, Look, Boards, Video, Watching, Files, Your stats, Assistant, Done
+  check('9 progress steps, no Content step', (await page.locator('#progress li').count()) === 9 && (await page.locator('#progress button:has-text("Content")').count()) === 0);
 
   await nextBtn(page).click(); await settled(page);
   check('step 2 Look', (await stepLabel(page)).includes('Look'));
@@ -91,10 +100,16 @@ const settled = (page) => page.waitForTimeout(300);
   await page.fill('#intervalInput', '15');
   check('typing 15 presses the 15 s preset', (await page.locator('[data-key="preset-15"]').getAttribute('aria-pressed')) === 'true' && (await page.locator('[data-key="preset-10"]').getAttribute('aria-pressed')) === 'false');
   await nextBtn(page).click(); await settled(page);
-  check('step 7 Files', (await stepLabel(page)).includes('Files'));
+  check('step 6 Files', (await stepLabel(page)).includes('Step 6 of 9 · Files'), await stepLabel(page));
   check('strip metadata on by default', (await page.locator('[data-key="switch-strip"]').getAttribute('aria-checked')) === 'true');
   await nextBtn(page).click(); await settled(page);
-  check('step 7 Done', (await stepLabel(page)).includes('Done'));
+  check('step 7 Your stats', (await stepLabel(page)).includes('Step 7 of 9 · Your stats'), await stepLabel(page));
+  check('own stats off by default', (await page.locator('[data-key="switch-mystats"]').getAttribute('aria-checked')) === 'false');
+  await nextBtn(page).click(); await settled(page);
+  check('step 8 Assistant', (await stepLabel(page)).includes('Step 8 of 9 · Assistant'), await stepLabel(page));
+  check('assistant off by default', (await page.locator('[data-key="switch-ai"]').getAttribute('aria-checked')) === 'false');
+  await nextBtn(page).click(); await settled(page);
+  check('step 9 Done', (await stepLabel(page)).includes('Step 9 of 9 · Done'), await stepLabel(page));
   check('Skip hidden on Done', !(await page.locator('#skipBtn').isVisible()));
   await page.keyboard.press('Escape'); await settled(page);
   check('Esc on Done does not open Skip dialog', !(await page.locator('#skipDialog').isVisible()));
@@ -145,7 +160,7 @@ const settled = (page) => page.waitForTimeout(300);
   check('theme survives a reload', (await page.getAttribute('html', 'data-theme')) === 'tomorrow');
   await page.locator('[data-key="settings"]').click(); await page.waitForSelector('.settings');
   await page.locator('[data-key="rerun"]').click(); await page.waitForSelector('#setup:not([hidden])');
-  check('Run setup again reopens all 7 steps', (await stepLabel(page)).includes('Step 1 of 7'));
+  check('Run setup again reopens all 9 steps', (await stepLabel(page)).includes('Step 1 of 9'));
   await page.locator('#skipBtn').click();
   check('Skip opens confirm dialog', await page.locator('#skipDialog').isVisible());
   await page.locator('#skipDialog [data-act="confirm"]').click(); await page.waitForSelector('#shell:not([hidden])');
@@ -154,7 +169,7 @@ const settled = (page) => page.waitForTimeout(300);
   check('Skip keeps earlier answers', JSON.stringify(stored2?.favourites) === '["g","diy"]', JSON.stringify(stored2?.favourites));
 
   await page.goto(BASE + '#setup'); await page.waitForSelector('#setup:not([hidden])');
-  check('#setup reopens setup', (await stepLabel(page)).includes('Step 1 of 7'));
+  check('#setup reopens setup', (await stepLabel(page)).includes('Step 1 of 9'));
   check('mouse run: no console errors', page._errors.length === 0, page._errors.join(' | '));
   await ctx.close();
 }
@@ -205,7 +220,7 @@ const settled = (page) => page.waitForTimeout(300);
   await k('Escape'); await settled(page);
   check('kb: Esc closes Skip dialog', !(await page.locator('#skipDialog').isVisible()) && (await stepLabel(page)).includes('Boards'));
   await page.evaluate(() => document.activeElement.blur());
-  for (const want of ['Video', 'Watching', 'Files', 'Done']) {
+  for (const want of ['Video', 'Watching', 'Files', 'Your stats', 'Assistant', 'Done']) {
     await k('ArrowRight');
     await settled(page);
     if (want === 'Video') await page.waitForSelector('.check');
@@ -286,7 +301,9 @@ const settled = (page) => page.waitForTimeout(300);
   await page.waitForSelector('[data-key="skip-step"]');
   await page.locator('[data-key="skip-step"]').click(); await settled(page);
   check('Skip this step → Video', (await stepLabel(page)).includes('Video'));
-  for (let i = 0; i < 3; i++) { await nextBtn(page).click(); await settled(page); }
+  // Watching, Files, Your stats, Assistant, Done
+  for (let i = 0; i < 5; i++) { await nextBtn(page).click(); await settled(page); }
+  check('Video + 5 → Done', (await stepLabel(page)).includes('Done'), await stepLabel(page));
   check('Done offers the board list without favourites', (await nextBtn(page).textContent()).includes('board list'), await nextBtn(page).textContent());
   await nextBtn(page).click(); await page.waitForSelector('#shell:not([hidden])');
   check('shell after failed boards', await page.locator('#shell').isVisible());
@@ -359,13 +376,16 @@ const settled = (page) => page.waitForTimeout(300);
   for (let i = 0; i < 6 && !(await stepLabel(page)).includes('Done'); i++) { await nextBtn(page).click(); await settled(page); }
   await nextBtn(page).click(); await page.waitForSelector('#shell:not([hidden])');
   await page.waitForSelector('.catalog-card');
-  check('browse: /g/ catalog loads 15 threads', (await page.locator('.catalog-card').count()) === 15);
+  // the mock's catalog: the 15 recorded threads, plus the 3 newest its clock
+  // makes up (bridge.js liveCatalog)
+  const CATALOG_THREADS = 18;
+  check(`browse: /g/ catalog loads ${CATALOG_THREADS} threads`, (await page.locator('.catalog-card').count()) === CATALOG_THREADS, String(await page.locator('.catalog-card').count()));
   check('browse: catalog cards show reply counts', /R \d+/.test(await page.locator('.catalog-card__counts').first().textContent()));
   check('browse: no placeholder text left', (await page.locator('text=arrives in the next phase').count()) === 0);
   await page.fill('[data-key="catalog-search"]', 'keyboard');
   await settled(page);
   const hits = await page.locator('.catalog-card').count();
-  check('browse: search narrows the catalog', hits >= 1 && hits < 15, String(hits));
+  check('browse: search narrows the catalog', hits >= 1 && hits < CATALOG_THREADS, String(hits));
   check('browse: search box keeps focus while typing', await page.evaluate(() => document.activeElement?.dataset?.key === 'catalog-search'));
   await page.fill('[data-key="catalog-search"]', '');
   await settled(page);
@@ -379,7 +399,7 @@ const settled = (page) => page.waitForTimeout(300);
   // open the first thread that has replies listed
   const cards = page.locator('.catalog-card');
   let opened = false;
-  for (let i = 0; i < 15 && !opened; i++) {
+  for (let i = 0; i < CATALOG_THREADS && !opened; i++) {
     await cards.nth(i).click();
     await page.waitForSelector('.thread .post', { timeout: 3000 }).catch(() => {});
     if ((await page.locator('.thread .post').count()) > 1 && (await page.locator('.thread .post__backlinks').count()) > 0) opened = true;
@@ -387,7 +407,8 @@ const settled = (page) => page.waitForTimeout(300);
   }
   check('browse: thread opens with OP and replies', opened);
   check('browse: OP is first', (await page.locator('.thread .post').first().getAttribute('class')).includes('post--op'));
-  check('browse: title names the thread', ((await page.title()) || '').startsWith('/g/ · '), await page.title());
+  // (its unread posts in front: "(3) /g/ · …")
+  check('browse: title names the thread', /^(\(\d+\) )?\/g\/ · /.test((await page.title()) || ''), await page.title());
   const thumbs = page.locator('.thread .post__thumb');
   if (await thumbs.count()) {
     await thumbs.first().click(); await settled(page);
@@ -401,11 +422,16 @@ const settled = (page) => page.waitForTimeout(300);
   const quote = page.locator('.thread .post__backlinks .seg-quotelink').first();
   check('browse: the thread has backlinks', (await quote.count()) === 1);
   if (await quote.count()) {
+    // quote links open inline by default (Settings → Quote links); Ctrl+click jumps
     await quote.click(); await page.waitForTimeout(400);
-    check('browse: a backlink jumps to the replying post', (await page.locator('.post--flash').count()) >= 1);
+    check('browse: a backlink opens the replying post inline', (await quote.getAttribute('aria-expanded')) === 'true' && (await page.locator('.thread .quote-inline .post').count()) >= 1);
+    await quote.click(); await page.waitForTimeout(400);
+    check('browse: clicked again, the copy closes', (await quote.getAttribute('aria-expanded')) === 'false' && (await page.locator('.thread .quote-inline').count()) === 0);
+    await quote.click({ modifiers: ['Control'] }); await page.waitForTimeout(400);
+    check('browse: a backlink Ctrl+clicked jumps to the replying post', (await page.locator('.post--flash').count()) >= 1);
   }
   await page.keyboard.press('Escape'); await page.waitForSelector('.catalog-card');
-  check('browse: Esc goes back to the catalog', (await page.locator('.catalog-card').count()) === 15);
+  check('browse: Esc goes back to the catalog', (await page.locator('.catalog-card').count()) === CATALOG_THREADS);
   await page.locator('[data-key="all-boards"]').click(); await page.waitForSelector('.board-list .board-card__open');
   check('browse: All boards lists the worksafe boards', (await page.locator('.board-list .board-card__open').count()) === 53);
   await page.locator('[data-key="list-diy"]').click(); await page.waitForSelector('.catalog-card');
@@ -460,6 +486,8 @@ const settled = (page) => page.waitForTimeout(300);
   check('sidebar: shown again', await page.locator('.rail').isVisible());
   // watcher
   await page.locator('[data-key="fav-g"]').click(); await page.waitForSelector('.catalog-card');
+  // the newest thread: one the mock's clock made up, just its opening post
+  // (?mock-grow adds a reply on every fetch), so it fits on screen
   const firstNo = await page.locator('.catalog-card').nth(1).getAttribute('data-key');
   await page.locator('.catalog-card').nth(1).click(); await page.waitForSelector('.thread .post');
   await page.locator('[data-key="thread-watch"]').click(); await settled(page);
@@ -509,6 +537,7 @@ const settled = (page) => page.waitForTimeout(300);
   await page.waitForSelector('[data-key="compose-slider"]');
   // minimise: only the title bar shows, everything stays
   await page.locator('[data-key="compose-min"]').click(); await settled(page);
+  check('post: the folding copy goes once it has folded', await ghostGone(page));
   check('post: the form minimises to its title bar', (await page.locator('.composer--min').count()) === 1 && !(await page.locator('.composer__body').isVisible()));
   await page.locator('[data-key="compose-restore"]').click(); await settled(page);
   check('post: it opens again with the text in place', (await page.locator('.composer__body').isVisible()) && (await page.locator('[data-key="compose-com"]').inputValue()) === 'Testing the reply form.');
@@ -527,7 +556,9 @@ const settled = (page) => page.waitForTimeout(300);
   void sent;
   const youSaved = await page.evaluate(() => JSON.parse(localStorage.getItem('clovereye.settings')).yous.length === 1);
   check('post: the post is remembered as (You)', youSaved);
-  // gallery: G opens every file of the thread
+  // gallery: G opens every file of the thread (a recorded one, with files)
+  await page.locator('[data-key="back-catalog"]').click(); await page.waitForSelector('.catalog-card');
+  await page.locator('.catalog-card[data-key="thread-500073"]').click(); await page.waitForSelector('.thread .post__file');
   await page.keyboard.press('g');
   await page.waitForSelector('.gallery .gallery__media', { timeout: 3000 }).catch(() => {});
   const total = await page.locator('.gallery__thumb').count();
@@ -540,10 +571,15 @@ const settled = (page) => page.waitForTimeout(300);
   await page.mouse.wheel(0, 120); await page.waitForTimeout(250);
   const c3 = await page.locator('.gallery__count').textContent();
   check('gallery: the mouse wheel moves too', total < 3 || c3 !== c2, `${c2} → ${c3}`);
-  const [download] = await Promise.all([page.waitForEvent('download', { timeout: 3000 }).catch(() => null), page.keyboard.press('d')]);
-  check('gallery: D saves the file', Boolean(download));
+  // D saves into the library (Settings → Files: "Save to the library", on
+  // by default; the mock keeps its index in storage)
+  const libItems = () => page.evaluate(() => JSON.parse(localStorage.getItem('clovereye.library') || 'null')?.items?.length || 0);
+  const libBefore = await libItems();
+  await page.keyboard.press('d');
   await page.waitForSelector('.gallery__save[data-state="saved"]', { timeout: 3000 }).catch(() => {});
-  check('gallery: the save button shows the download landed', (await page.locator('.gallery__save').getAttribute('data-state')) === 'saved');
+  check('gallery: the save button shows the file landed', (await page.locator('.gallery__save').getAttribute('data-state')) === 'saved');
+  await page.waitForFunction((n) => (JSON.parse(localStorage.getItem('clovereye.library') || 'null')?.items?.length || 0) > n, libBefore, { timeout: 3000 }).catch(() => {});
+  check('gallery: D saves the file into the library', (await libItems()) === libBefore + 1, `${libBefore} → ${await libItems()}`);
   check('gallery: the saved file is marked in the strip', (await page.locator('.gallery__thumb[aria-selected="true"] .gallery__saved').count()) === 1);
   await page.waitForSelector('.gallery__save[data-state="idle"]', { timeout: 4000 }).catch(() => {});
   check('gallery: the save button settles back', (await page.locator('.gallery__save').getAttribute('data-state')) === 'idle');
@@ -577,7 +613,8 @@ const settled = (page) => page.waitForTimeout(300);
   const pop2 = page.context().waitForEvent('page', { timeout: 3000 }).catch(() => null);
   await page.locator('[data-key="p1-pane-popout"]').click();
   const win2 = await pop2;
-  check('windows: a pane pops out into its own window', Boolean(win2) && (await page.locator('.pane').count()) === 4);
+  await settled(page); // the pane that left fades out first (180 ms)
+  check('windows: a pane pops out into its own window', Boolean(win2) && (await page.locator('.pane').count()) === 4, String(await page.locator('.pane').count()));
   await win2?.close();
   for (let i = 0; i < 6 && (await page.locator('[data-key="p1-pane-close"]').count()); i++) {
     await page.locator('[data-key="p1-pane-close"]').click(); await settled(page);
@@ -614,7 +651,7 @@ const settled = (page) => page.waitForTimeout(300);
   const again = page.locator('[data-key="compose-captcha-new"]');
   const text = (await page.locator('.composer .callout').textContent()) || '';
   check('spur: the form says the abuse check turned the connection away, and what helps', /spur\.us/.test(text) && /VPN/.test(text), text.slice(0, 120));
-  check('spur: New captcha waits a minute', (await again.isDisabled()) && /\b(0:5\d|5\d s|1:00|60 s)/.test(text), text.slice(-40));
+  check('spur: New captcha waits a minute', (await again.isDisabled()) && /\b(0:5\d|5\d s|1:00|60 s|1 min 00 s)/.test(text), text.slice(-40));
   await page.evaluate(() => {
     const now = Date.now;
     Date.now = () => now() + 61_000; // a minute on
@@ -641,6 +678,7 @@ const settled = (page) => page.waitForTimeout(300);
   check('wait: the site’s wait counts down live', w1 > 0 && w2 > 0 && w2 <= w1 - 2, `${w1} → ${w2}`);
   check('wait: New captcha waits with the site', await page.locator('[data-key="compose-captcha-new"]').isDisabled());
   await page.locator('[data-key="compose-min"]').click(); await settled(page);
+  check('wait: the folding copy goes once it has folded', await ghostGone(page));
   const n1 = await page.locator('[data-compose-note]').textContent();
   await page.waitForTimeout(1200);
   const n2 = await page.locator('[data-compose-note]').textContent();
@@ -672,8 +710,11 @@ const settled = (page) => page.waitForTimeout(300);
   check('reply form: × asks before deleting a written reply', await page.locator('[data-key="confirm-ok"]').isVisible());
   await page.locator('[data-key="confirm-ok"]').click(); await settled(page);
   check('reply form: a deleted reply leaves no pill', (await page.locator('[data-active-key]').count()) === 0);
+  check('reply form: the focus goes back to Reply', await page.evaluate(() => document.activeElement?.dataset?.key === 'thread-reply'));
   // the thread's controls: tucked while scrolling down, back on the way up,
-  // at the end, and when pointed at
+  // at the end, and when pointed at (the focus out of them first: a control
+  // with the focus brings them back by itself)
+  await page.evaluate(() => document.activeElement?.blur());
   const body = page.locator('.centre__body').first();
   const bar = page.locator('[data-thread-tools]').first();
   const scrollTo = async (y) => {
@@ -702,6 +743,37 @@ const settled = (page) => page.waitForTimeout(300);
   await ctx.close();
 }
 
+// ------------------------------------------- board links (>>>/g/, >>>/g/term)
+{
+  const { ctx, page } = await newPage();
+  // the recorded thread 500073, with board links added to its opening post
+  const cat = JSON.parse(await uiText(page, 'data/catalog.sample.json'));
+  const op = cat[0].threads.find((t) => t.no === 500073);
+  op.com += '<br><a href="//boards.4chan.org/diy/catalog#s=solder" class="quotelink">&gt;&gt;&gt;/diy/solder</a>'
+    + '<br><a href="//boards.4chan.org/zz/" class="quotelink">&gt;&gt;&gt;/zz/</a>'
+    + '<br><a href="//boards.4chan.org/b/" class="quotelink">&gt;&gt;&gt;/b/</a>';
+  await ctx.route('**/data/catalog.sample.json', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(cat) }));
+  await page.addInitScript(() => {
+    if (!localStorage.getItem('clovereye.settings')) localStorage.setItem('clovereye.settings', JSON.stringify({ schema: 1, setupVersion: 3, completedAt: '2026-11-11T00:00:00.000Z', favourites: ['g'], theme: 'dark' }));
+  });
+  const panes = encodeURIComponent(JSON.stringify([{ kind: 'thread', board: 'g', no: 500073 }]));
+  await page.goto(`${BASE}?mock-delay=0#panes=${panes}`);
+  await page.waitForSelector('.thread .post');
+  const links = await page.locator('[data-pane="0"] .thread > .post button.seg-boardlink').evaluateAll((els) => els.map((x) => `${x.dataset.board}:${x.dataset.search}`));
+  check('board links: drawn as buttons with their board and search', JSON.stringify(links) === '["diy:solder","zz:","b:"]', JSON.stringify(links));
+  check('board links: not quote links (no preview, no copy)', (await page.locator('.thread button.seg-boardlink.seg-quotelink, .thread button.seg-boardlink[data-target]').count()) === 0);
+  await page.locator('[data-pane="0"] button.seg-boardlink[data-board="diy"]').click();
+  await page.waitForSelector('[data-pane="1"] .catalog-card', { timeout: 5000 }).catch(() => {});
+  check('board links: the board’s catalog opens beside', (await page.locator('.pane').count()) === 2 && (await page.locator('[data-pane="1"] .catalog').count()) === 1);
+  check('board links: searched for the link’s term', (await page.locator('[data-pane="1"] [data-key$="catalog-search"]').inputValue()) === 'solder');
+  await page.locator('[data-pane="0"] button.seg-boardlink[data-board="zz"]').click(); await settled(page);
+  check('board links: a board that does not exist says so, opens nothing', (await page.locator('.pane').count()) === 2 && (await page.locator('.toast').allTextContents()).some((t) => t.includes('/zz/')));
+  await page.locator('[data-pane="0"] button.seg-boardlink[data-board="b"]').click(); await settled(page);
+  check('board links: an NSFW board stays shut while NSFW boards are hidden', (await page.locator('.pane').count()) === 2 && (await page.locator('.toast').allTextContents()).some((t) => t.includes('/b/ is an NSFW board')));
+  check('board links run: no console errors', page._errors.length === 0, page._errors.join(' | '));
+  await ctx.close();
+}
+
 // ------------------------------------------------- languages and version
 {
   const { ctx, page } = await newPage({ width: 360, height: 760 });
@@ -712,8 +784,8 @@ const settled = (page) => page.waitForTimeout(300);
   if (await page.locator('[data-key="rail-toggle"]').isVisible()) await page.locator('[data-key="rail-toggle"]').click();
   await page.locator('[data-key="settings"]').click();
   await page.waitForSelector('[data-key="set-lang"]');
-  check('version: Settings shows it', (await page.locator('[data-key="version"]').textContent()).trim() === 'CloverEye 0.1.3');
-  const es = JSON.parse(await (await page.request.get(`${BASE}i18n/es.json`)).text());
+  check('version: Settings shows it', (await page.locator('[data-key="version"]').textContent()).trim() === `CloverEye ${VERSION}`);
+  const es = JSON.parse(await uiText(page, 'i18n/es.json'));
   await page.locator('[data-key="set-lang"]').selectOption('es');
   await page.waitForFunction(() => document.documentElement.lang === 'es');
   await settled(page);
@@ -723,14 +795,14 @@ const settled = (page) => page.waitForTimeout(300);
     await page.locator('[data-key="set-lang"]').selectOption(code);
     await page.waitForFunction((c) => document.documentElement.lang === c, code);
     await settled(page);
-    const table = JSON.parse(await (await page.request.get(`${BASE}i18n/${code}.json`)).text());
+    const table = JSON.parse(await uiText(page, `i18n/${code}.json`));
     const wide = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
     check(`languages: ${code} at 360 px, translated and no sideways scroll`, (await page.locator('#set-look').textContent()) === table.Look && !wide);
   }
   // back to the thread: the app's words change, the posts never do
   await page.goto(`${BASE}?mock-delay=0&again=1#panes=${panes}`);
   await page.waitForSelector('[data-key="thread-reply"]');
-  const pt = JSON.parse(await (await page.request.get(`${BASE}i18n/pt-BR.json`)).text());
+  const pt = JSON.parse(await uiText(page, 'i18n/pt-BR.json'));
   check('languages: the thread’s buttons follow the language', (await page.locator('[data-key="thread-reply"]').textContent()).trim() === pt.Reply);
   check('languages: posts keep their own words', (await page.locator('.post__com').first().textContent()) === comBefore);
   if (!(await page.locator('[data-key="settings"]').isVisible())) await page.locator('[data-key="rail-toggle"]').click();

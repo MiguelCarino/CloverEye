@@ -109,6 +109,55 @@ export function liveCatalog(fixture, board, ms) {
   return cat;
 }
 
+/** The most replies ?mock-big adds to a thread. */
+export const MOCK_BIG_MAX = 5000;
+const BIG_WORDS = ['the', 'driver', 'works', 'fine', 'on', 'my', 'machine', 'until', 'it', 'does', 'not', 'try', 'a', 'clean', 'install', 'first', 'logs', 'or', 'it', 'never', 'happened', 'cheaper', 'used', 'than', 'new'];
+
+/**
+ * `n` made-up replies for a mock thread (?mock-big=N), the same every time
+ * for the same thread: about two in three quote an earlier post (some two,
+ * some the first post), some have greentext, every one a poster ID, about
+ * one in four a file (the mock's own thumbnails).
+ */
+export function bigReplies(op, n, ids = ['Ab3dE9xQ']) {
+  let seed = (Number(op?.no) || 1) >>> 0;
+  const rand = () => {
+    seed = (Math.imul(seed ^ (seed >>> 15), 2246822507) + 0x9e3779b9) >>> 0;
+    return seed / 4294967296;
+  };
+  const words = (k) => Array.from({ length: k }, () => BIG_WORDS[Math.floor(rand() * BIG_WORDS.length)]).join(' ');
+  const quote = (no) => `<a href="#p${no}" class="quotelink">&gt;&gt;${no}</a>`;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const no = op.no + 100000 + i;
+    const lines = [];
+    const r = rand();
+    if (r < 0.65) {
+      const earlier = out.length ? out[Math.floor(rand() * out.length)].no : op.no;
+      lines.push(quote(rand() < 0.15 ? op.no : earlier));
+      if (r < 0.12 && out.length > 1) lines.push(quote(out[Math.floor(rand() * out.length)].no));
+    }
+    if (rand() < 0.3) lines.push(`<span class="quote">&gt;${words(5)}</span>`);
+    lines.push(words(6 + Math.floor(rand() * 20)));
+    const post = { no, resto: op.no, now: '', time: (op.time || 0) + 60 + i * 7, name: 'Anonymous', id: ids[i % ids.length], com: lines.join('<br>') };
+    if (rand() < 0.28) {
+      Object.assign(post, {
+        filename: `big${i}`,
+        ext: '.png',
+        w: 800,
+        h: 600,
+        tn_w: 125,
+        tn_h: 94,
+        tim: 1793700000000000 + no,
+        md5: `big${String(no).padStart(19, '0')}==`, // 16 bytes, as the site's
+        fsize: 120000 + i,
+      });
+    }
+    out.push(post);
+  }
+  return out;
+}
+
 /** A day of board samples every 5 minutes, for ?mock-stats. */
 export function seedBoardStats(fixture, now, boards = ['g', 'v', 'a', 'tv', 'diy', 'sci', 'ck', 'fit']) {
   let store = emptyBoardStats();
@@ -143,6 +192,16 @@ export function seedMine(now) {
     };
   }
   return mine;
+}
+
+/** A fetch error that says the shared queue is holding requests back
+ *  after a failure, for longer than it waits by itself (the fetch crate's
+ *  Error::Waiting: "…; next try in N s"). No request was made: asking again
+ *  sooner than N s only brings the same answer. Returns N s in ms, or 0
+ *  for any other error. */
+export function waitingMs(err) {
+  const m = /\bnext try in (\d{1,6}) s\b/.exec(String(err?.message ?? err ?? ''));
+  return m ? Number(m[1]) * 1000 : 0;
 }
 
 /** Returns window.localStorage if it can be used, else null. */
@@ -278,6 +337,16 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       /** Another window saved new settings. */
       onSettingsChanged(cb) {
         tauri.event?.listen?.('settings-changed', (e) => cb(e.payload));
+      },
+      /** A window wrote the library's index (library.rs): cb({ root, rev }).
+       *  Returns a function that stops listening. */
+      onLibraryChanged(cb) {
+        const un = tauri.event?.listen?.('library-changed', (e) => cb(e.payload || {}));
+        return () => {
+          Promise.resolve(un)
+            .then((f) => typeof f === 'function' && f())
+            .catch(() => {});
+        };
       },
       // Stats (src-tauri/src/stats.rs): 'boards' (activity samples) or
       // 'mine' (your own counts), each a file in the app's data folder.
@@ -501,8 +570,13 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       const MOCK_IDS = ['Ab3dE9xQ', 'k2LmP0aZ', 'Zz81qRw5'];
       first.id = MOCK_IDS[0];
       replies.forEach((r, i) => (r.id = MOCK_IDS[i % MOCK_IDS.length]));
+      // ?mock-big=N: N more replies in every thread, for measuring big ones
+      const big = mock.big ? bigReplies(op, mock.big, MOCK_IDS) : [];
+      // with ?mock-big, each new reply quotes one of those (its reply link
+      // is added to an older post)
+      const quoted = (i) => (big.length ? `<a href="#p${big[(i * 7) % big.length].no}" class="quotelink">&gt;&gt;${big[(i * 7) % big.length].no}</a><br>` : '');
       const grown = mock.grow
-        ? Array.from({ length: n - 1 }, (_, i) => ({ no: op.no + 900000 + i, resto: op.no, now: '', time: op.time + i + 1, name: 'Anonymous', id: MOCK_IDS[(i + 1) % MOCK_IDS.length], com: `New reply ${i + 1}` }))
+        ? Array.from({ length: n - 1 }, (_, i) => ({ no: op.no + 900000 + i, resto: op.no, now: '', time: op.time + i + 1, name: 'Anonymous', id: MOCK_IDS[(i + 1) % MOCK_IDS.length], com: quoted(i) + `New reply ${i + 1}` }))
         : [];
       // ?mock-cross: one more reply quoting another thread's post, a thread
       // that is gone and a dead link (for cross-thread quotes and archives).
@@ -542,7 +616,7 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
             ].join('<br>'),
           }]
         : [];
-      return { freshness: 'new', data: { posts: [first, ...replies, ...grown, ...cross, ...links] } };
+      return { freshness: 'new', data: { posts: [first, ...replies, ...big, ...grown, ...cross, ...links] } };
     },
     // The mock never opens the site: it only records what would open.
     posts: [],
@@ -778,6 +852,10 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
         }
       });
     },
+    // the mock has no library folder, so no other window ever writes it
+    onLibraryChanged() {
+      return () => {};
+    },
     // No outside requests from the mock: every file shows a local picture.
     thumbUrl: (_board, post) => (post.tim ? MOCK_THUMBS[Number(post.tim) % MOCK_THUMBS.length] : null),
     // no outside requests in the preview: the flag shows as its code
@@ -875,6 +953,10 @@ export function mockOptionsFromSearch(search) {
   if (p.has('mock-cross')) o.cross = true;
   if (p.has('mock-links')) o.links = true;
   if (p.has('mock-stats')) o.stats = true;
+  if (p.has('mock-big')) {
+    const n = Number(p.get('mock-big'));
+    if (Number.isSafeInteger(n) && n > 0) o.big = Math.min(n, MOCK_BIG_MAX);
+  }
   if (p.get('mock-captcha')) o.captcha = p.get('mock-captcha');
   if (p.get('mock-save')) o.save = p.get('mock-save');
   if (p.get('mock-ai')) o.ai = p.get('mock-ai');

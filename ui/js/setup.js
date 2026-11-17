@@ -56,6 +56,25 @@ const DISPLAY_DEFAULTS = displayDefaults();
 const shownFiles = new Set();
 const closedFiles = new Set();
 
+/** Whether the file with this key (renderPost's `full` URL, else its thumb)
+ *  was shown from a work-mode line this session, e.g. for the gallery's
+ *  `isShown`. */
+export const fileShown = (key) => shownFiles.has(key);
+
+/** A post's "Replies" row: one >>N button per post that quotes it, or null
+ *  when there are none. `onQuote(n, event)` handles a click (quotes.js). */
+export function backlinksRow(backrefs, onQuote) {
+  if (!backrefs?.length) return null;
+  return h(
+    'div',
+    { class: 'post__backlinks' },
+    h('span', { text: 'Replies' }),
+    backrefs.map((n) =>
+      h('button', { type: 'button', class: 'seg-quotelink', 'data-target': n, 'data-kind': 'b', onclick: (e) => onQuote?.(n, e), text: `>>${n}` }),
+    ),
+  );
+}
+
 /** A post's time (Settings → Posts → Timestamps). Relative times age by
  *  themselves: once a minute their text is set again, nothing is redrawn. */
 function timeNode(post, mode) {
@@ -183,7 +202,7 @@ function linkedText(text, links) {
  * `links`, when given, turns web addresses in the comment into links:
  * { open(href), embeds: 'off' | 'click', onEmbed(embed, href), isPlaying(src) }.
  */
-export function renderPost(post, { backrefs = [], onQuote = null, onReply = null, isYou = () => false, thumb = null, full = null, flag = null, idPrefix = 'sample-p', menu = null, posterId = null, sauce = null, links = null, display = null } = {}) {
+export function renderPost(post, { backrefs = [], onQuote = null, onReply = null, isYou = () => false, thumb = null, full = null, flag = null, idPrefix = 'sample-p', menu = null, posterId = null, sauce = null, links = null, display = null, onBoardLink = null } = {}) {
   // Settings → Posts (display-model.js): times, spoilers, work mode, names
   const disp = display || DISPLAY_DEFAULTS;
   const who = posterName(post, disp.anonymize);
@@ -192,11 +211,13 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
   for (const line of lines) {
     const row = h('div', { class: 'post__line' });
     for (const seg of line) {
+      // greentext, a link or code inside a spoiler stays hidden with it
+      const sp = seg.spoiler && seg.type !== 'spoiler' ? ' seg-spoiler' : '';
       if (seg.type === 'quotelink') {
         row.append(
           h('button', {
             type: 'button',
-            class: `seg-quotelink${seg.target && isYou(seg.target) ? ' seg-quotelink--you' : ''}`,
+            class: `seg-quotelink${seg.target && isYou(seg.target) ? ' seg-quotelink--you' : ''}${sp}`,
             'data-target': seg.target ?? '',
             'data-kind': 'q',
             'data-board': seg.thread ? seg.board : null,
@@ -205,27 +226,29 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
             text: seg.target && isYou(seg.target) ? `${seg.text} (You)` : seg.text,
           }),
         );
+      } else if (seg.type === 'boardlink' && onBoardLink) {
+        // ">>>/g/" or ">>>/g/catalog#s=term": opens that board's catalog.
+        // Not a .seg-quotelink and no data-target, so quotes.js leaves it alone.
+        row.append(
+          h('button', {
+            type: 'button',
+            class: `seg-boardlink${sp}`,
+            'data-board': seg.board,
+            'data-search': seg.search || '',
+            title: seg.search ? `Search /${seg.board}/ for “${seg.search}”` : `Open /${seg.board}/`,
+            onclick: (e) => onBoardLink({ board: seg.board, search: seg.search || '' }, e),
+            text: seg.text,
+          }),
+        );
       } else if (seg.type === 'code') {
-        row.append(h('code', { class: 'seg-code', text: seg.text }));
+        row.append(h('code', { class: `seg-code${sp}`, text: seg.text }));
       } else if (links && seg.type !== 'deadlink') {
-        row.append(h('span', { class: `seg-${seg.type}` }, linkedText(seg.text, links)));
+        row.append(h('span', { class: `seg-${seg.type}${sp}` }, linkedText(seg.text, links)));
       } else {
-        row.append(h('span', { class: `seg-${seg.type}`, text: seg.text }));
+        row.append(h('span', { class: `seg-${seg.type}${sp}`, text: seg.text }));
       }
     }
     com.append(row);
-  }
-  // <pre> lines come out as separate lines; join consecutive code lines.
-  const codeRows = [...com.querySelectorAll('.post__line')];
-  for (let i = codeRows.length - 1; i > 0; i--) {
-    const cur = codeRows[i];
-    const prev = codeRows[i - 1];
-    const a = prev.lastElementChild;
-    const b = cur.firstElementChild;
-    if (a?.classList.contains('seg-code') && b?.classList.contains('seg-code') && cur.childElementCount === 1) {
-      a.textContent += `\n${b.textContent}`;
-      cur.remove();
-    }
   }
 
   const meta = h(
@@ -435,16 +458,7 @@ export function renderPost(post, { backrefs = [], onQuote = null, onReply = null
   } else if (view !== 'none') {
     file = fileFigure(view);
   }
-  const back = backrefs.length
-    ? h(
-        'div',
-        { class: 'post__backlinks' },
-        h('span', { text: 'Replies' }),
-        backrefs.map((n) =>
-          h('button', { type: 'button', class: 'seg-quotelink', 'data-target': n, 'data-kind': 'b', onclick: (e) => onQuote?.(n, e), text: `>>${n}` }),
-        ),
-      )
-    : null;
+  const back = backlinksRow(backrefs, onQuote);
   return h(
     'article',
     { class: `post${post.resto === 0 ? ' post--op' : ''}${isYou(post.no) ? ' post--you' : ''}`, id: `${idPrefix}${post.no}`, 'data-no': post.no },
@@ -670,15 +684,12 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
     if (st.index > 0) go(st.index - 1, 'back');
   }
 
-  async function finish(skipped) {
+  function finish(skipped) {
     // Prunes NSFW favourites even without a board list (remembered codes).
     const draft = M.pruneFavourites(st.draft, st.boards.status === 'ok' ? st.boards.list : null);
     const final = M.completeSetup(draft, { skipped });
-    try {
-      await bridge.setSettings(final);
-    } catch (e) {
-      toast(`Settings were not saved: ${e?.message || e}`);
-    }
+    // Stored by onFinish (app.js), through the settings' write queue and
+    // laid over what other windows saved while setup was open.
     close();
     applyLook(final);
     onFinish(final, { boards: st.boards.status === 'ok' ? st.boards.list : null });

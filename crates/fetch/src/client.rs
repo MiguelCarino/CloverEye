@@ -35,6 +35,10 @@ pub struct Config {
     /// Total body bytes the in-memory cache may hold. Least recently used
     /// entries go first; a body larger than this is not cached at all.
     pub cache_bytes: usize,
+    /// While a back-off has longer than this to run, a request that would
+    /// have to wait it out returns `Error::Waiting` at once instead of
+    /// sleeping (no request is made either way). `None`: always wait.
+    pub max_wait: Option<Duration>,
 }
 
 impl Config {
@@ -64,6 +68,7 @@ impl Default for Config {
             backoff_cap: Duration::from_secs(300),
             cache_entries: 256,
             cache_bytes: 32 * 1024 * 1024,
+            max_wait: None,
         }
     }
 }
@@ -118,14 +123,16 @@ struct State {
     tick: u64,
 }
 
-/// The app's single request queue. Every method blocks the calling thread
-/// while it waits for its turn; call it off the UI thread.
+/// The app's single request queue. `get` blocks the calling thread while it
+/// waits for its turn; call it off the UI thread.
 pub struct Client<T: Transport, C: Clock> {
     transport: T,
     clock: C,
     config: Config,
     ua: String,
     state: Mutex<State>,
+    /// The queue: held while waiting for a turn and during the request.
+    send: Mutex<()>,
 }
 
 impl<T: Transport, C: Clock> Client<T, C> {
@@ -136,6 +143,7 @@ impl<T: Transport, C: Clock> Client<T, C> {
             config: config.clamped(),
             ua: user_agent(),
             state: Mutex::new(State::default()),
+            send: Mutex::new(()),
         }
     }
 
@@ -171,65 +179,112 @@ impl<T: Transport, C: Clock> Client<T, C> {
         }
     }
 
+    /// Inside the per-thread floor: the cached copy as `Throttled`, or
+    /// `TooSoon` when there is none. `None` when a request may be made.
+    fn thread_floor(&self, st: &mut State, url: &str) -> Option<Result<Fetched, Error>> {
+        let &last = st.thread_last.get(url)?;
+        let next = last + self.config.thread_interval;
+        let now = self.clock.now();
+        if now >= next {
+            return None;
+        }
+        st.tick += 1;
+        let tick = st.tick;
+        Some(match st.cache.get_mut(url) {
+            Some(c) => {
+                c.used = tick;
+                Ok(Fetched {
+                    url: url.to_string(),
+                    freshness: Freshness::Throttled,
+                    body: c.body.clone(),
+                    last_modified: Some(c.last_modified.clone()),
+                    conditional: false,
+                })
+            }
+            None => Err(Error::TooSoon { wait: next - now }),
+        })
+    }
+
+    /// `Waiting` when the back-off has longer to run than `max_wait`.
+    fn too_long(&self, st: &State) -> Option<Error> {
+        let max = self.config.max_wait?;
+        let wait = st.blocked_until.saturating_sub(self.clock.now());
+        (wait > max).then_some(Error::Waiting { retry_in: wait })
+    }
+
     /// GETs one endpoint through the queue.
+    ///
+    /// Two locks: `state` covers only the bookkeeping (floors, back-off,
+    /// cache) and is never held while sleeping or on the network, so a
+    /// throttled read answers at once; `send` is the queue itself, held from
+    /// the wait for our turn through the request, so requests still go out
+    /// one at a time and spaced exactly as before.
     pub fn get(&self, ep: &Endpoint) -> Result<Fetched, Error> {
         let url = ep.url()?;
-        let mut st = self.lock();
+        let is_thread = ep.is_thread();
 
-        // Per-thread floor: inside it, hand back the cached copy, no request.
-        if ep.is_thread() {
-            if let Some(&last) = st.thread_last.get(&url) {
-                let next = last + self.config.thread_interval;
-                let now = self.clock.now();
-                if now < next {
-                    st.tick += 1;
-                    let tick = st.tick;
-                    return match st.cache.get_mut(&url) {
-                        Some(c) => {
-                            c.used = tick;
-                            Ok(Fetched {
-                                url,
-                                freshness: Freshness::Throttled,
-                                body: c.body.clone(),
-                                last_modified: Some(c.last_modified.clone()),
-                                conditional: false,
-                            })
-                        }
-                        None => Err(Error::TooSoon { wait: next - now }),
-                    };
+        // Per-thread floor first: inside it, the cached copy, no request
+        // and no queue.
+        {
+            let mut st = self.lock();
+            if is_thread {
+                if let Some(r) = self.thread_floor(&mut st, &url) {
+                    return r;
                 }
             }
-        }
-
-        // Global floor and back-off: wait for our turn.
-        let now = self.clock.now();
-        let ready = self.ready_at(&st);
-        if ready > now {
-            self.clock.sleep(ready - now);
-        }
-
-        let mut headers = vec![
-            ("User-Agent".to_string(), self.ua.clone()),
-            ("Accept".to_string(), "application/json".to_string()),
-        ];
-        let conditional = match st.cache.get(&url) {
-            Some(c) => {
-                headers.push(("If-Modified-Since".to_string(), c.last_modified.clone()));
-                true
+            if let Some(e) = self.too_long(&st) {
+                return Err(e);
             }
-            None => false,
-        };
-        let req = Request { url: url.clone(), headers };
+        }
 
-        if ep.is_thread() {
-            let started = self.clock.now();
+        // Our turn in the queue.
+        let _turn = self.send.lock().unwrap_or_else(|p| p.into_inner());
+        let (req, conditional) = loop {
+            let mut st = self.lock();
+            // Checked again: while we queued, a request for this thread may
+            // have been made (served as Throttled, as when it was one lock),
+            // or a failure may have started a long back-off.
+            if is_thread {
+                if let Some(r) = self.thread_floor(&mut st, &url) {
+                    return r;
+                }
+            }
+            if let Some(e) = self.too_long(&st) {
+                return Err(e);
+            }
+            let now = self.clock.now();
+            let ready = self.ready_at(&st);
+            if ready > now {
+                // Only this queue sends, and we hold it, so nothing moves
+                // `ready` while we sleep without the state lock.
+                drop(st);
+                self.clock.sleep(ready - now);
+                continue;
+            }
+            let mut headers = vec![
+                ("User-Agent".to_string(), self.ua.clone()),
+                ("Accept".to_string(), "application/json".to_string()),
+            ];
+            let conditional = match st.cache.get(&url) {
+                Some(c) => {
+                    headers.push(("If-Modified-Since".to_string(), c.last_modified.clone()));
+                    true
+                }
+                None => false,
+            };
+            break (Request { url: url.clone(), headers }, conditional);
+        };
+
+        let started = self.clock.now();
+        let result = self.transport.send(&req);
+
+        let mut st = self.lock();
+        st.last_end = Some(self.clock.now());
+        if is_thread {
+            // The floor counts from when the request started, failed or not.
             st.thread_last.insert(url.clone(), started);
             self.prune_thread_floor(&mut st, started);
         }
-
-        let result = self.transport.send(&req);
-        st.last_end = Some(self.clock.now());
-
         let resp = match result {
             Ok(r) => r,
             Err(message) => {

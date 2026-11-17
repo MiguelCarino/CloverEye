@@ -19,22 +19,61 @@ const attr = (tag, name) => {
   return m ? decodeEntities(m[1]) : '';
 };
 
-/**
- * @returns {Array<Array<{type: string, text: string, target?: number}>>}
- *   lines of segments. Types: text, greentext, quotelink, deadlink,
- *   spoiler, code. A quotelink to another thread also has board and thread.
- */
-export function parseComment(html) {
+// A board link: the site's "/g/" or "/g/catalog#s=term", with or without its host.
+const BOARD_HREF = /^(?:(?:https?:)?\/\/boards\.4chan(?:nel)?\.org)?\/([a-z0-9]{1,10})\/(?:catalog(?:#s=([^#]*))?)?$/i;
+
+function searchTerm(raw) {
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(raw.replace(/\+/g, ' ')).trim();
+  } catch {
+    return raw.replace(/\+/g, ' ').trim();
+  }
+}
+
+/** What an <a class="quotelink"> points at, or null for an address that is
+ *  neither a post nor a board (its text then reads as plain text). */
+function linkOf(href) {
+  const n = href.match(/#p(\d+)$/);
+  if (n) {
+    const link = { target: Number(n[1]) };
+    // Another thread's post: "/g/thread/999#p1000" (same-thread links are "#p1000").
+    const x = href.match(/\/([a-z0-9]{1,10})\/thread\/(\d+)(?:\/[^#]*)?#p\d+$/i);
+    if (x) {
+      link.board = x[1].toLowerCase();
+      link.thread = Number(x[2]);
+    }
+    return link;
+  }
+  const b = href.match(BOARD_HREF);
+  if (b) return { boardlink: true, board: b[1].toLowerCase(), search: searchTerm(b[2]) };
+  return null;
+}
+
+function parse(html) {
   const lines = [[]];
   const stack = []; // open styled elements: 'greentext' | 'spoiler' | 'code' | 'deadlink' | 'other'
   let link = null; // current <a class="quotelink">
+  // A link, a dead link or a <pre> just opened or closed: the next text
+  // starts its own segment, so two of them side by side stay two. Text split
+  // by <wbr> or entities inside one element still joins.
+  let fresh = false;
   const re = /<[^>]*>|[^<]+/g;
   let m;
   const push = (text) => {
     if (!text) return;
-    const top = [...stack].reverse().find((t) => t !== 'other');
+    let top;
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i] !== 'other') {
+        top = stack[i];
+        break;
+      }
+    }
     let seg;
-    if (link) {
+    if (link?.boardlink) {
+      seg = { type: 'boardlink', text, board: link.board };
+      if (link.search) seg.search = link.search;
+    } else if (link) {
       seg = { type: 'quotelink', text };
       if (link.target) seg.target = link.target;
       if (link.thread) {
@@ -44,49 +83,57 @@ export function parseComment(html) {
     } else {
       seg = { type: top || 'text', text };
     }
+    // greentext, a link or code inside a spoiler stays hidden with it
+    if (seg.type !== 'spoiler' && stack.includes('spoiler')) seg.spoiler = true;
     const line = lines[lines.length - 1];
     const prev = line[line.length - 1];
-    if (prev && prev.type === seg.type && prev.target === seg.target) prev.text += text;
+    if (
+      prev &&
+      !fresh &&
+      prev.type === seg.type &&
+      prev.target === seg.target &&
+      prev.board === seg.board &&
+      prev.thread === seg.thread &&
+      prev.search === seg.search &&
+      prev.spoiler === seg.spoiler
+    )
+      prev.text += text;
     else line.push(seg);
+    fresh = false;
   };
-  while ((m = re.exec(String(html || ''))) !== null) {
+  while ((m = re.exec(html)) !== null) {
     const tok = m[0];
     if (tok[0] !== '<') {
-      const text = decodeEntities(tok);
-      // Inside <pre> the API uses <br> for line breaks too, keep them as lines.
-      push(text);
+      push(decodeEntities(tok));
       continue;
     }
     const close = tok[1] === '/';
     const name = (tok.match(/^<\/?\s*([a-z0-9]+)/i) || [])[1]?.toLowerCase() || '';
     if (name === 'br') {
-      lines.push([]);
+      // inside <pre> a <br> is a line of the code: one block, not one per line
+      if (stack.includes('code') && !link) push('\n');
+      else lines.push([]);
       continue;
     }
     if (name === 'wbr') continue;
     if (name === 'a') {
-      if (close) {
-        link = null;
-      } else {
-        const cls = attr(tok, 'class');
-        const href = attr(tok, 'href');
-        if (/\bquotelink\b/.test(cls)) {
-          const n = href.match(/#p(\d+)$/);
-          link = { target: n ? Number(n[1]) : null };
-          // Another thread's post: "/g/thread/999#p1000" (same-thread links are "#p1000").
-          const x = href.match(/\/([a-z0-9]{1,10})\/thread\/(\d+)(?:\/[^#]*)?#p\d+$/i);
-          if (x) {
-            link.board = x[1].toLowerCase();
-            link.thread = Number(x[2]);
-          }
-        } else {
-          link = null;
-        }
-      }
+      if (link) fresh = true; // a link closes (or a new one opens over it)
+      link = close ? null : /\bquotelink\b/.test(attr(tok, 'class')) ? linkOf(attr(tok, 'href')) : null;
+      if (link) fresh = true;
       continue;
     }
     if (close) {
-      if (stack.length) stack.pop();
+      const kind = stack.pop();
+      if (kind === 'code') {
+        // a <br> right before </pre> is not a blank last line
+        const line = lines[lines.length - 1];
+        const last = line[line.length - 1];
+        if (last?.type === 'code' && last.text.endsWith('\n')) {
+          last.text = last.text.slice(0, -1);
+          if (!last.text) line.pop();
+        }
+      }
+      if (kind === 'deadlink' || kind === 'code') fresh = true;
       continue;
     }
     if (VOID.has(name) || /\/\s*>$/.test(tok)) continue; // nothing to close later
@@ -96,9 +143,60 @@ export function parseComment(html) {
     else if (name === 'span' && /\bdeadlink\b/.test(cls)) kind = 'deadlink';
     else if (name === 's') kind = 'spoiler';
     else if (name === 'pre') kind = 'code';
+    if (kind === 'deadlink' || kind === 'code') fresh = true;
     stack.push(kind);
   }
   return lines;
+}
+
+// Parsed comments by their HTML. A redraw reads every comment several times
+// (the post, backlinks, filters, tags, search), and the same comments again
+// on the next redraw. Two generations: once the newer one is full it becomes
+// the older one, so a walk over more comments than one generation holds
+// still finds the ones it read last time.
+const CACHE_SIZE = 4000;
+const memo = () => ({ now: new Map(), old: new Map() });
+const parsed = memo();
+const texts = memo();
+
+function cacheGet(c, key) {
+  let v = c.now.get(key);
+  if (v !== undefined) return v;
+  v = c.old.get(key);
+  if (v !== undefined) cacheSet(c, key, v);
+  return v;
+}
+
+function cacheSet(c, key, v) {
+  if (c.now.size >= CACHE_SIZE) {
+    c.old = c.now;
+    c.now = new Map();
+  }
+  c.now.set(key, v);
+  return v;
+}
+
+function freezeLines(lines) {
+  for (const line of lines) {
+    for (const seg of line) Object.freeze(seg);
+    Object.freeze(line);
+  }
+  return Object.freeze(lines);
+}
+
+/**
+ * @returns {ReadonlyArray<ReadonlyArray<{type: string, text: string, target?: number}>>}
+ *   lines of segments. Types: text, greentext, quotelink, deadlink,
+ *   spoiler, code, boardlink. A quotelink to another thread also has board
+ *   and thread. A boardlink (">>>/g/", ">>>/g/catalog#s=term") has board
+ *   and, for a catalog search, search. A segment inside a spoiler that is
+ *   not a 'spoiler' segment itself (greentext, a link, code) has
+ *   spoiler: true. A <pre> is one code segment with its lines joined by
+ *   "\n". Results are shared between callers and frozen: read only.
+ */
+export function parseComment(html) {
+  const key = String(html || '');
+  return cacheGet(parsed, key) || cacheSet(parsed, key, freezeLines(parse(key)));
 }
 
 /** Text made safe to put in HTML. */
@@ -120,9 +218,13 @@ export function commentHtml(com) {
 
 /** Plain text of a comment (for search and previews). */
 export function commentText(html) {
-  return parseComment(html)
+  const key = String(html || '');
+  const hit = cacheGet(texts, key);
+  if (hit !== undefined) return hit;
+  const text = parseComment(key)
     .map((line) => line.map((s) => s.text).join(''))
     .join('\n');
+  return cacheSet(texts, key, text);
 }
 
 /** Post numbers a comment quotes (for backlinks). */
@@ -151,4 +253,11 @@ export function formatBytes(n) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
   return `${(n / (1024 * 1024)).toFixed(n < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+/** A post's file name as the poster gave it (the API escapes it as HTML),
+ *  with its extension; the post's tim when it has no name. For showing and
+ *  as the name to save under (saveName / safe_name still clean it). */
+export function postFileName(p) {
+  return `${p?.filename ? decodeEntities(p.filename) : (p?.tim ?? 'file')}${p?.ext || ''}`;
 }

@@ -32,6 +32,12 @@ export function createLibraryView(o) {
   let picking = false; // Select pressed: a press picks a file
   const picked = new Set(); // ids picked
   const node = h('div', { class: 'browse library', 'data-key': `${k}library` });
+  // Tiles kept across draws (by id, for the grid and the look-alikes), so a
+  // press or a letter typed does not load every picture and video again.
+  const tiles = { grid: new Map(), look: new Map() };
+  const used = { grid: new Set(), look: new Set() };
+  let preview = null; // { id, url, el }: the detail's picture or video
+  let lookCache = { v: -1, items: null, groups: [] };
 
   const ai = () => {
     const a = o.getSettings().ai || {};
@@ -44,7 +50,10 @@ export function createLibraryView(o) {
     const caret = focusKey && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
     const scroller = node.querySelector('.library__grid-wrap');
     const scroll = scroller ? scroller.scrollTop : 0;
+    used.grid.clear();
+    used.look.clear();
     clear(node).append(...content().filter(Boolean));
+    for (const kind of ['grid', 'look']) for (const id of tiles[kind].keys()) if (!used[kind].has(id)) tiles[kind].delete(id);
     const wrap = node.querySelector('.library__grid-wrap');
     if (wrap) wrap.scrollTop = scroll;
     if (focusKey) {
@@ -55,6 +64,8 @@ export function createLibraryView(o) {
   }
 
   function content() {
+    // Settings → Files names another library folder: read that one
+    if (lib.stale?.()) lib.load();
     const st = lib.state();
     if (!lib.available()) return [h('p', { class: 'state-line', text: 'The library needs the desktop app.' })];
     if (st.status === 'idle' || st.status === 'loading') return [h('p', { class: 'state-line', role: 'status', text: 'Opening the library…' })];
@@ -341,39 +352,60 @@ export function createLibraryView(o) {
 
   // ------------------------------------------------------------ the grid
 
-  function tile(e, extra = {}) {
+  /** A file's tile. Kept from the last draw when nothing on it changed;
+   *  its picture or video is kept whenever the file is the same. `look`: a
+   *  look-alike's tile (a press shows it in the library). */
+  function tile(e, look = false) {
+    const kind = look ? 'look' : 'grid';
+    const id = e.id;
     const url = lib.fileUrl(e);
-    const isPicked = picked.has(e.id);
-    return h(
+    const isPicked = picked.has(id);
+    const key = [url, e.name, e.tags.join(','), e.kind, e.ext, id === selected, isPicked, picking].join('\n');
+    used[kind].add(id);
+    const had = tiles[kind].get(id);
+    if (had?.key === key) return had.node;
+    const media =
+      had?.url === url
+        ? had.media
+        : e.kind === 'video'
+          ? h('video', { src: url, muted: true, preload: 'metadata', 'aria-hidden': 'true' })
+          : h('img', { src: url, alt: '', loading: 'lazy', decoding: 'async' });
+    const onclick = look
+      ? () => {
+          selected = id;
+          mode = 'all';
+          draw();
+        }
+      : (ev) => {
+          if (picking || ev.shiftKey || ev.metaKey || ev.ctrlKey) {
+            picking = true;
+            if (picked.has(id)) picked.delete(id);
+            else picked.add(id);
+          } else selected = selected === id ? '' : id;
+          draw();
+        };
+    const li = h(
       'li',
-      { class: `library__tile${e.id === selected ? ' library__tile--on' : ''}${isPicked ? ' library__tile--picked' : ''}` },
+      { class: `library__tile${id === selected ? ' library__tile--on' : ''}${isPicked ? ' library__tile--picked' : ''}` },
       h(
         'button',
         {
           type: 'button',
           class: 'library__thumb',
           'aria-label': `${e.name}${e.tags.length ? ` · ${e.tags.join(', ')}` : ''}`,
-          'aria-pressed': String(picking ? isPicked : e.id === selected),
+          'aria-pressed': String(picking ? isPicked : id === selected),
           title: e.name,
-          'data-key': `${k}library-item-${e.id}`,
-          onclick: (ev) => {
-            if (picking || ev.shiftKey || ev.metaKey || ev.ctrlKey) {
-              picking = true;
-              if (isPicked) picked.delete(e.id);
-              else picked.add(e.id);
-            } else selected = selected === e.id ? '' : e.id;
-            draw();
-          },
-          ...extra,
+          'data-key': `${k}library-item-${id}`,
+          onclick,
         },
         picking ? h('span', { class: `library__pick${isPicked ? ' library__pick--on' : ''}`, 'aria-hidden': 'true' }, isPicked ? icon('check') : null) : null,
-        e.kind === 'video'
-          ? h('video', { src: url, muted: true, preload: 'metadata', 'aria-hidden': 'true' })
-          : h('img', { src: url, alt: '', loading: 'lazy', decoding: 'async' }),
+        media,
         e.kind !== 'image' ? h('span', { class: 'library__badge', text: e.kind === 'gif' ? 'GIF' : e.ext.toUpperCase() }) : null,
         !e.tags.length ? h('span', { class: 'library__badge library__badge--untagged', title: 'No tags yet' }, icon('tag')) : null,
       ),
     );
+    tiles[kind].set(id, { key, url, media, node: li });
+    return li;
   }
 
   function main(all) {
@@ -411,6 +443,20 @@ export function createLibraryView(o) {
 
   // ---------------------------------------------------------- the detail
 
+  /** The selected file, big: the same element while it stays selected, so a
+   *  tag added does not load it again (or stop a video playing). */
+  function previewOf(e, url) {
+    if (preview?.id !== e.id || preview.url !== url) {
+      preview = {
+        id: e.id,
+        url,
+        el: e.kind === 'video' ? h('video', { class: 'library__preview', src: url, controls: true, loop: true, preload: 'metadata' }) : h('img', { class: 'library__preview', src: url, alt: '' }),
+      };
+    }
+    if (e.kind !== 'video') preview.el.alt = e.tags.join(', ');
+    return preview.el;
+  }
+
   function detail(e) {
     const url = lib.fileUrl(e);
     const suggested = [...new Set([...e.ai, ...L.suggestTags(e)])].filter((t) => !e.tags.includes(t)).slice(0, 10);
@@ -428,9 +474,7 @@ export function createLibraryView(o) {
         h('strong', { class: 'library__name', translate: 'no', title: e.name, text: e.name }),
         h('button', { type: 'button', class: 'icon-btn icon-btn--sm', 'aria-label': 'Close the details', 'data-key': `${k}library-detail-close`, onclick: () => ((selected = ''), draw()) }, icon('x')),
       ),
-      e.kind === 'video'
-        ? h('video', { class: 'library__preview', src: url, controls: true, loop: true, preload: 'metadata' })
-        : h('img', { class: 'library__preview', src: url, alt: e.tags.join(', ') }),
+      previewOf(e, url),
       h(
         'p',
         { class: 'library__meta' },
@@ -656,7 +700,9 @@ export function createLibraryView(o) {
   // ------------------------------------------------------- look-alikes
 
   function lookalikes(all) {
-    const groups = L.lookalikeGroups(all);
+    // found again only when the library changed, not on every draw
+    if (lookCache.v !== lib.version() || lookCache.items !== all) lookCache = { v: lib.version(), items: all, groups: L.lookalikeGroups(all) };
+    const { groups } = lookCache;
     const missing = all.filter((e) => !e.dhash && (e.kind === 'image' || e.kind === 'gif')).length;
     return h(
       'div',
@@ -684,14 +730,17 @@ export function createLibraryView(o) {
                   'Keep the largest',
                 ),
               ),
-              h('ul', { class: 'library__grid' }, g.map((e) => tile(e, { onclick: () => ((selected = e.id), (mode = 'all'), draw()) }))),
+              h('ul', { class: 'library__grid' }, g.map((e) => tile(e, true))),
             ),
           ),
     );
   }
 
   async function dedupe(group, opener) {
-    const [keep, ...rest] = group;
+    const [keep, ...others] = group;
+    // only files that look like the one kept (the groups are made so)
+    const rest = others.filter((e) => L.hamming(keep.dhash, e.dhash) <= L.LOOKALIKE_BITS);
+    if (!rest.length) return;
     const ok = await confirmDialog({
       title: 'Delete the look-alikes?',
       text: rest.length === 1 ? `1 file is deleted for good; “${keep.name}” stays, with its tags.` : `${rest.length} files are deleted for good; “${keep.name}” stays, with their tags.`,
@@ -703,12 +752,12 @@ export function createLibraryView(o) {
       tags: [...new Set([...keep.tags, ...rest.flatMap((e) => e.tags)])],
       collections: [...new Set([...keep.collections, ...rest.flatMap((e) => e.collections)])],
     });
-    for (const e of rest) {
-      try {
-        await lib.remove(e.id);
-      } catch (err) {
-        toast(`Couldn’t delete it: ${err?.message || err}`);
-      }
+    // one pass: one write and one redraw, not one per file
+    try {
+      const n = await lib.removeMany(rest.map((e) => e.id));
+      if (n < rest.length) toast(rest.length - n === 1 ? 'Couldn’t delete 1 of them.' : `Couldn’t delete ${rest.length - n} of them.`);
+    } catch (err) {
+      toast(`Couldn’t delete it: ${err?.message || err}`);
     }
   }
 
@@ -740,6 +789,7 @@ export function createLibraryView(o) {
     busy = 'Importing…';
     draw();
     let r;
+    let again = false;
     try {
       const how = {
         known: o.knownFiles(),
@@ -749,8 +799,10 @@ export function createLibraryView(o) {
           if (b) b.textContent = busy;
         },
       };
-      // no `deep`: a rescan, done as the folder was first imported
-      r = deep === null ? await lib.rescanFolder(src, how) : await lib.importFolder(src, { ...how, deep });
+      // no `deep`: a rescan, done as the folder was first imported. A folder
+      // imported before is rescanned too (what it has is not copied again).
+      again = deep === null || Boolean(lib.folderInfo(src));
+      r = again ? await lib.rescanFolder(src, deep === null ? how : { ...how, deep }) : await lib.importFolder(src, { ...how, deep });
     } catch (e) {
       busy = '';
       draw();
@@ -761,9 +813,9 @@ export function createLibraryView(o) {
     f.source = `dir:${src}`;
     shown = PAGE;
     draw();
-    const parts = [deep === null && !r.added ? 'Nothing new in the folder' : r.added === 1 ? '1 file imported' : `${r.added} files imported`];
+    const parts = [again && !r.added ? 'Nothing new in the folder' : r.added === 1 ? '1 file imported' : `${r.added} files imported`];
     if (r.have) parts.push(r.have === 1 ? '1 was already there' : `${r.have} were already there`);
-    if (r.more) parts.push('the folder has more: import its sub-folders one by one');
+    if (r.more) parts.push('the folder has more: Rescan brings in the next ones');
     if (r.failed.length) parts.push(`${r.failed.length} failed (${r.failed[0].message})`);
     toast(parts.join(' · '));
   }

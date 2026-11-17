@@ -6,13 +6,14 @@
 
 import * as M from './setup-model.js';
 import * as B from './browse-model.js';
-import * as C from './compose-model.js';
-import { h, clear, icon, toast } from './dom.js';
+import { h, clear, icon, toast, restoreScroll, isRestoreScroll } from './dom.js';
 import { renderSettings, showSection } from './settings-view.js';
-import { catalogView, threadView } from './browse.js';
+import { catalogView, threadView, updateThreadView, statusLine, statsLine } from './browse.js';
+import * as R from './redraw-model.js';
 import { createComposer } from './compose.js';
 import { galleryItems } from './gallery-model.js';
 import { openGallery } from './gallery.js';
+import { fileShown } from './setup.js';
 import * as F from './filter-model.js';
 import { hiddenPosts } from './hide-model.js';
 import * as U from './unread-model.js';
@@ -22,7 +23,7 @@ import { archiveLink } from './archive-model.js';
 import { createEmbedPlayer } from './embeds.js';
 import * as O from './offline-model.js';
 import { savedListView, confirmDialog } from './offline.js';
-import { postFlag } from './bridge.js';
+import { postFlag, waitingMs } from './bridge.js';
 import * as SM from './stats-model.js';
 import { createStats } from './stats.js';
 import { statsView, statusText, FOURSTATS_URL } from './stats-view.js';
@@ -33,6 +34,7 @@ import { createLibrary } from './library.js';
 import { createLibraryView } from './library-view.js';
 import { knownFiles, md5Hex } from './library-model.js';
 import { commentText } from './render.js';
+import { menuAnchorRedrawn } from './post-menu.js';
 import * as TG from './tag-model.js';
 import { tagChips, editTag, tagPage } from './tag-view.js';
 
@@ -45,6 +47,18 @@ const CROSS_MAX_AGE_MS = 60_000;
 /** Other threads kept for quote links (the oldest goes first). */
 const CROSS_KEEP = 40;
 const NARROW = '(max-width: 900px)';
+/** The Rust queue answers a thread at most once per this long (older copies
+ *  come back as "too soon to ask again"); fetch/src/client.rs. */
+const THREAD_FLOOR_MS = 10_000;
+/** After posting a reply, the thread is asked for again this long after
+ *  the floor at the earliest (the site's own copy takes a moment), and at
+ *  most this many times before the usual interval takes over. */
+const SOON_MARGIN_MS = 1_000;
+const SOON_MIN_MS = 1_500;
+const SOON_TRIES = 4;
+/** When the queue holds requests back for a while (bridge.js waitingMs),
+ *  the next try comes this long after it says. */
+const WAITING_MARGIN_MS = 500;
 /** Saved threads listed in the rail (the rest are in All saved threads). */
 const SAVED_IN_RAIL = 8;
 export const MAX_PANES = 5;
@@ -85,6 +99,7 @@ export function openShell({
     cats: {}, // board → { status, threads, error, at, freshness }
     threads: {}, // "board/no" → { status, posts, error, at, freshness, gone, fresh }
     timers: new Map(), // "board/no" → timeout, for threads open in a pane
+    catRetry: new Map(), // board → timeout: its catalog asked for again once the queue lets it
     scroll: {}, // "paneId:viewKey" → scrollTop
     watchBusy: false,
     revealed: new Set(), // "board/no" of filtered posts shown anyway (this session)
@@ -101,11 +116,17 @@ export function openShell({
     // { id, board, thread, post, file, from, state: 'sending' | 'sent' | 'failed', no, message, colour }
     pending: [],
     landed: new Set(), // "board/no" of those now in the thread: they appear without motion
+    // "board/no" → quick updates left: a reply was just posted there, so the
+    // thread is asked for again as soon as the queue allows (scheduleOpen)
+    soon: new Map(),
   };
   const ac = new AbortController();
   let closed = false;
   let watchTimer = null;
   let saveTimer = null;
+  // The changes a grouped save still holds (save() with `op`), by what they
+  // change: settings from another window take them on (applySettings).
+  let pendingOps = new Map();
   let boardWaiters = [];
 
   // ------------------------------------------------------------------ stats
@@ -133,17 +154,18 @@ export function openShell({
   // The library (meme gallery): kept files with their source and tags.
   // Each pane showing it keeps its own view node across redraws.
   const libraryViews = new WeakMap(); // pane → createLibraryView(...)
-  let libraryFrame = 0;
   const library = createLibrary({
     bridge,
     getSettings: () => settings,
     onChange: () => {
       for (const p of st.panes) libraryViews.get(p)?.draw();
-      // the "in the library" marks in threads
-      cancelAnimationFrame(libraryFrame);
-      libraryFrame = requestAnimationFrame(() => render());
+      // the "in the library" marks in threads, saved threads and the tag
+      // pages that list library files (Library panes draw themselves, above)
+      invalidate({ panes: panesWhere((x) => x.kind === 'thread' || x.kind === 'offline' || (x.kind === 'tag' && Boolean(tagOf(x.id)?.library))) });
     },
   });
+  // another window wrote the library's index: read again, merged (library.js)
+  const stopLibraryEvents = bridge?.onLibraryChanged?.((ev) => library.otherWrote(ev));
   const toLibrary = () => settings.files?.toLibrary !== false && library.available();
 
   /** What the app knows about files from the threads it holds, for imports. */
@@ -159,6 +181,9 @@ export function openShell({
     const pane = st.panes[i];
     let v = libraryViews.get(pane);
     if (!v) {
+      // The view lives as long as its pane, which can move (a pane opened
+      // or closed before it): where it is gets looked up when it is used,
+      // and its keys follow the pane itself, never its place.
       v = createLibraryView({
         library,
         bridge,
@@ -168,11 +193,18 @@ export function openShell({
           render();
         },
         onOpenPost: ({ board, thread, no }) => {
-          goto({ kind: 'thread', board, no: thread }, i);
-          if (no !== thread) setTimeout(() => root.querySelector(`[data-pane="${i}"] [data-no="${no}"]`)?.scrollIntoView({ block: 'center' }), 600);
+          const j = st.panes.indexOf(pane);
+          if (j < 0) return;
+          goto({ kind: 'thread', board, no: thread }, j);
+          if (no !== thread) {
+            setTimeout(() => {
+              const k = st.panes.indexOf(pane);
+              if (k >= 0) root.querySelector(`[data-pane="${k}"] [data-no="${no}"]`)?.scrollIntoView({ block: 'center' });
+            }, 600);
+          }
         },
         knownFiles: seenFiles,
-        keyPrefix: st.panes.length > 1 ? `p${i}-` : '',
+        keyPrefix: `lib${pane.id}-`,
       });
       libraryViews.set(pane, v);
     }
@@ -205,17 +237,20 @@ export function openShell({
     }
   })();
   let tagHistoryTimer = 0;
+  function writeTagHistory() {
+    clearTimeout(tagHistoryTimer);
+    tagHistoryTimer = 0;
+    try {
+      localStorage.setItem(TAG_STATS_KEY, JSON.stringify(tagHistory));
+    } catch {
+      /* no storage: the counts last until the app closes */
+    }
+  }
   function noteTagFinds(board, threads) {
     if (!settings.tags?.length || !threads?.length) return;
     tagHistory = TG.recordFinds(tagHistory, settings.tags, board, threads, commentText);
     clearTimeout(tagHistoryTimer);
-    tagHistoryTimer = setTimeout(() => {
-      try {
-        localStorage.setItem(TAG_STATS_KEY, JSON.stringify(tagHistory));
-      } catch {
-        /* no storage: the counts last until the app closes */
-      }
-    }, 1000);
+    tagHistoryTimer = setTimeout(writeTagHistory, 1000);
   }
 
   /** Stats → Tags: each tag's finds now (loaded catalogs and threads) and
@@ -256,17 +291,34 @@ export function openShell({
   // look in every active board. Kept in settings.tags.
   const tagBoards = (t) => (t.board ? [t.board] : TG.activeBoards(settings.favourites, views().filter((x) => x?.kind === 'board' || x?.kind === 'thread').map((x) => x.board)));
 
+  // A catalog's tag labels, worked out once per loaded catalog and kept
+  // until the tags change (every tag edit makes a new settings.tags).
+  const tagLabels = new WeakMap(); // catalog threads → { all, board, labels, shown }
+  function catalogLabels(board, threads, tags) {
+    const hit = tagLabels.get(threads);
+    if (hit && hit.all === settings.tags && hit.board === board) return hit;
+    const labels = tags.length ? TG.labelThreads(tags, threads, commentText) : new Map();
+    const c = {
+      all: settings.tags,
+      board,
+      labels,
+      // a hide tag's label would only sit on threads it hides
+      shown: new Map([...labels].map(([no, l]) => [no, l.filter((t) => t.mode === 'show')]).filter(([, l]) => l.length)),
+    };
+    tagLabels.set(threads, c);
+    return c;
+  }
+
   /** What a catalog needs for its tags: the chips, the labels, the one pressed. */
   function catalogTags(board, pane, i) {
     const tags = TG.tagsFor(settings.tags || [], board);
     const threads = st.cats[board]?.threads;
-    const labels = threads && tags.length ? TG.labelThreads(tags, threads, commentText) : new Map();
+    const { labels, shown } = threads ? catalogLabels(board, threads, tags) : { labels: new Map(), shown: new Map() };
     // only a show tag narrows the catalog to its threads; hide tags work
     // through the filter marks
     const active = tags.some((t) => t.id === pane.catView.tag && t.mode === 'show') ? pane.catView.tag : '';
     return {
-      // a hide tag's label would only sit on threads it hides
-      labels: new Map([...labels].map(([no, l]) => [no, l.filter((t) => t.mode === 'show')]).filter(([, l]) => l.length)),
+      labels: shown,
       activeTag: active,
       tagBar: tagChips({
         board,
@@ -282,10 +334,13 @@ export function openShell({
         keyPrefix: st.panes.length > 1 ? `p${i}-` : '',
         onPick: (id) => {
           pane.catView.tag = id;
-          render();
+          renderPaneOf(pane);
         },
         onEdit: (tag) => editTagFlow(tag, board, document.activeElement, tag ? '' : pane.catView.query || ''),
-        onPage: (tag) => goto({ kind: 'tag', id: tag.id }, i),
+        onPage: (tag) => {
+          const j = st.panes.indexOf(pane);
+          if (j >= 0) goto({ kind: 'tag', id: tag.id }, j);
+        },
       }),
     };
   }
@@ -312,8 +367,14 @@ export function openShell({
     render();
   }
 
-  function tagPageBody(t, i) {
+  // tag pane → the boards it was drawn waiting for (loadCatalog redraws it
+  // when they come, even unchanged)
+  const tagWaiting = new WeakMap();
+  function tagPageBody(t, pane, i) {
     const boardsHere = tagBoards(t);
+    tagWaiting.set(pane, new Set(boardsHere.filter((b) => !st.cats[b] || st.cats[b].status === 'loading')));
+    // where the pane is when it is clicked (panes come and go)
+    const here = () => st.panes.indexOf(pane);
     return tagPage({
       tag: t,
       boards: boardsHere,
@@ -322,14 +383,17 @@ export function openShell({
       files: t.library && library.available() ? library.items().filter((e) => TG.libraryMatches(t, e)) : null,
       fileUrl: (e) => library.fileUrl(e),
       keyPrefix: st.panes.length > 1 ? `p${i}-` : '',
-      onOpen: (board, no) => goto({ kind: 'thread', board, no }, i),
+      onOpen: (board, no) => here() >= 0 && goto({ kind: 'thread', board, no }, here()),
       onOpenFile: (e) => {
-        goto({ kind: 'library' }, i);
-        libraryViews.get(st.panes[i])?.select(e.id);
+        if (here() < 0) return;
+        goto({ kind: 'library' }, here());
+        libraryViews.get(pane)?.select(e.id);
       },
       onEdit: (opener) => editTagFlow(t, t.board, opener),
       onRefresh: () => {
         for (const b of boardsHere) loadCatalog(b, true);
+        // at once: "Still loading", then what came (even the same threads)
+        renderPaneOf(pane);
       },
     });
   }
@@ -363,20 +427,28 @@ export function openShell({
         let w = w0;
         grip.setPointerCapture?.(e.pointerId);
         root.classList.add('shell--resizing');
+        dragGrip = grip;
         const move = (ev) => {
           w = w0 + (ev.clientX - x0);
           show(w, grip);
         };
+        // the end of the drag: let go, cancelled, or the capture lost
+        // (another grab took the pointer): whichever comes first
         const up = () => {
           grip.removeEventListener('pointermove', move);
           grip.removeEventListener('pointerup', up);
           grip.removeEventListener('pointercancel', up);
+          grip.removeEventListener('lostpointercapture', up);
+          if (dragGrip !== grip) return;
+          dragGrip = null;
           root.classList.remove('shell--resizing');
           if (M.fitRail(w) !== w0) keep(w);
+          if (renderAfterDrag) render();
         };
         grip.addEventListener('pointermove', move);
         grip.addEventListener('pointerup', up);
         grip.addEventListener('pointercancel', up);
+        grip.addEventListener('lostpointercapture', up);
       },
       onkeydown: (e) => {
         const step = e.shiftKey ? 48 : 16;
@@ -432,7 +504,9 @@ export function openShell({
     onCatalog: (board, res, at) => {
       const prev = st.cats[board];
       if (!prev || prev.status === 'loading' || isShown({ kind: 'board', board })) return;
-      st.cats[board] = { status: 'ok', threads: B.catalogThreads(res?.data), at, freshness: res?.freshness, error: null };
+      const threads = B.catalogThreads(res?.data);
+      // the same threads keep the list the marks were worked out for
+      st.cats[board] = { status: 'ok', threads: prev.threads && R.samePosts(prev.threads, threads) ? prev.threads : threads, at, freshness: res?.freshness, error: null };
     },
   });
 
@@ -446,25 +520,58 @@ export function openShell({
   const isShown = (v) => views().some((x) => viewKey(x) === viewKey(v));
   const focused = () => st.panes[Math.min(st.focus, st.panes.length - 1)];
   const prefixOf = (i) => (i === 0 ? '' : `p${i}-`);
+  /** Panes that are not fading out (closePane): the ones that stay. */
+  const livePanes = () => st.panes.filter((p) => p.motion?.kind !== 'closing');
 
   // ---------------------------------------------------------------- saving
 
   /** Keeps and stores new settings. Seen-marks come in bursts, so writes
-   *  are grouped. */
-  function save(next, { now = false } = {}) {
+   *  are grouped. `op`: [what it changes, (settings) => settings], the same
+   *  change again, for settings another window saves meanwhile. */
+  function save(next, { now = false, op = null } = {}) {
+    // close() already stored this shell's settings: a late fetch (a watched
+    // thread's title) must not write over newer ones
+    if (closed) return undefined;
     settings = next;
     clearTimeout(saveTimer);
-    if (now) onSave(next);
-    else saveTimer = setTimeout(() => onSave(settings), 800);
+    saveTimer = null;
+    if (now) {
+      // built on `settings`, so it holds every grouped change too
+      pendingOps = new Map();
+      return onSave(next);
+    }
+    if (op) {
+      pendingOps.delete(op[0]); // the newest last, so they replay in order
+      pendingOps.set(op[0], op[1]);
+    }
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      pendingOps = new Map();
+      onSave(settings);
+    }, 800);
+    return undefined;
+  }
+
+  /** Stores a grouped save now (the window is closing). */
+  function flushSave() {
+    if (!saveTimer) return Promise.resolve();
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    pendingOps = new Map();
+    return Promise.resolve(onSave(settings));
   }
 
   /** Keeps a watched thread's title current. What has been read (its
-   *  `seen`) follows the posts that were on screen: trackRead(). */
+   *  `seen`) follows the posts that were on screen: trackRead(). Says
+   *  whether it changed anything (the rail shows the title). */
   function markSeen(board, no) {
     const posts = st.threads[tkey(board, no)]?.posts;
-    if (!posts?.length || !M.isWatched(settings, board, no)) return;
-    const next = M.updateWatched(settings, board, no, { title: B.threadTitle(posts[0], 120) });
-    if (next !== settings) save(next);
+    if (!posts?.length || !M.isWatched(settings, board, no)) return false;
+    const patch = { title: B.threadTitle(posts[0], 120) };
+    const next = M.updateWatched(settings, board, no, patch);
+    if (next === settings) return false;
+    save(next, { op: [`title:${tkey(board, no)}`, (s) => M.updateWatched(s, board, no, patch)] });
+    return true;
   }
 
   // ----------------------------------------------------------------- loading
@@ -479,6 +586,12 @@ export function openShell({
       if (!list.length) throw new Error('The board list came back empty.');
       boards = list;
       settings = M.rememberNsfwBoards(settings, list);
+      // older board-flag filters, made to mean what they meant (filter-model);
+      // the same list back when there is nothing (left) to do
+      const fixed = F.fixBoardFlagFilters(settings.filters, list);
+      if (fixed !== settings.filters) {
+        save({ ...settings, filters: fixed }, { op: ['flag-filters', (s) => ({ ...s, filters: F.fixBoardFlagFilters(s.filters, list) })] });
+      }
       onBoards(list);
       st.boardList = 'ok';
     } catch (e) {
@@ -508,18 +621,129 @@ export function openShell({
     if (prev?.status === 'loading') return;
     if (!force && prev?.status === 'ok' && Date.now() - prev.at < CATALOG_MAX_AGE_MS) return;
     st.cats[board] = { ...prev, status: 'loading' };
-    if (isShown({ kind: 'board', board })) render();
+    // what is on screen stays: only the status line and Refresh change
+    // (after an error, the error box gives way to the loading line)
+    if (isShown({ kind: 'board', board })) {
+      if (prev?.status === 'error') renderPanes((v) => v.kind === 'board' && v.board === board);
+      else patchCatalog(board);
+    }
+    let quiet = false;
     try {
       const res = await bridge.fetchCatalog(board);
-      st.cats[board] = { status: 'ok', threads: B.catalogThreads(res?.data), at: Date.now(), freshness: res?.freshness, error: null };
+      const threads = B.catalogThreads(res?.data);
+      // the same threads keep the list the marks and tags were worked out for
+      quiet = Boolean(prev?.threads) && prev.status === 'ok' && R.samePosts(prev.threads, threads);
+      st.cats[board] = { status: 'ok', threads: quiet ? prev.threads : threads, at: Date.now(), freshness: res?.freshness, error: null };
       // a catalog loaded anyway is a board activity sample: no extra request
       stats.recordCatalog(board, res?.data);
-      noteTagFinds(board, st.cats[board].threads);
+      if (!quiet) noteTagFinds(board, st.cats[board].threads);
     } catch (e) {
       st.cats[board] = { ...prev, status: 'error', error: e };
     }
-    // a tag's page gathers several catalogs
-    if (!closed && (isShown({ kind: 'board', board }) || views().some((x) => x?.kind === 'tag' || x?.kind === 'stats'))) render();
+    if (closed) return;
+    retryCatalogLater(board);
+    // Stats (its Tags tab counts what the catalogs find): redrawn in place
+    scheduleStats();
+    // the board's catalog panes; its threads (their page in the toolbar)
+    if (quiet) patchCatalog(board);
+    else invalidate({ panes: panesWhere((v) => v.kind === 'board' && v.board === board) });
+    patchThreadStats(board);
+    // a tag's page gathers several catalogs: redrawn when this one changed,
+    // or when it was drawn waiting for it ("Still loading")
+    invalidate({
+      panes: panesWhere((v) => {
+        const t = v.kind === 'tag' && tagOf(v.id);
+        return Boolean(t) && tagBoards(t).includes(board);
+      }).filter((p) => !quiet || tagWaiting.get(p)?.has(board)),
+    });
+  }
+
+  /** A catalog the queue would not ask for yet (it is holding requests
+   *  back after an error: bridge.js waitingMs) is asked for again once it
+   *  will, while a pane still shows it (its board, or a tag on it). Any
+   *  other answer drops a retry still waiting. */
+  function retryCatalogLater(board) {
+    clearTimeout(st.catRetry.get(board));
+    st.catRetry.delete(board);
+    const entry = st.cats[board];
+    const wait = entry?.status === 'error' ? waitingMs(entry.error) : 0;
+    if (!wait) return;
+    const wanted = () =>
+      panesWhere((v) => (v.kind === 'board' && v.board === board) || (v.kind === 'tag' && Boolean(tagOf(v.id)) && tagBoards(tagOf(v.id)).includes(board))).length > 0;
+    st.catRetry.set(
+      board,
+      setTimeout(() => {
+        st.catRetry.delete(board);
+        if (!closed && st.cats[board]?.status === 'error' && wanted()) loadCatalog(board, true);
+      }, wait + WAITING_MARGIN_MS),
+    );
+  }
+
+  /** The thread panes of a board whose catalog just loaded: their page in
+   *  the catalog (the toolbar's stats line), in place; a thread still
+   *  loading takes its title from the catalog, so it is redrawn. */
+  function patchThreadStats(board) {
+    const cat = st.cats[board];
+    st.panes.forEach((p, i) => {
+      const v = p.view;
+      if (v?.kind !== 'thread' || v.board !== board) return;
+      const entry = st.threads[tkey(v.board, v.no)];
+      if (!entry?.posts) {
+        invalidate({ panes: [p] });
+        return;
+      }
+      const tools = root.querySelector(`.workspace__grid section[data-pane="${i}"] [data-thread-tools]`);
+      if (!tools) return;
+      const key = `${prefixOf(i)}thread-stats`;
+      const old = tools.querySelector(`[data-key="${CSS.escape(key)}"]`);
+      const next = statsLine(entry.posts, cat?.threads ? { threads: cat.threads, at: cat.at } : null, prefixOf(i));
+      if (old && next) old.replaceWith(next);
+      else if (old) old.remove();
+      else if (next) {
+        const hint = tools.querySelector(':scope > .field__hint');
+        if (hint) hint.before(next);
+        else tools.append(next);
+      }
+    });
+  }
+
+  /** The catalog panes of a board after a fetch that changed nothing else:
+   *  the status line and the Refresh button, in place. */
+  function patchCatalog(board) {
+    const entry = st.cats[board];
+    st.panes.forEach((p, i) => {
+      if (p.view?.kind !== 'board' || p.view.board !== board) return;
+      const node = root.querySelector(`.workspace__grid [data-pane="${i}"]`);
+      if (!node) return;
+      patchStatus(node, entry, 'catalog');
+      const btn = node.querySelector(`[data-key="${CSS.escape(`${prefixOf(i)}catalog-refresh`)}"]`);
+      if (btn) btn.disabled = entry?.status === 'loading';
+    });
+  }
+
+  /** The thread panes of "board/no" after a fetch that changed no post:
+   *  the status line, the Update button and the "new" marks, in place. */
+  function patchThread(key) {
+    const entry = st.threads[key];
+    st.panes.forEach((p, i) => {
+      const v = p.view;
+      if (v?.kind !== 'thread' || tkey(v.board, v.no) !== key) return;
+      const node = root.querySelector(`.workspace__grid [data-pane="${i}"]`);
+      if (!node) return;
+      patchStatus(node, entry, 'thread');
+      const btn = node.querySelector(`[data-key="${CSS.escape(`${prefixOf(i)}thread-refresh`)}"]`);
+      if (btn) btn.disabled = entry?.status === 'loading' || Boolean(entry?.gone);
+      if (!entry?.fresh?.size) for (const el of node.querySelectorAll('.post--new')) el.classList.remove('post--new');
+    });
+  }
+
+  /** Swaps a pane's status line (browse.js statusLine) for the entry's. */
+  function patchStatus(node, entry, what) {
+    const old = node.querySelector('[data-status]');
+    const next = statusLine(entry, what);
+    if (old && next) old.replaceWith(next);
+    else if (old) old.remove();
+    else if (next) node.querySelector('.browse > .browse__tools')?.after(next);
   }
 
   /** Fetches a thread (through the queue: never more often than every 10 s
@@ -533,33 +757,74 @@ export function openShell({
     clearTimeout(st.timers.get(key));
     st.timers.delete(key);
     st.threads[key] = { ...prev, status: 'loading' };
-    if (isOpen(board, no)) render();
+    // The posts on screen stay: only the status line and Update change
+    // (after an error, the error box gives way to the loading line; on a
+    // first open, goto() has drawn the loading thread already).
+    if (isOpen(board, no)) {
+      if (prev?.status === 'error') renderPanes(R.showsThread(board, no));
+      else patchThread(key);
+    }
+    // quiet: the same posts as before (a 304, too soon to ask, or nothing
+    // new); watch: the watched record changed (the rail shows it)
+    let quiet = false;
+    let watch = false;
     try {
       const res = await bridge.fetchThread(board, no);
       const posts = Array.isArray(res?.data?.posts) ? res.data.posts : [];
       if (!posts.length) throw new Error('The thread came back empty.');
-      const fresh = prev?.posts ? new Set(B.newPosts(prev.posts, posts).map((p) => p.no)) : new Set();
-      // New posts while the thread is open: the "New posts" line moves above
-      // them once everything before them was read (unread-model.js).
-      if (fresh.size && prev?.posts?.length && st.lines.has(key)) {
-        st.lines.set(key, U.lineAfterUpdate(st.lines.get(key), U.readOf(settings, board, no), prev.posts[prev.posts.length - 1].no));
+      // "too soon to ask again" gives the last copy: it is as old as that copy
+      const at = res?.freshness === 'throttled' && prev?.at ? prev.at : Date.now();
+      quiet = R.quietUpdate(prev, posts);
+      if (quiet) {
+        // the same posts array: what was worked out for it (marks, IDs, the
+        // quote map) still holds
+        st.threads[key] = { ...prev, status: 'ok', posts: prev.posts, at, freshness: res?.freshness, error: null, gone: false, fresh: new Set() };
+      } else {
+        const fresh = prev?.posts ? new Set(B.newPosts(prev.posts, posts).map((p) => p.no)) : new Set();
+        // New posts while the thread is open: the "New posts" line moves above
+        // them once everything before them was read (unread-model.js).
+        if (fresh.size && prev?.posts?.length && st.lines.has(key)) {
+          st.lines.set(key, U.lineAfterUpdate(st.lines.get(key), U.readOf(settings, board, no), prev.posts[prev.posts.length - 1].no));
+        }
+        st.threads[key] = { status: 'ok', posts, at, freshness: res?.freshness, error: null, gone: false, fresh };
+        settlePending(board, no);
+        countRepliesToYou(board, posts);
       }
-      st.threads[key] = { status: 'ok', posts, at: Date.now(), freshness: res?.freshness, error: null, gone: false, fresh };
-      settlePending(board, no);
-      countRepliesToYou(board, posts);
       const op = posts[0];
       if (M.isWatched(settings, board, no)) {
-        const next = M.updateWatched(settings, board, no, { archived: Boolean(op.archived || op.closed), title: B.threadTitle(op, 120) });
-        if (next !== settings) save(next);
+        const patch = { archived: Boolean(op.archived || op.closed), title: B.threadTitle(op, 120) };
+        const next = M.updateWatched(settings, board, no, patch);
+        if (next !== settings) {
+          save(next, { op: [`watch:${key}`, (s) => M.updateWatched(s, board, no, patch)] });
+          watch = true;
+        }
       }
     } catch (e) {
       const gone = String(e?.message || e) === 'not-found';
-      st.threads[key] = { ...prev, status: 'error', error: e, gone };
-      if (gone && M.isWatched(settings, board, no)) save(M.updateWatched(settings, board, no, { dead: true }));
+      // the queue holding requests back: the next try once it lets one go
+      const wait = waitingMs(e);
+      st.threads[key] = { ...prev, status: 'error', error: e, gone, retryAt: wait ? Date.now() + wait : 0 };
+      if (gone && M.isWatched(settings, board, no)) save(M.updateWatched(settings, board, no, { dead: true }), { op: [`dead:${key}`, (s) => M.updateWatched(s, board, no, { dead: true })] });
     }
     if (closed) return;
-    if (isOpen(board, no)) markSeen(board, no);
-    render();
+    const open = isOpen(board, no);
+    if (open && markSeen(board, no)) watch = true;
+    // Nothing new: the open panes' status lines change, nothing else (a
+    // watched thread that is not open changes nothing on screen). New
+    // posts (or an error): the panes showing the thread, the sidebar when
+    // it is watched (its unread count), an Ask pane reading it (flushDraw),
+    // Stats (what hide tags find).
+    if (quiet) {
+      if (open) patchThread(key);
+    } else {
+      // new posts at the end are added in place (growPane); anything else
+      // redraws the pane
+      invalidate({ grown: panesWhere(R.showsThread(board, no)) });
+      scheduleStats();
+    }
+    if (watch || (!quiet && M.isWatched(settings, board, no))) invalidate({ rail: true });
+    // a reply posted here that the thread now has: back to the usual pace
+    if (st.soon.has(key) && !sentIn(board, no)) st.soon.delete(key);
     scheduleOpen();
   }
 
@@ -655,6 +920,34 @@ export function openShell({
     showJump();
   }
 
+  /** A board link (>>>/g/, >>>/g/search/) clicked in pane `from` (the pane
+   *  object: indexes shift while the board list loads): that board's
+   *  catalog opens beside it, with the link's search in its search box. */
+  async function openBoardLink({ board, search = '' }, from) {
+    if (!board) return;
+    // the board list, loaded once if need be (it failing: the catalog says)
+    const known = await boardInfo(board);
+    if (closed) return;
+    const at = st.panes.indexOf(from);
+    if (at < 0 || from.motion?.kind === 'closing') return; // its pane went meanwhile
+    if (!known && boards) {
+      toast(`There is no board /${board}/.`);
+      return;
+    }
+    // an NSFW board while they are hidden: never opened from a link
+    if (known && !M.visibleBoards([known], settings).length) {
+      toast(`/${board}/ is an NSFW board: Settings → Content can show NSFW boards.`);
+      return;
+    }
+    const before = st.panes.length;
+    openBeside({ kind: 'board', board }, at);
+    if (st.panes.length === before) return; // five panes: it went to a new window
+    const opened = st.panes[st.focus];
+    if (opened?.view?.kind !== 'board' || !search) return;
+    opened.catView.query = search;
+    renderPaneOf(opened);
+  }
+
   /** Scrolls to the post a jump to another thread asked for, once drawn. */
   function showJump() {
     const j = st.jumpTo;
@@ -692,15 +985,30 @@ export function openShell({
       const op = entry?.posts?.[0];
       if (!entry || entry.status === 'loading' || entry.gone || op?.archived || op?.closed) continue;
       const [board, no] = key.split('/');
+      // a reply was just posted here: asked for again once the queue's 10 s
+      // per thread have passed since the last copy (a few tries, then the
+      // usual interval), so the real post replaces the placeholder soon
+      const tries = st.soon.get(key) || 0;
+      let delay = intervalMs();
+      if (tries > 0) {
+        st.soon.set(key, tries - 1);
+        delay = Math.min(delay, Math.max(SOON_MIN_MS, (entry.at || 0) + THREAD_FLOOR_MS + SOON_MARGIN_MS - Date.now()));
+      }
+      // the queue said when it will ask again (bridge.js waitingMs): then,
+      // not at the usual interval (no sooner: it would make no request)
+      if (entry.status === 'error' && entry.retryAt) delay = Math.max(SOON_MIN_MS, entry.retryAt - Date.now() + WAITING_MARGIN_MS);
       st.timers.set(
         key,
         setTimeout(() => {
           st.timers.delete(key);
           loadThread(board, Number(no));
-        }, intervalMs()),
+        }, delay),
       );
     }
   }
+
+  /** Whether a reply of yours in board/no is posted but not in the thread yet. */
+  const sentIn = (board, thread) => st.pending.some((p) => p.state === 'sent' && p.board === board && p.thread === thread);
 
   /** The watcher (main window only): every interval, the watched threads
    *  that are not open are asked for in turn. The Rust queue spaces the
@@ -733,12 +1041,12 @@ export function openShell({
     if (!v) return;
     if (v.kind === 'board') loadCatalog(v.board);
     else if (v.kind === 'thread') {
-      stats.count('threads', 1, v.board);
       library.load(); // for the "in the library" marks
       const entry = st.threads[tkey(v.board, v.no)];
+      // fresh enough: goto() or openBeside() has just drawn it; the rail
+      // redraws only when the watched thread's title changed
       if (entry?.posts && Date.now() - entry.at < 10_000) {
-        markSeen(v.board, v.no);
-        render();
+        if (markSeen(v.board, v.no)) renderRail();
       } else loadThread(v.board, v.no);
     } else if (v.kind === 'boards' && st.boardList === 'idle') loadBoardList();
     else if (v.kind === 'saved') loadSaved();
@@ -788,7 +1096,10 @@ export function openShell({
   function goto(view, paneIndex = st.focus, { motion = 'forward', record = true } = {}) {
     const i = Math.max(0, Math.min(paneIndex, st.panes.length - 1));
     const pane = st.panes[i];
-    if (!sameView(pane.view, view)) {
+    const wasRail = st.rail;
+    const boardsBefore = activeBoardsKey();
+    const changed = !sameView(pane.view, view);
+    if (changed) {
       if (record) {
         pane.past.push(pane.view);
         if (pane.past.length > 50) pane.past.shift();
@@ -796,11 +1107,28 @@ export function openShell({
       }
       setMotion(pane, motion);
     }
+    // Stats → You: a thread opened (not the one already shown, not back
+    // and forward, not the panes a window starts with)
+    if (changed && record && view?.kind === 'thread') stats.count('threads', 1, view.board);
     pane.view = view;
     st.focus = i;
     st.rail = false;
     startLine(view);
-    render();
+    // The pane on its own, with the sidebar (its "current" marks) and the
+    // panes that follow this one: an Ask pane's "This thread", tag pages
+    // that look in the boards open. The sidebar's overlay closing, or a
+    // narrow window switching panes, is a new layout.
+    if (wasRail || !root.querySelector(`.workspace__grid section[data-pane="${i}"]`)) render();
+    else {
+      renderPane(i);
+      renderRail();
+      if (activeBoardsKey() !== boardsBefore) {
+        renderPanes((v) => v.kind === 'tag' && !tagOf(v.id)?.board);
+        scheduleStats(); // its Tags tab counts over tagBoards() too
+      }
+      refreshAskPanes();
+      syncFocus();
+    }
     enter(view);
   }
 
@@ -839,6 +1167,7 @@ export function openShell({
   /** Opens a view in a new pane next to `after`; with five panes already,
    *  in a new window instead. */
   function openBeside(view, after = st.focus) {
+    if (view?.kind === 'thread') stats.count('threads', 1, view.board);
     if (st.panes.length >= MAX_PANES) {
       newWindow([view]);
       return;
@@ -856,19 +1185,30 @@ export function openShell({
   /** Closes a pane: it fades out first (redraws meanwhile keep it fading),
    *  then goes. */
   function closePane(i) {
-    if (st.panes.length <= 1) return;
     const pane = st.panes[i];
-    if (pane.motion?.kind === 'closing') return;
+    // the last pane that stays never goes (one fading out does not count)
+    if (!pane || pane.motion?.kind === 'closing' || livePanes().length <= 1) return;
     stopAsk(pane.ask, bridge); // an answer under way ends with its pane
     if (reducedMotion()) return removePane(pane);
     setMotion(pane, 'closing');
+    // what is opened next goes to a pane that stays
+    if (focused() === pane) {
+      const live = st.panes.map((p, j) => (p.motion?.kind === 'closing' ? -1 : j)).filter((j) => j >= 0);
+      st.focus = live.reduce((best, j) => (Math.abs(j - i) < Math.abs(best - i) ? j : best), live[0]);
+    }
     render();
     setTimeout(() => removePane(pane), MOTION_MS.closing);
   }
 
   function removePane(pane) {
     const i = st.panes.indexOf(pane);
-    if (i < 0 || st.panes.length <= 1) return;
+    // brought back meanwhile (a goto gave it a new motion): it stays
+    if (i < 0 || (pane.motion && pane.motion.kind !== 'closing')) return;
+    if (st.panes.length <= 1) {
+      pane.motion = null;
+      render();
+      return;
+    }
     st.panes.splice(i, 1);
     st.focus = Math.max(0, Math.min(st.focus >= i ? st.focus - 1 : st.focus, st.panes.length - 1));
     render();
@@ -888,7 +1228,7 @@ export function openShell({
   function popOut(i) {
     const v = st.panes[i].view;
     newWindow([v]);
-    if (st.panes.length > 1) closePane(i);
+    if (livePanes().length > 1) closePane(i);
   }
 
   // ------------------------------------------------------------- posting
@@ -908,15 +1248,37 @@ export function openShell({
       const i = st.panes.findIndex((p) => (thread ? p.view?.kind === 'thread' && p.view.no === thread : p.view?.kind === 'board') && p.view.board === board);
       return root.querySelector(`[data-pane="${i >= 0 ? i : st.focus}"]`);
     },
-    onPosted: ({ board, thread, no }) => {
-      stats.count('posts', 1);
-      // A reply: watch the thread and show it fresh. A new thread: open it.
-      if (!M.isWatched(settings, board, thread)) save(M.toggleWatch(settings, { board, no: thread, seen: no }), { now: true });
-      if (isOpen(board, thread)) loadThread(board, thread);
-      else goto({ kind: 'thread', board, no: thread });
-      void no;
-    },
+    onPosted: (p) => posted(p),
   });
+
+  /** A post went out (compose.js). */
+  function posted({ board, thread, no }) {
+    stats.count('posts', 1);
+    // A reply: watch the thread and show it fresh. A new thread: open it.
+    if (!M.isWatched(settings, board, thread)) {
+      const posts = st.threads[tkey(board, thread)]?.posts;
+      const next = M.toggleWatch(settings, { board, no: thread, title: posts?.length ? B.threadTitle(posts[0], 120) : '', seen: no });
+      if (next !== settings) {
+        save(next, { now: true });
+        // its Watch button and the sidebar's Watched list say so at once
+        // (the reply form's save drew them before the thread was watched)
+        renderRail();
+        renderPanes(R.showsThread(board, thread));
+      }
+    }
+    if (isOpen(board, thread)) {
+      // Asking at once would most likely get the queue's last copy ("too
+      // soon"), without the reply: the next updates come as soon as the
+      // queue allows instead (scheduleOpen). One under way finishes first.
+      const key = tkey(board, thread);
+      st.soon.set(key, SOON_TRIES);
+      if (st.threads[key]?.status !== 'loading') {
+        clearTimeout(st.timers.get(key));
+        st.timers.delete(key);
+        scheduleOpen();
+      }
+    } else goto({ kind: 'thread', board, no: thread });
+  }
 
   /** A reply going out: shown at the end of its thread at once, grey; it
    *  flies in from the reply form; coloured when the site says it is
@@ -928,25 +1290,27 @@ export function openShell({
       st.pending = st.pending.filter((p) => !(p.state === 'failed' && p.board === e.board && p.thread === e.thread));
       const p = { ...e, state: 'sending', no: 0, message: '', flyAt: 0 };
       st.pending.push(p);
-      render();
+      // drawn at once: it flies in from the form right after
+      renderPanes(R.showsThread(p.board, p.thread));
       p.flyAt = performance.now();
       flyIn(p, 0);
       return;
     }
     const p = st.pending.find((x) => x.id === e.id);
     if (!p) return;
+    const here = R.showsThread(p.board, p.thread);
     if (e.type === 'posted') {
       Object.assign(p, { state: 'sent', no: e.no, post: { ...p.post, no: e.no }, colourAt: performance.now() });
       settlePending(p.board, p.thread);
-      render();
+      renderPanes(here);
       return;
     }
     Object.assign(p, { state: 'failed', message: e.message || '' });
-    render();
+    renderPanes(here);
     setTimeout(() => {
       if (!st.pending.includes(p)) return;
       st.pending = st.pending.filter((x) => x !== p);
-      render();
+      invalidate({ panes: panesWhere(here) });
     }, 6000);
   }
 
@@ -960,6 +1324,7 @@ export function openShell({
       st.landed.add(tkey(board, p.no));
       return false;
     });
+    if (!sentIn(board, thread)) st.soon.delete(tkey(board, thread));
   }
 
   const FLY_MS = 620;
@@ -968,8 +1333,8 @@ export function openShell({
   /** The grey reply comes out of the form's comment box and settles at the
    *  end of the thread (nothing moves with reduced motion). `elapsed`: a
    *  redraw during the flight picks it up where it was. */
-  function flyIn(p, elapsed) {
-    const card = root.querySelector(`[data-pending="${CSS.escape(p.id)}"]`);
+  function flyIn(p, elapsed, scope = root) {
+    const card = scope.querySelector(`[data-pending="${CSS.escape(p.id)}"]`);
     if (!card) return;
     if (!elapsed) card.scrollIntoView({ block: 'nearest', behavior: 'auto' });
     const from = p.from;
@@ -989,14 +1354,15 @@ export function openShell({
   }
 
   /** The thread redraws itself (updates, the post's own refresh): a reply
-   *  still flying in or taking its colours carries on from where it was. */
-  function resumePendingMotion() {
+   *  still flying in or taking its colours carries on from where it was,
+   *  in what was redrawn (`scope`) only. */
+  function resumePendingMotion(scope = root) {
     if (!st.pending.length) return;
     const now = performance.now();
     for (const p of st.pending) {
-      if (p.flyAt && p.state === 'sending' && now - p.flyAt < FLY_MS) flyIn(p, now - p.flyAt);
+      if (p.flyAt && p.state === 'sending' && now - p.flyAt < FLY_MS) flyIn(p, now - p.flyAt, scope);
       if (p.colourAt && now - p.colourAt < COLOUR_MS) {
-        const card = root.querySelector(`[data-pending="${CSS.escape(p.id)}"]`);
+        const card = scope.querySelector(`[data-pending="${CSS.escape(p.id)}"]`);
         card?.classList.add('post--colouring');
         card?.style.setProperty('animation-delay', `${-(now - p.colourAt)}ms`);
       }
@@ -1026,7 +1392,10 @@ export function openShell({
     if (!entry?.posts) return;
     const { why } = threadMarks(v.board, entry.posts);
     const shownPosts = entry.posts.filter((p) => !why.has(p.no) || st.revealed.has(tkey(v.board, p.no)));
-    const items = galleryItems(shownPosts, v.board, saved ? savedFiles(v.board, v.no) : bridge);
+    // Spoilers and work mode as the thread shows them; a file opened from
+    // its work-mode line there (keyed by the URL renderPost got) shows too
+    const urls = saved ? savedFiles(v.board, v.no) : bridge;
+    const items = galleryItems(shownPosts, v.board, urls, settings.display, { isShown: (p) => fileShown(urls.mediaUrl(v.board, p)) });
     openGallery({
       items,
       title: B.threadTitle(entry.posts[0], 80),
@@ -1056,20 +1425,25 @@ export function openShell({
 
   async function loadSaved() {
     if (!bridge?.offlineList || closed) return;
+    const before = st.saved;
     st.saved = { ...st.saved, status: 'loading' };
     try {
       st.saved = { status: 'ok', list: O.savedEntries(await bridge.offlineList(savedDir())), error: '' };
     } catch (e) {
       st.saved = { ...st.saved, status: 'error', error: String(e?.message || e) };
     }
-    if (!closed) render();
+    // The sidebar's list and the saved threads; when the list changed,
+    // saved copies (their title) and threads (whether they are saved).
+    const sameList = R.samePosts(before.list, st.saved.list);
+    if (sameList && before.status === st.saved.status && before.error === st.saved.error) return;
+    invalidate({ rail: true, panes: panesWhere((v) => v.kind === 'saved' || (!sameList && (v.kind === 'offline' || v.kind === 'thread'))) });
   }
 
   async function loadOffline(board, no) {
     const key = tkey(board, no);
     if (!bridge?.offlineRead || st.offline[key]?.status === 'loading') return;
     st.offline[key] = { ...st.offline[key], status: 'loading' };
-    render();
+    renderPanes(R.showsSaved(board, no));
     try {
       const r = await bridge.offlineRead(savedDir(), board, no);
       const posts = Array.isArray(r?.thread?.posts) ? r.thread.posts : [];
@@ -1079,7 +1453,8 @@ export function openShell({
       const gone = String(e?.message || e) === 'not-saved';
       st.offline[key] = { status: 'error', gone, error: gone ? new Error('This thread is not in the saved threads folder.') : e };
     }
-    if (!closed) render();
+    // (an Ask pane reading it follows: flushDraw)
+    invalidate({ panes: panesWhere(R.showsSaved(board, no)) });
   }
 
   /** A saved thread's file URLs (the app's own scheme; nothing from the site). */
@@ -1102,7 +1477,7 @@ export function openShell({
     if (st.jobs.has(key)) return;
     const job = { kind, done: 0, total: 0, cancelled: false };
     st.jobs.set(key, job);
-    render();
+    renderPanes(R.showsThread(board, no));
     try {
       const { jobs, worker } = await prepare();
       if (!jobs.length) {
@@ -1130,7 +1505,7 @@ export function openShell({
           if (views().some((x) => x?.kind === 'offline' && x.board === board && x.no === no)) loadOffline(board, no);
           else delete st.offline[key];
         }
-        render();
+        invalidate({ panes: panesWhere(R.showsThread(board, no)) });
       }
     }
   }
@@ -1176,7 +1551,7 @@ export function openShell({
     const job = st.jobs.get(tkey(board, no));
     if (!job) return;
     job.cancelled = true;
-    render();
+    renderPanes(R.showsThread(board, no));
   }
 
   async function deleteSaved(e, opener) {
@@ -1297,6 +1672,20 @@ export function openShell({
   // Marks are worked out once per loaded list and kept until the list, the
   // filters, the hidden posts or the (You)s change.
   const markCache = new WeakMap(); // posts or catalog threads → { key, marks, you }
+
+  // Your posts on each board, as a set: asked for per post, per quote link
+  // and per unread post, with up to 1000 kept. Every change to the (You)s
+  // makes a new list, so the sets follow it; read when used, never kept
+  // by a caller.
+  let youMemo = { yous: null, by: new Map() };
+  function youSetOf(board) {
+    if (youMemo.yous !== settings.yous) youMemo = { yous: settings.yous, by: new Map() };
+    let s = youMemo.by.get(board);
+    if (!s) youMemo.by.set(board, (s = F.youSet(settings.yous, board)));
+    return s;
+  }
+  const isYouOn = (board, no) => youSetOf(board).has(no);
+
   function postMarks(board, list) {
     const hit = markCache.get(list);
     if (hit && hit.filters === settings.filters && hit.tags === settings.tags && hit.hidden === settings.hiddenPosts && hit.yous === settings.yous && hit.board === board) return hit;
@@ -1321,7 +1710,7 @@ export function openShell({
       yous: settings.yous,
       marks,
       by,
-      you: F.repliesToYou(list, F.youSet(settings.yous, board)),
+      you: F.repliesToYou(list, youSetOf(board)),
     };
     markCache.set(list, c);
     return c;
@@ -1363,7 +1752,7 @@ export function openShell({
     const replies = settings.hide?.replies !== false;
     if (!c.why || c.whyReplies !== replies) {
       c.whyReplies = replies;
-      c.why = hiddenPosts(posts, c.marks, { replies, keep: F.youSet(settings.yous, board) });
+      c.why = hiddenPosts(posts, c.marks, { replies, keep: youSetOf(board) });
     }
     return c;
   }
@@ -1383,7 +1772,20 @@ export function openShell({
     const next = toggleIdHighlight(st.idHl.get(key) || null, id);
     if (next) st.idHl.set(key, next);
     else st.idHl.delete(key);
-    render();
+    renderPanes(showsEither(board, no));
+  }
+
+  /** A pane showing board/no, live or saved (they share the highlighted
+   *  ID and the posts shown anyway). */
+  const showsEither = (board, no) => (v) => (v.kind === 'thread' || v.kind === 'offline') && v.board === board && v.no === no;
+
+  /** A hidden post shown this time: in each pane of its thread; a watched
+   *  thread's unread count can go up. */
+  function reveal(board, thread, no) {
+    st.revealed.add(tkey(board, no));
+    renderPanes(showsEither(board, thread));
+    if (M.isWatched(settings, board, thread)) renderRail();
+    showUnread();
   }
 
   /** A thread's unread posts: after what was read, neither hidden (unless
@@ -1393,7 +1795,7 @@ export function openShell({
     if (!posts?.length) return [];
     const { why } = threadMarks(board, posts);
     const skip = new Set([...why.keys()].filter((n) => !st.revealed.has(tkey(board, n))));
-    return U.unreadPosts(posts, U.readOf(settings, board, no), { skip, isYou: (n) => C.isYou(settings, board, n) });
+    return U.unreadPosts(posts, U.readOf(settings, board, no), { skip, isYou: (n) => isYouOn(board, n) });
   }
 
   const focusedUnread = () => {
@@ -1468,7 +1870,7 @@ export function openShell({
     // Stats → You: the posts newly marked read
     const posts = st.threads[tkey(v.board, v.no)]?.posts;
     if (posts) stats.count('read', posts.filter((p) => p.no > before && p.no <= last).length);
-    save(next);
+    save(next, { op: [`read:${tkey(v.board, v.no)}`, (s) => U.markRead(s, v.board, v.no, last)] });
     showUnread();
   }
 
@@ -1541,7 +1943,9 @@ export function openShell({
     }
     save(next, { now: true });
     toast(was ? 'No longer watching this thread' : 'Watching this thread');
-    render();
+    renderRail();
+    renderPanes(R.showsThread(board, no));
+    showUnread();
   }
 
   function watchedRail() {
@@ -1647,7 +2051,13 @@ export function openShell({
     if (j >= 0) {
       st.focus = j;
       if (st.panes[j].view.kind === 'thread') st.jumpTo = { paneId: st.panes[j].id, board: ref.board, no: ref.thread, post: ref.no };
-      render();
+      // the pane is on screen: it only gets the focus and scrolls (a narrow
+      // window shows one pane at a time, so it switches)
+      if (matchMedia(NARROW).matches || st.rail) render();
+      else {
+        syncFocus();
+        showJump();
+      }
       return;
     }
     const saved = st.offline[tkey(ref.board, ref.thread)]?.posts && !st.threads[tkey(ref.board, ref.thread)];
@@ -1658,11 +2068,14 @@ export function openShell({
     openCross({ board: ref.board, thread: ref.thread, no: ref.no }, from);
   }
 
+  /** What the assistant's detection found: in the Settings panes. */
+  const redrawSettings = () => renderPanes((v) => v.kind === 'settings');
+
   /** Frees the model's memory, says what happened, and checks again. */
   async function unloadAi(ai = settings.ai) {
     const r = await unloadModel(bridge, ai);
     if (r.text) toast(r.text);
-    runMemory(bridge, st.aiDetect, settings.ai?.kind ? settings.ai : ai, () => views().some((x) => x?.kind === 'settings') && render());
+    runMemory(bridge, st.aiDetect, settings.ai?.kind ? settings.ai : ai, redrawSettings);
   }
 
   function showLog(opener = null) {
@@ -1672,6 +2085,74 @@ export function openShell({
   function openAssistantSettings(i) {
     goto({ kind: 'settings' }, i);
     showSection(root.querySelector('#set-ai'));
+  }
+
+  /** What the thread view of pane i (a live thread) is drawn with: for
+   *  paneContent, and for updateThreadView when only new posts came. */
+  function threadOpts(i) {
+    const pane = st.panes[i];
+    const v = pane.view;
+    const prefix = prefixOf(i);
+    const entry = st.threads[tkey(v.board, v.no)];
+    const pm = entry?.posts ? threadMarks(v.board, entry.posts) : null;
+    return {
+      board: v.board,
+      no: v.no,
+      entry,
+      bridge,
+      keyPrefix: prefix,
+      watched: M.isWatched(settings, v.board, v.no),
+      intervalSec: intervalMs() / 1000,
+      isYou: (no) => isYouOn(v.board, no),
+      onRefresh: () => loadThread(v.board, v.no),
+      onWatch: () => toggleWatchThread(v.board, v.no),
+      onReply: (quote = null, selection = '') => composer.open({ board: v.board, thread: v.no, quote: quote || 0, selection }),
+      pending: st.pending.filter((p) => p.board === v.board && p.thread === v.no),
+      landed: st.landed,
+      onGallery: () => gallery(i),
+      marks: pm?.marks,
+      hidden: pm?.why,
+      hiderOf: (no) => (pm ? hiderOf(v.board, entry.posts, no) : null),
+      onRemoveHider: (src, opener) => removeHider(src, opener),
+      youReplies: pm?.you,
+      revealed: new Set(entry?.posts?.filter((p) => st.revealed.has(tkey(v.board, p.no))).map((p) => p.no)),
+      onReveal: (no) => reveal(v.board, v.no, no),
+      onUnhide: (no) => toggleHiddenPost(v.board, no),
+      menuFor: (post) => postMenu(v.board, post),
+      inLibrary: library.available() ? (post) => library.has(post.md5) : null,
+      quoteMode: () => settings.quotes?.links || 'inline',
+      onCrossQuote: (q) => openCross(q, i),
+      onBoardLink: (q) => openBoardLink(q, pane),
+      cross: crossThreads,
+      archive: entry?.gone || entry?.posts?.[0]?.archived ? archiveLink(settings.archives, { board: v.board, thread: v.no }) : null,
+      ids: entry?.posts
+        ? {
+            counts: idsOf(entry.posts),
+            colour: settings.ids?.colour !== false,
+            active: st.idHl.get(tkey(v.board, v.no)) || null,
+            onClick: (id) => toggleIdHl(v.board, v.no, id),
+          }
+        : null,
+      unread: entry?.posts
+        ? { line: U.lineBefore(entry.posts, st.lines.get(tkey(v.board, v.no))), count: unreadOf(v.board, v.no).length, onJump: () => jumpUnread(i) }
+        : null,
+      // the catalog only if it is already here: stats never fetch it
+      catalog: st.cats[v.board]?.threads ? { threads: st.cats[v.board].threads, at: st.cats[v.board].at } : null,
+      sauce: settings.sauce?.engines || [],
+      links: postLinks(),
+      display: settings.display,
+      save:
+        bridge?.offlineWriteThread && entry?.posts
+          ? {
+              job: st.jobs.get(tkey(v.board, v.no)) || null,
+              saved: O.isSaved(st.saved.list, v.board, v.no),
+              progressKey: tkey(v.board, v.no),
+              onSave: () => saveOffline(v.board, v.no),
+              onDownloadAll: () => downloadAll(v.board, v.no),
+              onCancel: () => cancelJob(v.board, v.no),
+            }
+          : null,
+    };
   }
 
   function paneContent(i) {
@@ -1688,8 +2169,7 @@ export function openShell({
     let windowTitle;
     if (v.kind === 'settings') {
       if (st.aiDetect.status === 'idle') {
-        const redraw = () => views().some((x) => x?.kind === 'settings') && render();
-        queueMicrotask(() => runDetect(bridge, st.aiDetect, settings.ai?.kind === 'custom' ? settings.ai.port : 0, redraw).then(() => runMemory(bridge, st.aiDetect, settings.ai, redraw)));
+        queueMicrotask(() => runDetect(bridge, st.aiDetect, settings.ai?.kind === 'custom' ? settings.ai.port : 0, redrawSettings).then(() => runMemory(bridge, st.aiDetect, settings.ai, redrawSettings)));
       }
       title = [h('span', { class: 'centre__title-text', text: 'Settings' })];
       windowTitle = 'Settings';
@@ -1701,10 +2181,7 @@ export function openShell({
           onDeleteMyStats: (opener) => deleteMyStats(opener),
           assistant: {
             detect: st.aiDetect,
-            onDetect: (port) =>
-              runDetect(bridge, st.aiDetect, port, () => views().some((x) => x?.kind === 'settings') && render()).then(() =>
-                runMemory(bridge, st.aiDetect, settings.ai, () => views().some((x) => x?.kind === 'settings') && render()),
-              ),
+            onDetect: (port) => runDetect(bridge, st.aiDetect, port, redrawSettings).then(() => runMemory(bridge, st.aiDetect, settings.ai, redrawSettings)),
             onUnload: (ai) => unloadAi(ai),
           },
           diagnostics: {
@@ -1720,6 +2197,8 @@ export function openShell({
               forgetOffline();
               loadSaved();
             }
+            // another library folder: the old one finishes, the new one is read
+            if (library.stale()) library.load();
             if (!redraw) return;
             render();
             if (focus) root.querySelector(`[data-key="${CSS.escape(focus)}"]`)?.focus();
@@ -1742,7 +2221,7 @@ export function openShell({
           onNewThread: () => composer.open({ board: v.board, thread: 0 }),
           onView: (patch) => {
             Object.assign(pane.catView, patch);
-            render();
+            renderPaneOf(pane);
           },
           marks: st.cats[v.board]?.threads ? postMarks(v.board, st.cats[v.board].threads).marks : new Map(),
           hiderOf: (no) => (st.cats[v.board]?.threads ? hiderOf(v.board, st.cats[v.board].threads, no) : null),
@@ -1756,7 +2235,7 @@ export function openShell({
       const t = (settings.tags || []).find((x) => x.id === v.id);
       title = [icon(t && !t.board ? 'grid' : 'tag'), h('span', { class: 'centre__title-text', translate: 'no', text: t ? t.name : 'Tag' })];
       windowTitle = t ? t.name : 'Tag';
-      body.append(t ? tagPageBody(t, i) : h('p', { class: 'rail__empty', text: 'This tag was deleted.' }));
+      body.append(t ? tagPageBody(t, pane, i) : h('p', { class: 'rail__empty', text: 'This tag was deleted.' }));
     } else if (v.kind === 'thread') {
       title = [
         h(
@@ -1774,69 +2253,7 @@ export function openShell({
         h('span', { class: 'centre__title-text', translate: 'no', text: threadName() }),
       ];
       windowTitle = `/${v.board}/ · ${threadName()}`;
-      const pm = entry?.posts ? threadMarks(v.board, entry.posts) : null;
-      body.append(
-        threadView({
-          board: v.board,
-          no: v.no,
-          entry,
-          bridge,
-          keyPrefix: prefix,
-          watched: M.isWatched(settings, v.board, v.no),
-          intervalSec: intervalMs() / 1000,
-          isYou: (no) => C.isYou(settings, v.board, no),
-          onRefresh: () => loadThread(v.board, v.no),
-          onWatch: () => toggleWatchThread(v.board, v.no),
-          onReply: (quote = null, selection = '') => composer.open({ board: v.board, thread: v.no, quote: quote || 0, selection }),
-          pending: st.pending.filter((p) => p.board === v.board && p.thread === v.no),
-          landed: st.landed,
-          onGallery: () => gallery(i),
-          marks: pm?.marks,
-          hidden: pm?.why,
-          hiderOf: (no) => (pm ? hiderOf(v.board, entry.posts, no) : null),
-          onRemoveHider: (src, opener) => removeHider(src, opener),
-          youReplies: pm?.you,
-          revealed: new Set(entry?.posts?.filter((p) => st.revealed.has(tkey(v.board, p.no))).map((p) => p.no)),
-          onReveal: (no) => {
-            st.revealed.add(tkey(v.board, no));
-            render();
-          },
-          onUnhide: (no) => toggleHiddenPost(v.board, no),
-          menuFor: (post) => postMenu(v.board, post),
-          inLibrary: library.available() ? (post) => library.has(post.md5) : null,
-          quoteMode: () => settings.quotes?.links || 'inline',
-          onCrossQuote: (q) => openCross(q, i),
-          cross: crossThreads,
-          archive: entry?.gone || entry?.posts?.[0]?.archived ? archiveLink(settings.archives, { board: v.board, thread: v.no }) : null,
-          ids: entry?.posts
-            ? {
-                counts: idsOf(entry.posts),
-                colour: settings.ids?.colour !== false,
-                active: st.idHl.get(tkey(v.board, v.no)) || null,
-                onClick: (id) => toggleIdHl(v.board, v.no, id),
-              }
-            : null,
-          unread: entry?.posts
-            ? { line: U.lineBefore(entry.posts, st.lines.get(tkey(v.board, v.no))), count: unreadOf(v.board, v.no).length, onJump: () => jumpUnread(i) }
-            : null,
-          // the catalog only if it is already here: stats never fetch it
-          catalog: st.cats[v.board]?.threads ? { threads: st.cats[v.board].threads, at: st.cats[v.board].at } : null,
-          sauce: settings.sauce?.engines || [],
-          links: postLinks(),
-          display: settings.display,
-          save:
-            bridge?.offlineWriteThread && entry?.posts
-              ? {
-                  job: st.jobs.get(tkey(v.board, v.no)) || null,
-                  saved: O.isSaved(st.saved.list, v.board, v.no),
-                  progressKey: tkey(v.board, v.no),
-                  onSave: () => saveOffline(v.board, v.no),
-                  onDownloadAll: () => downloadAll(v.board, v.no),
-                  onCancel: () => cancelJob(v.board, v.no),
-                }
-              : null,
-        }),
-      );
+      body.append(threadView(threadOpts(i)));
     } else if (v.kind === 'saved') {
       title = [h('span', { class: 'centre__title-text', text: 'Saved threads' })];
       windowTitle = 'Saved threads';
@@ -1873,7 +2290,7 @@ export function openShell({
           bridge: savedFiles(v.board, v.no),
           keyPrefix: prefix,
           intervalSec: intervalMs() / 1000,
-          isYou: (no) => C.isYou(settings, v.board, no),
+          isYou: (no) => isYouOn(v.board, no),
           onRefresh: () => loadOffline(v.board, v.no),
           onGallery: () => gallery(i),
           marks: pm?.marks,
@@ -1882,16 +2299,14 @@ export function openShell({
           onRemoveHider: (src, opener) => removeHider(src, opener),
           youReplies: pm?.you,
           revealed: new Set(saved?.posts?.filter((p) => st.revealed.has(tkey(v.board, p.no))).map((p) => p.no)),
-          onReveal: (no) => {
-            st.revealed.add(tkey(v.board, no));
-            render();
-          },
+          onReveal: (no) => reveal(v.board, v.no, no),
           onUnhide: (no) => toggleHiddenPost(v.board, no),
           menuFor: (post) => postMenu(v.board, post),
           inLibrary: library.available() ? (post) => library.has(post.md5) : null,
           quoteMode: () => settings.quotes?.links || 'inline',
           // another thread's quote: nothing is fetched for previews; a click opens it live beside
           onCrossQuote: (q) => openCross(q, i),
+          onBoardLink: (q) => openBoardLink(q, pane),
           ids: saved?.posts
             ? {
                 counts: idsOf(saved.posts),
@@ -1910,6 +2325,7 @@ export function openShell({
       title = [icon('sparkle'), h('span', { class: 'centre__title-text', text: 'Ask' })];
       windowTitle = 'Ask';
       const target = askThread(i);
+      askDrawn.set(pane, R.askKey(target));
       body.append(
         askView({
           ask: pane.ask,
@@ -1922,7 +2338,8 @@ export function openShell({
           onSettings: () => openAssistantSettings(i),
           onUnload: () => unloadAi(),
           onShowLog: (opener) => showLog(opener),
-          redraw: () => render(),
+          // (the pane object: an answer can end after panes moved)
+          redraw: () => renderPaneOf(pane),
         }),
       );
     } else if (v.kind === 'library') {
@@ -2117,7 +2534,11 @@ export function openShell({
     const pane = st.panes[i];
     const prefix = prefixOf(i);
     const c = paneContent(i);
+    paneTitles.set(pane, c.windowTitle);
+    drawnWith.set(pane, settings);
     const many = st.panes.length > 1;
+    // the last pane that stays has no close button (one fading out does not count)
+    const canClose = many && pane.motion?.kind !== 'closing' && livePanes().length > 1;
     const head = h(
       'div',
       { class: 'pane__head' },
@@ -2134,7 +2555,7 @@ export function openShell({
         },
         icon('external'),
       ),
-      many
+      canClose
         ? h('button', { type: 'button', class: 'icon-btn icon-btn--sm', 'aria-label': 'Close this pane', 'data-key': `${prefix}pane-close`, onclick: () => closePane(i) }, icon('x'))
         : null,
     );
@@ -2159,147 +2580,113 @@ export function openShell({
 
   // ---------------------------------------------------------------- render
 
-  // A thread's control bar: tucked away while scrolling down, back when
-  // scrolling up or at the end. Remembered per pane across redraws (the
-  // thread redraws itself every few seconds).
-  const tucked = new Map(); // scroll key → true
-  function watchToolsScroll(body) {
-    const bar = body.querySelector('[data-thread-tools]');
-    if (!bar) return;
-    const k = body.dataset.scrollKey;
-    bar.classList.toggle('is-tucked', Boolean(tucked.get(k)));
-    let last = body.scrollTop;
-    body.addEventListener(
-      'scroll',
-      () => {
-        const y = body.scrollTop;
-        const atEnd = y + body.clientHeight >= body.scrollHeight - 24;
-        let hide = tucked.get(k) || false;
-        if (atEnd || y < 40) hide = false;
-        else if (y > last + 4) hide = true;
-        else if (y < last - 4) hide = false;
-        last = y;
-        if (hide !== Boolean(tucked.get(k))) {
-          tucked.set(k, hide);
-          bar.classList.toggle('is-tucked', hide);
-        }
-      },
-      { passive: true },
-    );
-  }
+  // A redraw is as small as what changed:
+  //   render()         everything: the layout, settings, panes opened or closed
+  //   renderRail()     the sidebar's lists (never its edge: a drag goes on)
+  //   renderPane(i)    one pane (renderPaneOf(pane), renderPanes(pred))
+  //   syncFocus()      which pane has the focus, and the titles
+  //   invalidate(...)  the same for what arrives by itself (a fetch, a save
+  //                    done): gathered, then drawn once in the next frame
+  // What each part reads, so a change redraws every part that shows it:
+  //   rail     favourites, boards, views() (the "current" marks), the
+  //            watched list with each watched thread's posts (unread, (You)),
+  //            st.saved, settings.tags, settings.ai.enabled
+  //   board    st.cats[board], pane.catView, the marks, the tag labels
+  //   thread   st.threads[key]; st.cats[board] (its page in the toolbar, the
+  //            title while it loads); st.revealed, st.idHl, st.lines,
+  //            st.pending, st.landed, st.jobs, st.saved (saved or not),
+  //            the library (In library), settings
+  //   offline  st.offline[key], st.saved (its title), st.revealed, st.idHl
+  //   ask      pane.ask, settings.ai, the nearest thread pane (askKey)
+  //   tag      settings.tags, the catalogs of tagBoards() (which follows
+  //            views()), the library
+  //   saved    st.saved; boards: boards, favourites; settings: settings
+  //   stats    redrawn in place (showStats; its Tags tab reads tagBoards(),
+  //            so it follows views() too); library: draws itself
 
-  // Reading: what scrolls into view of a thread is marked read (at most
-  // once a frame).
-  let shownTitle = '';
-  function watchReading(body) {
-    if (!body.querySelector('.thread')) return;
-    let frame = 0;
-    body.addEventListener(
-      'scroll',
-      () => {
-        if (frame) return;
-        frame = requestAnimationFrame(() => {
-          frame = 0;
-          if (body.isConnected) trackRead(body);
-        });
-      },
-      { passive: true },
-    );
-    trackRead(body);
-  }
-
-  function render() {
-    if (closed) return;
-    if (settings.embeds?.mode === 'off') player.close();
-    const active = document.activeElement;
-    const focusKey = root.contains(active) ? active?.dataset?.key : null;
-    const caret = focusKey && active?.tagName === 'INPUT' && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
-    for (const body of root.querySelectorAll('.centre__body[data-scroll-key]')) st.scroll[body.dataset.scrollKey] = body.scrollTop;
-    // Files the person opened (a playing video, a full image) survive the
-    // redraw: the same elements move into the new page within this task,
-    // so a video keeps playing instead of starting over or closing. Files
-    // that opened by themselves (Expand images) are left to the new page,
-    // which opens them again only while the settings still say so.
-    const openFiles = new Map();
-    for (const fig of root.querySelectorAll('.post__file--open:not([data-auto])')) {
-      const post = fig.closest('.post');
-      if (post?.id) openFiles.set(post.id, fig);
-    }
-    clear(root);
-    const narrow = matchMedia(NARROW).matches;
+  /** The sidebar's lists (the part that scrolls). */
+  function railScrollEl() {
     const favs = M.visibleFavourites(settings, boards);
     const shown = (pred) => views().some((x) => x && pred(x));
-    const railHidden = Boolean(settings.ui?.railHidden);
-    const rows = settings.ui?.rows || 1;
+    return h(
+      'div',
+      { class: 'rail__scroll' },
+      h(
+        'section',
+        {},
+        h('h2', { class: 'rail__heading', text: 'Favourites' }),
+        favs.length
+          ? h(
+              'ul',
+              { class: 'rail__list' },
+              favs.map((code) =>
+                railItem([tag(code), h('span', { class: 'rail__label', translate: 'no', text: titleOf(code) })], {
+                  current: shown((x) => (x.kind === 'board' || x.kind === 'thread') && x.board === code),
+                  key: `fav-${code}`,
+                  onclick: () => goto({ kind: 'board', board: code }),
+                }),
+              ),
+            )
+          : h('p', { class: 'rail__empty', text: 'No favourites yet. Star boards in All boards.' }),
+      ),
+      h(
+        'section',
+        {},
+        h('h2', { class: 'rail__heading', text: 'Browse' }),
+        h(
+          'ul',
+          { class: 'rail__list' },
+          railItem([icon('grid'), h('span', { text: 'All boards' })], {
+            current: shown((x) => x.kind === 'boards'),
+            key: 'all-boards',
+            onclick: () => goto({ kind: 'boards' }),
+          }),
+          railItem([icon('images'), h('span', { text: 'Library' })], {
+            current: shown((x) => x.kind === 'library'),
+            key: 'library',
+            onclick: () => goto({ kind: 'library' }),
+          }),
+          railItem([icon('chart'), h('span', { text: 'Stats' })], {
+            current: shown((x) => x.kind === 'stats'),
+            key: 'stats',
+            onclick: () => goto({ kind: 'stats' }),
+          }),
+          settings.ai?.enabled
+            ? railItem([icon('sparkle'), h('span', { text: 'Ask' })], {
+                current: shown((x) => x.kind === 'ask'),
+                key: 'ask',
+                // beside what is being read, so "This thread" has a thread
+                onclick: () => {
+                  const j = st.panes.findIndex((p) => p.view?.kind === 'ask');
+                  if (j >= 0) {
+                    const wasRail = st.rail;
+                    st.focus = j;
+                    st.rail = false;
+                    // on screen already: only the focus moves (a narrow
+                    // window shows one pane at a time, so it switches)
+                    if (wasRail || matchMedia(NARROW).matches) render();
+                    else syncFocus();
+                  } else if (['thread', 'offline', 'board'].includes(focused()?.view?.kind)) openBeside({ kind: 'ask' });
+                  else goto({ kind: 'ask' });
+                },
+              })
+            : null,
+        ),
+      ),
+      h('section', {}, h('h2', { class: 'rail__heading', text: 'Watched threads' }), watchedRail()),
+      savedRail(),
+      h('section', {}, h('h2', { class: 'rail__heading', text: 'Tags' }), tagsRail()),
+    );
+  }
 
+  const settingsShown = () => views().some((x) => x?.kind === 'settings');
+
+  /** The sidebar: its lists, Settings at its foot, and its edge. */
+  function railEl(narrow, railHidden) {
     const rail = h(
       'nav',
       { class: 'rail', 'aria-label': 'Boards and watcher' },
-      h(
-        'div',
-        { class: 'rail__scroll' },
-        h(
-          'section',
-          {},
-          h('h2', { class: 'rail__heading', text: 'Favourites' }),
-          favs.length
-            ? h(
-                'ul',
-                { class: 'rail__list' },
-                favs.map((code) =>
-                  railItem([tag(code), h('span', { class: 'rail__label', translate: 'no', text: titleOf(code) })], {
-                    current: shown((x) => (x.kind === 'board' || x.kind === 'thread') && x.board === code),
-                    key: `fav-${code}`,
-                    onclick: () => goto({ kind: 'board', board: code }),
-                  }),
-                ),
-              )
-            : h('p', { class: 'rail__empty', text: 'No favourites yet. Star boards in All boards.' }),
-        ),
-        h(
-          'section',
-          {},
-          h('h2', { class: 'rail__heading', text: 'Browse' }),
-          h(
-            'ul',
-            { class: 'rail__list' },
-            railItem([icon('grid'), h('span', { text: 'All boards' })], {
-              current: shown((x) => x.kind === 'boards'),
-              key: 'all-boards',
-              onclick: () => goto({ kind: 'boards' }),
-            }),
-            railItem([icon('images'), h('span', { text: 'Library' })], {
-              current: shown((x) => x.kind === 'library'),
-              key: 'library',
-              onclick: () => goto({ kind: 'library' }),
-            }),
-            railItem([icon('chart'), h('span', { text: 'Stats' })], {
-              current: shown((x) => x.kind === 'stats'),
-              key: 'stats',
-              onclick: () => goto({ kind: 'stats' }),
-            }),
-            settings.ai?.enabled
-              ? railItem([icon('sparkle'), h('span', { text: 'Ask' })], {
-                  current: shown((x) => x.kind === 'ask'),
-                  key: 'ask',
-                  // beside what is being read, so "This thread" has a thread
-                  onclick: () => {
-                    const j = st.panes.findIndex((p) => p.view?.kind === 'ask');
-                    if (j >= 0) {
-                      st.focus = j;
-                      st.rail = false;
-                      render();
-                    } else if (['thread', 'offline', 'board'].includes(focused()?.view?.kind)) openBeside({ kind: 'ask' });
-                    else goto({ kind: 'ask' });
-                  },
-                })
-              : null,
-          ),
-        ),
-        h('section', {}, h('h2', { class: 'rail__heading', text: 'Watched threads' }), watchedRail()),
-        savedRail(),
-        h('section', {}, h('h2', { class: 'rail__heading', text: 'Tags' }), tagsRail()),
-      ),
+      railScrollEl(),
       h(
         'div',
         { class: 'rail__foot' },
@@ -2308,7 +2695,7 @@ export function openShell({
           {
             type: 'button',
             class: 'rail__item',
-            'aria-current': shown((x) => x.kind === 'settings') ? 'page' : null,
+            'aria-current': settingsShown() ? 'page' : null,
             'data-key': 'settings',
             onclick: () => goto({ kind: 'settings' }),
           },
@@ -2317,23 +2704,16 @@ export function openShell({
         ),
       ),
     );
+    if (!narrow && !railHidden) rail.append(railGrip());
+    return rail;
+  }
 
-    // The panes: all of them on a wide window (rows of columns); on a
-    // narrow one the focused pane, with tabs to switch.
-    const built = st.panes.map((_, i) => paneEl(i, narrow));
-    const grid = h('div', { class: 'workspace__grid', 'data-rows': String(narrow ? 1 : paneRows(st.panes.length, rows).length) });
-    if (narrow) {
-      grid.append(built[Math.min(st.focus, built.length - 1)].el);
-    } else {
-      let k = 0;
-      for (const count of paneRows(st.panes.length, rows)) {
-        const row = h('div', { class: 'workspace__row', style: { '--cols': String(count) } });
-        for (let j = 0; j < count; j++) row.append(built[k++].el);
-        grid.append(row);
-      }
-    }
-    const focusTitle = built[Math.min(st.focus, built.length - 1)].windowTitle;
-    const head = h(
+  /** The workspace's bar: the sidebar's button, the focused pane's title,
+   *  the rows, a new pane, a new window. */
+  function headEl(narrow, focusTitle) {
+    const railHidden = Boolean(settings.ui?.railHidden);
+    const rows = settings.ui?.rows || 1;
+    return h(
       'div',
       { class: 'workspace__head' },
       h(
@@ -2386,7 +2766,7 @@ export function openShell({
           'data-key': 'panel-toggle',
           onclick: () => {
             const v = focused().view;
-            const board = v.kind === 'board' || v.kind === 'thread' ? v.board : favs[0];
+            const board = v.kind === 'board' || v.kind === 'thread' ? v.board : M.visibleFavourites(settings, boards)[0];
             openBeside(board ? { kind: 'board', board } : { kind: 'boards' });
           },
         },
@@ -2398,77 +2778,496 @@ export function openShell({
         icon('external'),
       ),
     );
-    const tabs =
-      narrow && st.panes.length > 1
-        ? h(
-            'div',
-            { class: 'workspace__tabs', role: 'tablist', 'aria-label': 'Panes' },
-            built.map((b, i) =>
-              h('button', {
-                type: 'button',
-                role: 'tab',
-                class: 'workspace__tab',
-                'aria-selected': String(i === st.focus),
-                'data-key': `pane-tab-${i}`,
-                onclick: () => {
-                  st.focus = i;
-                  render();
-                },
-                text: b.windowTitle,
-              }),
-            ),
-          )
-        : null;
-    const workspace = h('main', { class: 'centre workspace' }, head, tabs, grid);
+  }
 
-    if (!narrow && !railHidden) rail.append(railGrip());
+  /** A narrow window's tabs, one per pane (only the focused one is shown). */
+  function tabsEl(narrow, built) {
+    if (!narrow || st.panes.length < 2) return null;
+    return h(
+      'div',
+      { class: 'workspace__tabs', role: 'tablist', 'aria-label': 'Panes' },
+      built.map((b, i) =>
+        h('button', {
+          type: 'button',
+          role: 'tab',
+          class: 'workspace__tab',
+          'aria-selected': String(i === st.focus),
+          'data-key': `pane-tab-${i}`,
+          'data-title': b.windowTitle,
+          onclick: () => {
+            st.focus = i;
+            render();
+          },
+          text: b.windowTitle,
+        }),
+      ),
+    );
+  }
+
+  /** Where a pane body was scrolled to, as what is at its top: a thread's
+   *  first post in sight (by its No.), a catalog's first card in sight (by
+   *  its place), and how far its top is from the body's. The same pixels
+   *  are not the same place in a fresh page: a thumbnail not loaded yet
+   *  has its given size, and a catalog's cards out of sight only their
+   *  estimated one (app.css content-visibility). */
+  function scrollAnchor(body) {
+    if (!body.scrollTop) return null;
+    const thread = body.querySelector('.thread');
+    const items = thread ? thread.querySelectorAll(':scope > [data-no]') : body.querySelectorAll('.catalog > .catalog__item');
+    if (!items.length) return null;
+    const top = body.getBoundingClientRect().top;
+    // they go down in order: the first one whose bottom is in sight
+    let lo = 0;
+    let hi = items.length - 1;
+    let at = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (items[mid].getBoundingClientRect().bottom > top) {
+        at = mid;
+        hi = mid - 1;
+      } else lo = mid + 1;
+    }
+    if (at < 0) return null;
+    const offset = items[at].getBoundingClientRect().top - top;
+    return thread ? { no: items[at].dataset.no, offset } : { index: at, offset };
+  }
+
+  /** The element an anchor (scrollAnchor) stands for in a fresh body. */
+  function anchorEl(body, a) {
+    if (a.no !== undefined) return body.querySelector(`.thread > [data-no="${CSS.escape(a.no)}"]`);
+    const items = body.querySelectorAll('.catalog > .catalog__item');
+    return items[Math.min(a.index, items.length - 1)] || null;
+  }
+
+  /** What a redraw of `scope` (the whole shell, a pane, the sidebar's
+   *  lists) keeps: the focus and caret, where each pane body and the
+   *  sidebar were scrolled to, and the files the person opened. */
+  function capture(scope) {
+    const active = document.activeElement;
+    const focusKey = scope.contains(active) ? active?.dataset?.key || null : null;
+    const caret = focusKey && /^(INPUT|TEXTAREA)$/.test(active.tagName) && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
+    const anchors = new Map();
+    for (const body of scope.querySelectorAll('.centre__body[data-scroll-key]')) {
+      st.scroll[body.dataset.scrollKey] = body.scrollTop;
+      const a = scrollAnchor(body);
+      if (a) anchors.set(body.dataset.scrollKey, a);
+    }
+    // the sidebar keeps its place too (a long watched list)
+    const railNode = scope.classList?.contains('rail__scroll') ? scope : scope.querySelector('.rail__scroll');
+    const railY = railNode?.scrollTop || 0;
+    // Files the person opened (a playing video, a full image) survive the
+    // redraw: the same elements move into the new page within this task,
+    // so a video keeps playing instead of starting over or closing. Files
+    // that opened by themselves (Expand images) are left to the new page,
+    // which opens them again only while the settings still say so.
+    const openFiles = new Map();
+    for (const fig of scope.querySelectorAll('.post__file--open:not([data-auto])')) {
+      const post = fig.closest('.post');
+      if (post?.id) openFiles.set(post.id, fig);
+    }
+    return { focusKey, caret, anchors, railY, openFiles };
+  }
+
+  /** The other half of capture(), on what was drawn in its place: opened
+   *  files back, each body scrolled back (and watched again). */
+  function restore(scope, saved) {
+    for (const [id, fig] of saved.openFiles) {
+      const fresh = scope.querySelector(`#${CSS.escape(id)} .post__file`);
+      if (fresh) fresh.replaceWith(fig);
+    }
+    for (const body of scope.querySelectorAll('.centre__body[data-scroll-key]')) {
+      const y = st.scroll[body.dataset.scrollKey];
+      const a = y ? saved.anchors.get(body.dataset.scrollKey) : null;
+      // A fresh catalog's cards above the one in sight are laid out at
+      // their real size while it is put back, and for its first frames
+      // (then each keeps that size out of sight): estimates would move it.
+      if (a && a.index !== undefined) {
+        body.classList.add('is-placing');
+        requestAnimationFrame(() => requestAnimationFrame(() => body.classList.remove('is-placing')));
+      }
+      if (y) restoreScroll(body, y);
+      const el = a && anchorEl(body, a);
+      if (el) {
+        const d = el.getBoundingClientRect().top - body.getBoundingClientRect().top - a.offset;
+        if (Math.abs(d) >= 1) restoreScroll(body, body.scrollTop + d);
+      }
+      watchToolsScroll(body);
+      watchReading(body);
+    }
+  }
+
+  /** The focus (and the caret in a text box) back on the same control. */
+  // A redraw putting the focus back is not the person moving to that pane
+  // (opening a pane beside from a catalog card leaves the new pane focused).
+  let refocusing = false;
+  function restoreFocus(scope, saved) {
+    if (!saved.focusKey) return;
+    const el = scope.querySelector(`[data-key="${CSS.escape(saved.focusKey)}"]`);
+    refocusing = true;
+    try {
+      el?.focus({ preventScroll: true });
+    } finally {
+      refocusing = false;
+    }
+    if (el && saved.caret && typeof el.setSelectionRange === 'function') {
+      try {
+        el.setSelectionRange(saved.caret[0], saved.caret[1]);
+      } catch {
+        /* a control that has no caret */
+      }
+    }
+  }
+
+  // A thread's control bar: tucked away while scrolling down, back when
+  // scrolling up or at the end. Remembered per pane across redraws (the
+  // thread redraws itself every few seconds).
+  const tucked = new Map(); // scroll key → true
+  function watchToolsScroll(body) {
+    const bar = body.querySelector('[data-thread-tools]');
+    if (!bar) return;
+    const k = body.dataset.scrollKey;
+    bar.classList.toggle('is-tucked', Boolean(tucked.get(k)));
+    let last = body.scrollTop;
+    body.addEventListener(
+      'scroll',
+      (e) => {
+        // put back where it was by a redraw: nobody scrolled
+        if (isRestoreScroll(e)) {
+          last = body.scrollTop;
+          return;
+        }
+        const y = body.scrollTop;
+        const atEnd = y + body.clientHeight >= body.scrollHeight - 24;
+        let hide = tucked.get(k) || false;
+        if (atEnd || y < 40) hide = false;
+        else if (y > last + 4) hide = true;
+        else if (y < last - 4) hide = false;
+        last = y;
+        if (hide !== Boolean(tucked.get(k))) {
+          tucked.set(k, hide);
+          bar.classList.toggle('is-tucked', hide);
+        }
+      },
+      { passive: true },
+    );
+  }
+
+  let shownTitle = '';
+  const paneTitles = new WeakMap(); // pane → the title it was last drawn with
+  const drawnWith = new WeakMap(); // pane → the settings it was last drawn with (growPane)
+
+  /** The focus moved to another pane, or a pane was redrawn on its own:
+   *  the pane marker, the workspace title, the window title, and a narrow
+   *  window's tabs. */
+  function syncFocus() {
+    if (closed) return;
+    const f = Math.min(st.focus, st.panes.length - 1);
+    const many = st.panes.length > 1;
+    for (const node of root.querySelectorAll('.workspace__grid section[data-pane]')) {
+      if (many && Number(node.dataset.pane) === f) node.setAttribute('aria-current', 'true');
+      else node.removeAttribute('aria-current');
+    }
+    for (const tab of root.querySelectorAll('.workspace__tab[data-key^="pane-tab-"]')) {
+      const k = Number(tab.dataset.key.slice('pane-tab-'.length));
+      tab.setAttribute('aria-selected', String(k === f));
+      const t = paneTitles.get(st.panes[k]);
+      if (t !== undefined && tab.dataset.title !== t) {
+        tab.dataset.title = t;
+        tab.textContent = t;
+      }
+    }
+    const title = paneTitles.get(st.panes[f]);
+    if (title !== undefined && title !== shownTitle) {
+      shownTitle = title;
+      const h1 = root.querySelector('.workspace__title');
+      if (h1) h1.textContent = title;
+    }
+    setTitle(shownTitle, focusedUnread());
+  }
+
+  // Reading: what scrolls into view of a thread is marked read (at most
+  // once a frame).
+  function watchReading(body) {
+    if (!body.querySelector('.thread')) return;
+    let frame = 0;
+    body.addEventListener(
+      'scroll',
+      (e) => {
+        // a redraw putting it back: what is on screen was marked just now
+        if (frame || isRestoreScroll(e)) return;
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          if (body.isConnected) trackRead(body);
+        });
+      },
+      { passive: true },
+    );
+    trackRead(body);
+  }
+
+  /** Redraws pane i alone; the other panes and the sidebar stay as they
+   *  are (their scroll, their focus, a video playing, an open menu). A
+   *  pane not on screen (a narrow window shows one) is drawn when it is. */
+  function renderPane(i) {
+    // While a full redraw waits for a sidebar drag (render), the sections may
+    // still carry their old numbers: that redraw draws every pane anyway.
+    if (closed || renderAfterDrag) return;
+    const pane = st.panes[i];
+    if (!pane) return;
+    toDraw.panes.delete(pane);
+    toDraw.grown.delete(pane);
+    const old = root.querySelector(`.workspace__grid section[data-pane="${i}"]`);
+    if (!old) {
+      pane.stale = true;
+      return;
+    }
+    const saved = capture(old);
+    const { el } = paneEl(i, matchMedia(NARROW).matches);
+    old.replaceWith(el);
+    pane.stale = false;
+    restore(el, saved);
+    syncFocus();
+    showJump();
+    resumePendingMotion(el);
+    restoreFocus(el, saved);
+    keepDialogOpeners(el);
+    // an open "…" menu stays (it is on the page) and follows its new button
+    menuAnchorRedrawn();
+  }
+
+  /** A dialog open over the shell (the 18+ question, Skip setup: setup.js
+   *  openDialog) gives the focus back to the control that opened it when it
+   *  closes. A redraw under the dialog (the assistant's detection ending in
+   *  Settings) draws that control anew: the dialog gets the new one, found
+   *  by its data-key, so the focus does not fall back to the page. */
+  function keepDialogOpeners(scope) {
+    for (const d of document.querySelectorAll('dialog[open]')) {
+      const back = d._returnFocus;
+      const key = back?.dataset?.key;
+      if (!key || back.isConnected) continue;
+      const now = scope.querySelector(`[data-key="${CSS.escape(key)}"]`);
+      if (now) d._returnFocus = now;
+    }
+  }
+
+  /** A thread pane whose thread only gained posts at the end: they are
+   *  added in place (browse.js updateThreadView), which costs a few ms
+   *  where a redraw of a long thread costs hundreds (and its layout). False
+   *  when the pane has to be redrawn instead: settings changed beyond the
+   *  read marks and the watched list, or the view is not sure. */
+  function growPane(pane) {
+    const i = st.panes.indexOf(pane);
+    // a full redraw waits for a sidebar drag: the sections' numbers may be stale
+    if (i < 0 || closed || renderAfterDrag) return true;
+    if (pane.view?.kind !== 'thread' || pane.stale) return false;
+    const node = root.querySelector(`.workspace__grid section[data-pane="${i}"]`);
+    if (!node) {
+      pane.stale = true;
+      return true;
+    }
+    const drawn = drawnWith.get(pane);
+    if (drawn !== settings && !M.onlyWatchedDiffer(drawn, settings)) return false;
+    const view = node.querySelector('.centre__body > .browse');
+    if (!view) return false;
+    const body = view.parentElement;
+    const a = scrollAnchor(body); // null at the top: nothing to keep
+    // The view puts the focus back on a reply link or a control it drew
+    // again: not the person moving to this pane (see restoreFocus).
+    let grew;
+    refocusing = true;
+    try {
+      grew = updateThreadView(view, threadOpts(i));
+    } finally {
+      refocusing = false;
+    }
+    if (!grew) return false;
+    // Backlink rows, reopened quote copies or the "New posts" line above the
+    // post in sight move it (WebKitGTK has no CSS scroll anchoring).
+    const el = a && anchorEl(body, a);
+    if (el) {
+      const d = el.getBoundingClientRect().top - body.getBoundingClientRect().top - a.offset;
+      if (Math.abs(d) >= 1) restoreScroll(body, body.scrollTop + d);
+    }
+    drawnWith.set(pane, settings);
+    trackRead(body);
+    showJump();
+    return true;
+  }
+
+  /** Redraws `pane` wherever it is now (it may have moved, or gone). */
+  function renderPaneOf(pane) {
+    const i = st.panes.indexOf(pane);
+    if (i >= 0) renderPane(i);
+  }
+
+  /** Redraws each pane whose view matches `pred(view)`. */
+  function renderPanes(pred) {
+    for (const i of R.paneIndexes(views(), pred)) renderPane(i);
+  }
+
+  /** The panes whose view matches `pred(view)`. */
+  const panesWhere = (pred) => st.panes.filter((p) => p.view && pred(p.view));
+
+  /** Redraws the sidebar's lists. Its edge (and a drag on it) and its foot
+   *  stay; the Settings button's marker follows. */
+  function renderRail() {
+    if (closed) return;
+    toDraw.rail = false;
+    const old = root.querySelector(':scope > nav.rail > .rail__scroll');
+    if (!old) return;
+    const saved = capture(old);
+    const next = railScrollEl();
+    old.replaceWith(next);
+    if (saved.railY) restoreScroll(next, saved.railY);
+    restoreFocus(next, saved);
+    const foot = root.querySelector(':scope > nav.rail [data-key="settings"]');
+    if (settingsShown()) foot?.setAttribute('aria-current', 'page');
+    else foot?.removeAttribute('aria-current');
+  }
+
+  // What a fetch (or a save, a library change) brought is drawn once, in
+  // the next frame: several arrivals together are one redraw, and a window
+  // nobody can see (hidden, minimised) waits until it is seen. What the
+  // person does is drawn at once instead (code right after it reads the
+  // page). A full render() drops what is waiting.
+  // `grown`: thread panes whose thread only got new posts (growPane).
+  let toDraw = { rail: false, panes: new Set(), grown: new Set() };
+  let drawFrame = 0;
+  function invalidate({ rail = false, panes = [], grown = [] } = {}) {
+    if (closed) return;
+    if (rail) toDraw.rail = true;
+    for (const p of panes) toDraw.panes.add(p);
+    for (const p of grown) toDraw.grown.add(p);
+    if (!drawFrame && (toDraw.rail || toDraw.panes.size || toDraw.grown.size)) drawFrame = requestAnimationFrame(flushDraw);
+    // A hidden or minimised window gets no frames: its title (the taskbar's
+    // "(3) …", the focused thread's unread count) follows at once all the
+    // same. It touches no pane.
+    if (document.visibilityState === 'hidden') setTitle(shownTitle, focusedUnread());
+  }
+  function flushDraw() {
+    drawFrame = 0;
+    if (closed) return;
+    const d = toDraw;
+    toDraw = { rail: false, panes: new Set(), grown: new Set() };
+    if (d.rail) renderRail();
+    for (const p of d.panes) renderPaneOf(p);
+    for (const p of d.grown) if (!d.panes.has(p) && !growPane(p)) renderPaneOf(p);
+    refreshAskPanes();
+    showUnread();
+    menuAnchorRedrawn();
+  }
+  function dropInvalidations() {
+    if (drawFrame) cancelAnimationFrame(drawFrame);
+    drawFrame = 0;
+    toDraw = { rail: false, panes: new Set(), grown: new Set() };
+  }
+
+  // An Ask pane's "This thread" is the nearest thread pane's (askThread):
+  // it is redrawn when that changes, and only then.
+  const askDrawn = new WeakMap(); // pane → R.askKey of what it was drawn with
+  function refreshAskPanes() {
+    st.panes.forEach((p, i) => {
+      if (p.view?.kind === 'ask' && askDrawn.get(p) !== R.askKey(askThread(i))) renderPane(i);
+    });
+  }
+
+  /** The boards universal tags look in (they follow the panes). */
+  const activeBoardsKey = () =>
+    TG.activeBoards(
+      settings.favourites,
+      views()
+        .filter((x) => x?.kind === 'board' || x?.kind === 'thread')
+        .map((x) => x.board),
+    ).join(',');
+  const tagOf = (id) => (settings.tags || []).find((t) => t.id === id) || null;
+
+  // A drag on the sidebar's edge goes on to its end: a full redraw waits.
+  // dragGrip: the edge being dragged (railGrip), null when none is.
+  let renderAfterDrag = false;
+  let dragGrip = null;
+
+  /** Draws everything again: the sidebar, every pane, the workspace bar. */
+  function render() {
+    if (closed) return;
+    // Only while the edge is really dragged (and still on the page): a drag
+    // whose end never came does not stop every redraw after it.
+    if (dragGrip?.isConnected) {
+      renderAfterDrag = true;
+      return;
+    }
+    dragGrip = null;
+    root.classList.remove('shell--resizing');
+    renderAfterDrag = false;
+    dropInvalidations();
+    if (settings.embeds?.mode === 'off') player.close();
+    const saved = capture(root);
+    clear(root);
+    const narrow = matchMedia(NARROW).matches;
+    const railHidden = Boolean(settings.ui?.railHidden);
+    const rows = settings.ui?.rows || 1;
+    const rail = railEl(narrow, railHidden);
+
+    // The panes: all of them on a wide window (rows of columns); on a
+    // narrow one the focused pane, with tabs to switch.
+    const built = st.panes.map((p, i) => {
+      p.stale = false;
+      return paneEl(i, narrow);
+    });
+    const grid = h('div', { class: 'workspace__grid', 'data-rows': String(narrow ? 1 : paneRows(st.panes.length, rows).length) });
+    if (narrow) {
+      const f = Math.min(st.focus, built.length - 1);
+      grid.append(built[f].el);
+      st.panes.forEach((p, i) => {
+        if (i !== f) p.stale = true;
+      });
+    } else {
+      let k = 0;
+      for (const count of paneRows(st.panes.length, rows)) {
+        const row = h('div', { class: 'workspace__row', style: { '--cols': String(count) } });
+        for (let j = 0; j < count; j++) row.append(built[k++].el);
+        grid.append(row);
+      }
+    }
+    const focusTitle = built[Math.min(st.focus, built.length - 1)].windowTitle;
+    const workspace = h('main', { class: 'centre workspace' }, headEl(narrow, focusTitle), tabsEl(narrow, built), grid);
+
     root.style.setProperty('--rail-w', `${M.fitRail(settings.ui?.railWidth)}px`);
     root.append(rail, workspace);
+    if (saved.railY) {
+      const railScroll = rail.querySelector('.rail__scroll');
+      if (railScroll) restoreScroll(railScroll, saved.railY);
+    }
     if (st.rail) root.append(h('div', { class: 'shell__scrim only-narrow', onclick: () => ((st.rail = false), render()) }));
     if (st.rail) root.dataset.railOpen = '';
     else delete root.dataset.railOpen;
     if (railHidden) root.dataset.railHidden = '';
     else delete root.dataset.railHidden;
 
-    for (const [id, fig] of openFiles) {
-      const fresh = root.querySelector(`#${CSS.escape(id)} .post__file`);
-      if (fresh) fresh.replaceWith(fig);
-    }
     shownTitle = focusTitle;
-    for (const body of root.querySelectorAll('.centre__body[data-scroll-key]')) {
-      const y = st.scroll[body.dataset.scrollKey];
-      if (y) body.scrollTop = y;
-      watchToolsScroll(body);
-      watchReading(body);
-    }
+    restore(root, saved);
     setTitle(focusTitle, focusedUnread());
     showJump();
-    resumePendingMotion();
-    if (focusKey) {
-      const el = root.querySelector(`[data-key="${CSS.escape(focusKey)}"]`);
-      el?.focus({ preventScroll: true });
-      if (el && caret && typeof el.setSelectionRange === 'function') el.setSelectionRange(caret[0], caret[1]);
-    }
+    resumePendingMotion(root);
+    restoreFocus(root, saved);
+    keepDialogOpeners(root);
+    menuAnchorRedrawn();
   }
 
   // ------------------------------------------------------------ keyboard
 
-  root.addEventListener(
-    'pointerdown',
-    (e) => {
-      const p = e.target.closest?.('[data-pane]');
-      if (p) st.focus = Number(p.dataset.pane);
-    },
-    { capture: true, signal: ac.signal },
-  );
-  root.addEventListener(
-    'focusin',
-    (e) => {
-      const p = e.target.closest?.('[data-pane]');
-      if (p) st.focus = Number(p.dataset.pane);
-    },
-    { signal: ac.signal },
-  );
+  // The pane clicked or tabbed into gets the focus (never one fading out);
+  // its marker and the titles follow at once, without a redraw.
+  const focusPane = (e) => {
+    if (refocusing) return;
+    const node = e.target.closest?.('[data-pane]');
+    if (!node) return;
+    const i = Number(node.dataset.pane);
+    if (i === st.focus || st.panes[i]?.motion?.kind === 'closing') return;
+    st.focus = i;
+    syncFocus();
+  };
+  root.addEventListener('pointerdown', focusPane, { capture: true, signal: ac.signal });
+  root.addEventListener('focusin', focusPane, { signal: ac.signal });
 
   /** Fetches the pane's catalog or thread again now (the queue still keeps
    *  the 10 s per thread rule), or the board list on the board list. */
@@ -2521,7 +3320,7 @@ export function openShell({
         // A highlighted poster ID clears first; the next Esc goes back.
         if (v.kind === 'thread' && st.idHl.has(tkey(v.board, v.no)) && !typing()) {
           st.idHl.delete(tkey(v.board, v.no));
-          render();
+          renderPanes(showsEither(v.board, v.no));
           return;
         }
         if (v.kind === 'thread' && !typing() && document.activeElement?.tagName !== 'VIDEO' && !document.activeElement?.closest?.('.composer')) {
@@ -2545,7 +3344,22 @@ export function openShell({
     },
     { signal: ac.signal },
   );
-  window.addEventListener('resize', () => !closed && render(), { signal: ac.signal });
+  // Only crossing the narrow width changes the layout (one pane and tabs):
+  // the rest follows the CSS. A bigger window can show more of a thread,
+  // which then counts as read (once a frame while it is dragged).
+  matchMedia(NARROW).addEventListener('change', () => !closed && render(), { signal: ac.signal });
+  let resizeFrame = 0;
+  window.addEventListener(
+    'resize',
+    () => {
+      if (closed || resizeFrame) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        trackAllRead();
+      });
+    },
+    { passive: true, signal: ac.signal },
+  );
 
   // The mouse's side buttons (DOM buttons 3 and 4) and Alt+← / Alt+→: back
   // and forward in the pane under the pointer (or the focused pane). The
@@ -2595,13 +3409,29 @@ export function openShell({
   window.addEventListener('focus', trackAllRead, { signal: ac.signal });
   document.addEventListener('visibilitychange', trackAllRead, { signal: ac.signal });
 
+  // For the e2e checks only (tests/e2e/redraw.mjs): a pane drawn anew on
+  // demand, to compare with one updated in place. Never with the real site.
+  if (bridge?.kind === 'mock') window.__ceDebug = { renderPane: (i) => renderPane(i), render: () => render(), posted: (p) => posted(p) };
+
   root.hidden = false;
   for (const v of views()) startLine(v);
   render();
   for (const v of views()) enter(v);
   if (isMain) watchTimer = setTimeout(watchTick, 2000);
   loadSaved();
+  /** What is still waiting to be stored, stored now: the window is closing
+   *  (app.js). What is on screen counts as read first. Resolves once the
+   *  settings are sent. */
+  function flush() {
+    if (closed) return Promise.resolve();
+    trackAllRead();
+    if (tagHistoryTimer) writeTagHistory();
+    // the library's own index (library.js)
+    return Promise.all([flushSave(), library.flush()]).then(() => undefined);
+  }
+
   return {
+    flush,
     close() {
       for (const p of st.panes) stopAsk(p.ask, bridge);
       closed = true;
@@ -2609,29 +3439,64 @@ export function openShell({
       clearTimeout(statsTimer);
       clearTimeout(watchTimer);
       clearTimeout(saveTimer);
+      saveTimer = null;
+      pendingOps = new Map();
       onSave(settings);
+      if (tagHistoryTimer) writeTagHistory();
+      library.flush();
+      stopLibraryEvents?.();
       composer.close();
       player.close();
       for (const t of st.timers.values()) clearTimeout(t);
       st.timers.clear();
+      for (const t of st.catRetry.values()) clearTimeout(t);
+      st.catRetry.clear();
       ac.abort();
       root.hidden = true;
       clear(root);
     },
     /** Settings saved in another window. */
-    applySettings(next) {
-      const light = U.onlyReadMarksDiffer(settings, next);
-      const moved = (next.files?.savedDir || '') !== savedDir();
-      settings = next;
+    applySettings(incoming) {
+      if (closed) return;
+      // Changes this window still holds for its grouped save go on top
+      // (each only moves forward: a read mark up, a watched thread's
+      // title, archived or 404), and read marks never go down here: the
+      // grouped save then stores the lot.
+      const prev = settings;
+      const replayed = [...pendingOps.values()].reduce((s, f) => f(s), incoming);
+      const merged = U.keepReadMarks(prev, replayed);
+      const light = U.onlyReadMarksDiffer(prev, merged);
+      const moved = (merged.files?.savedDir || '') !== savedDir();
+      // Read marks saved by another window (every bit of scrolling there):
+      // only the counts change, so nothing is torn down and redrawn here,
+      // and everything else keeps its identity (the filter and (You)
+      // caches hold). Other changes keep each list that stayed the same.
+      if (light) settings = U.sameReadMarks(prev, merged) ? prev : { ...prev, lastRead: merged.lastRead, watched: merged.watched };
+      else settings = M.keepSameLists(prev, merged);
+      // what this window adds is stored: by the grouped save under way
+      // (it saves `settings` when it fires), or by a new one
+      if (merged !== incoming && !saveTimer) save(settings);
+      if (light) {
+        if (settings !== prev) showUnread();
+        return;
+      }
+      // Only the watched threads (a title, archived, 404, one watched or
+      // not): the sidebar, and the threads whose Watch button changed.
+      if (M.onlyWatchedDiffer(prev, settings)) {
+        const was = new Set((prev.watched || []).map((w) => tkey(w.board, w.no)));
+        const now = new Set((settings.watched || []).map((w) => tkey(w.board, w.no)));
+        renderRail();
+        renderPanes((v) => v.kind === 'thread' && was.has(tkey(v.board, v.no)) !== now.has(tkey(v.board, v.no)));
+        showUnread();
+        return;
+      }
       stats.poke();
       if (moved) {
         forgetOffline();
         loadSaved();
       }
-      // Read marks saved by another window (every bit of scrolling there):
-      // only the counts change, so nothing is torn down and redrawn here.
-      if (light) showUnread();
-      else render();
+      if (library.stale()) library.load();
+      render();
     },
   };
 }

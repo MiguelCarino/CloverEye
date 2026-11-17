@@ -101,7 +101,8 @@ export function filtersSection({ settings, onChange, boards: boardList = null })
         pattern.focus();
         return;
       }
-      const raw = { field: d.field, pattern: d.pattern, regex: d.regex, matchCase: d.matchCase, boards: F.parseBoards(d.boardsText).boards, action: d.action, enabled: true };
+      // byName: a flag picked here is a country by its code, a board's own flag by its name
+      const raw = { field: d.field, pattern: d.pattern, regex: d.regex, matchCase: d.matchCase, boards: F.parseBoards(d.boardsText).boards, action: d.action, enabled: true, byName: d.field === 'flag' };
       let next;
       if (isNew) {
         next = F.addFilter(settings, raw);

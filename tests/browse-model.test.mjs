@@ -112,6 +112,11 @@ test('excerpt drops quote links and keeps the words', () => {
   assert.ok(B.excerpt({ com: 'x'.repeat(500) }, 50).length === 50);
 });
 
+test('excerpt drops board links too', () => {
+  assert.equal(B.excerpt({ com: '<a href="//boards.4chan.org/g/catalog#s=fglt" class="quotelink">&gt;&gt;&gt;/g/fglt/</a><br>new thread' }), 'new thread');
+  assert.equal(B.excerpt({ com: 'see <a href="//boards.4chan.org/a/" class="quotelink">&gt;&gt;&gt;/a/</a> too' }), 'see too');
+});
+
 test('isRefreshKey: F5, Ctrl+R and ⌘R (with or without Shift), nothing else', () => {
   const k = (key, mods = {}) => B.isRefreshKey({ key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods });
   assert.ok(k('F5'));
@@ -130,4 +135,79 @@ test('isRefreshKey: F5, Ctrl+R and ⌘R (with or without Shift), nothing else', 
 test('refreshKeysLabel names ⌘ on a Mac and Ctrl elsewhere', () => {
   assert.equal(B.refreshKeysLabel('MacIntel'), '⌘R · F5');
   assert.equal(B.refreshKeysLabel('Linux x86_64'), 'Ctrl+R · F5');
+});
+
+test('statusText: the status line in words (the shell patches it in place)', () => {
+  const time = () => '10:00:00';
+  assert.equal(B.statusText(undefined, 'thread', { time }), 'Loading the thread…');
+  assert.equal(B.statusText({ status: 'loading', posts: [] }, 'catalog', { time }), 'Loading the catalog…');
+  assert.equal(B.statusText({ status: 'error', error: 'x' }, 'thread', { time }), null, 'the error box says it');
+  assert.equal(B.statusText({ status: 'ok', at: 1, freshness: 'new', fresh: new Set() }, 'thread', { time }), 'Updated 10:00:00');
+  assert.equal(B.statusText({ status: 'ok', at: 1, freshness: 'not-modified' }, 'thread', { time }), 'Updated 10:00:00 · no changes');
+  assert.equal(B.statusText({ status: 'ok', at: 1, freshness: 'throttled' }, 'thread', { time }), 'Updated 10:00:00 · too soon to ask again, showing the last copy');
+  assert.equal(B.statusText({ status: 'ok', at: 1, freshness: 'new', fresh: new Set([5, 6, 7]) }, 'thread', { time }), 'Updated 10:00:00 · 3 new');
+  assert.equal(B.statusText({ status: 'ok' }, 'thread', { time }), null, 'nothing to say');
+  assert.match(B.statusText({ status: 'ok', at: Date.now() }, 'thread'), /^Updated \S/, 'the clock time by default');
+});
+
+// Spoilers (<s>) stay hidden in titles and catalog cards (confirmed[9]).
+test('threadTitle and excerpt mask spoiler text; the search still finds it', () => {
+  const op = { no: 1, com: 'Who dies? <s>Snape kills Dumbledore</s>' };
+  assert.equal(B.threadTitle(op), 'Who dies? ' + B.SPOILER_MASK);
+  assert.ok(!B.threadTitle(op).includes('Snape'));
+  assert.equal(B.excerpt({ ...op, sub: 'Books' }), 'Who dies? ' + B.SPOILER_MASK);
+  assert.equal(B.threadTitle({ no: 1, sub: 'A subject', com: '<s>x</s>' }), 'A subject', 'a subject has no spoilers');
+  assert.equal(B.threadTitle({ no: 1, com: '<s>a</s><s>b</s> after' }), B.SPOILER_MASK + ' after', 'one tag after another is one mask');
+  const greenInside = { no: 1, com: 'see <s><span class="quote">&gt;green secret</span></s>' };
+  assert.ok(!B.threadTitle(greenInside).includes('secret'), 'greentext inside a spoiler too');
+  assert.equal(B.arrangeCatalog([op], { query: 'snape' }).length, 1, 'the catalog search reads the whole comment');
+});
+
+test('titleRuns and excerptRuns mark spoiler runs for the catalog card', () => {
+  assert.deepEqual(B.titleRuns({ com: 'Who dies? <s>Snape</s> end' }), [
+    { text: 'Who dies? ', spoiler: false },
+    { text: 'Snape', spoiler: true },
+    { text: ' end', spoiler: false },
+  ]);
+  assert.deepEqual(B.titleRuns({ sub: 'Sub', com: '<s>x</s>' }), [{ text: 'Sub', spoiler: false }]);
+  assert.deepEqual(B.titleRuns({ no: 7 }), [{ text: 'No. 7', spoiler: false }]);
+  // cut through a spoiler: the "…" stays outside it
+  assert.deepEqual(B.excerptRuns({ com: 'Who dies? <s>Snape kills Dumbledore</s>' }, 15), [
+    { text: 'Who dies? ', spoiler: false },
+    { text: 'Snap', spoiler: true },
+    { text: '…', spoiler: false },
+  ]);
+  // quote links are left out of the excerpt, white space is one space
+  assert.deepEqual(B.excerptRuns({ com: '<a href="#p1" class="quotelink">&gt;&gt;1</a><br>a   b<br><s>c</s>' }), [
+    { text: 'a b ', spoiler: false },
+    { text: 'c', spoiler: true },
+  ]);
+  const long = 'x'.repeat(300);
+  const runs = B.titleRuns({ com: long });
+  assert.equal(runs.map((r) => r.text).join('').length, 80);
+  assert.equal(B.threadTitle({ com: long }), runs.map((r) => r.text).join(''), 'the same cut as the plain title');
+});
+
+// Backlinks and quote previews only reach posts that are drawn (confirmed[11]).
+test('shownPosts: no backlinks from discarded or hidden posts; discarded posts unreachable', () => {
+  const q = (n) => '<a href="#p' + n + '" class="quotelink">&gt;&gt;' + n + '</a>';
+  const posts = [
+    { no: 100, com: 'op' },
+    { no: 120, com: q(100) + ' discarded' },
+    { no: 121, com: q(100) + ' hidden' },
+    { no: 122, com: q(100) + ' shown' },
+  ];
+  const hidden = new Map([
+    [120, { reason: 'discard' }],
+    [121, { reason: 'filter' }],
+  ]);
+  const a = B.shownPosts(posts, hidden, new Set());
+  assert.deepEqual(a.refs.get(100), [122]);
+  assert.ok(!a.posts.has(120), 'a discarded post: "Post not found"');
+  assert.ok(a.posts.has(121), 'a hidden post is there (drawn as its stub line)');
+  assert.equal(B.shownPosts(posts, hidden, new Set()), a, 'kept while the same posts are hidden');
+  const b = B.shownPosts(posts, hidden, new Set([121]));
+  assert.notEqual(b, a);
+  assert.deepEqual(b.refs.get(100), [121, 122], 'shown this time: its backlink is back');
+  assert.deepEqual(B.shownPosts(posts, new Map(), new Set()).refs.get(100), [120, 121, 122]);
 });

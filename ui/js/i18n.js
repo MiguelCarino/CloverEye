@@ -29,6 +29,7 @@ let lang = 'en';
 let exact = new Map(); // English → translation
 let patterns = []; // [{ re, out }] for keys with {n}
 const cache = new Map();
+const CACHE_MAX = 5000;
 const original = new WeakMap(); // text node → English
 const shown = new WeakMap(); // text node → what we put there
 const originalAttr = new WeakMap(); // element → { attr: English }
@@ -89,6 +90,8 @@ export function tr(text) {
     }
   }
   if (out === undefined) out = core;
+  // texts with a time or a count in them are new every time: kept bounded
+  if (cache.size >= CACHE_MAX) cache.clear();
   cache.set(core, out);
   return m[1] + out + m[3];
 }

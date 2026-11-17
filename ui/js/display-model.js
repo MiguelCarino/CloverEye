@@ -43,17 +43,35 @@ export function normalizeDisplay(raw) {
   };
 }
 
+const TIME_OPTS = { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' };
+// Building a formatter is the slow part (a thread draws hundreds of times):
+// one per locale and time zone, kept.
+const formatters = new Map();
+function timeFormat(locale, timeZone) {
+  const key = [locale || '', timeZone || ''].join('|');
+  let f = formatters.get(key);
+  if (f) return f;
+  const opts = timeZone ? { ...TIME_OPTS, timeZone } : TIME_OPTS;
+  try {
+    f = new Intl.DateTimeFormat(locale || undefined, opts);
+  } catch {
+    // a locale (or time zone) this engine does not know: the default one
+    try {
+      f = new Intl.DateTimeFormat(undefined, opts);
+    } catch {
+      f = new Intl.DateTimeFormat(undefined, TIME_OPTS);
+    }
+  }
+  if (formatters.size > 16) formatters.clear();
+  formatters.set(key, f);
+  return f;
+}
+
 /** A unix time (seconds) as a full date and time in `locale` (the UI's
  *  language); '' when there is none. */
 export function localTime(unix, locale = undefined, timeZone = undefined) {
   if (!Number.isFinite(unix) || unix <= 0) return '';
-  const opts = { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' };
-  if (timeZone) opts.timeZone = timeZone;
-  try {
-    return new Date(unix * 1000).toLocaleString(locale || undefined, opts);
-  } catch {
-    return new Date(unix * 1000).toLocaleString(undefined, opts);
-  }
+  return timeFormat(locale, timeZone).format(new Date(unix * 1000));
 }
 
 /**

@@ -7,7 +7,7 @@ import * as C from './compose-model.js';
 import * as L from './library-model.js';
 import { h, icon, toast } from './dom.js';
 import { confirmDialog } from './offline.js';
-import { putFile, getFile, delFile, moveFile } from './reply-files.js';
+import { putFile, getFile, delFile, moveFile, sweepFiles } from './reply-files.js';
 
 /**
  * @param {object} o
@@ -60,9 +60,9 @@ function fitSize(size) {
   const maxH = Math.max(MIN_H, innerHeight - 80);
   return { w: Math.round(Math.min(maxW, Math.max(MIN_W, size.w))), h: Math.round(Math.min(maxH, Math.max(MIN_H, size.h))) };
 }
-// Replies being written are never dropped to make room: a high cap only
-// against a runaway store.
-const MAX_DRAFTS = 500;
+const POSTING_ELSEWHERE = 'This reply is being posted in another window.';
+// Windows tell each other which reply files they hold (the sweep: liveFiles).
+const FILES_CHANNEL = 'clovereye-reply-files';
 
 /** The captcha's time left, and how to use it. */
 const expiresText = (s) => (s > 0 ? `Expires in ${s} s. Slide, drag or scroll over the picture, or use ←/→; Enter keeps a choice.` : 'Expired: get a new one.');
@@ -118,19 +118,15 @@ function loadSaved() {
   }
 }
 
-/** Drafts saved by an earlier run (see persistDrafts). */
+/** Drafts as stored, by an earlier run or another window (see persistDrafts).
+ *  Replies being written are never dropped to make room: C.MAX_DRAFTS is a
+ *  high cap only against a runaway store. */
 function loadDrafts() {
-  const out = new Map();
   try {
-    const raw = JSON.parse(localStorage.getItem(DRAFTS_KEY) || '{}');
-    for (const [k, d] of Object.entries(raw && typeof raw === 'object' ? raw : {})) {
-      if (!/^[a-z0-9]{1,10}\/\d{1,12}$/.test(k) || !d || typeof d !== 'object') continue;
-      out.set(k, { com: String(d.com || ''), sub: String(d.sub || ''), email: String(d.email || ''), file: C.fileMeta(d.file), at: Number(d.at) || 0 });
-    }
+    return C.adoptDrafts(new Map(), C.parseDrafts(localStorage.getItem(DRAFTS_KEY))); // replies, not deletes
   } catch (_) {
-    /* nothing saved, or no storage */
+    return new Map(); // no storage
   }
-  return out;
 }
 
 /** "1 min 05 s", "42 s". */
@@ -166,12 +162,25 @@ export function postSelection(post) {
 
 export function createComposer({ bridge, getSettings, saveSettings, getBoard, onPosted, onSitePage = null, onPending = null, paneFor = null, library = null }) {
   const drafts = loadDrafts(); // "board/thread" → { com, sub, email, at }
+  // What this window changed in `drafts` and has not stored yet (key →
+  // entry; an empty entry is a delete): only these are written, so another
+  // window's replies are never written over (persistDrafts).
+  const dirty = new Map();
+  // Replies going out now: key → their form. Never a pill, never a second
+  // form: Reply in that thread brings this one back.
+  const posting = new Map();
+  // Window listeners end with the composer (the shell is made again after
+  // setup): an old one never draws a tray or writes its drafts again.
+  const ac = new AbortController();
+  const bound = { signal: ac.signal };
+  let closed = false;
   let saved = loadSaved(); // replies kept for later, several per thread
   let mode = loadMode();
   let pendingSeq = 0;
   const cooldowns = new Map(); // board → time the next post may go
   let st = null; // the open form
   let el = null;
+  let openedFrom = null; // what had the focus when a form opened: it gets it back when the form goes
   let tick = null;
   let saveTimer = 0;
   let size = loadSize(); // set by dragging the corner grip
@@ -203,8 +212,9 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   // clicks); arrow keys on the title move it too; double-click: back to
   // the corner.
   function startMove(e) {
-    if (e.button !== 0 || !el || mode !== 'float') return;
-    if (e.target.closest('button:not(.composer__title--btn), input, textarea, select, a, .composer__grip')) return;
+    // folded, the form is a pill in the tray's place: it does not move
+    if (e.button !== 0 || !el || st?.min || mode !== 'float') return;
+    if (e.target.closest('button, input, textarea, select, a, .composer__grip')) return;
     const from = pos || { x: 0, y: 0 };
     const x0 = e.clientX;
     const y0 = e.clientY;
@@ -226,7 +236,10 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       pos = currentPos();
       savePos(pos);
       // the press that moved the form is not also a click on its title
-      addEventListener('click', (ev) => ev.stopPropagation(), { capture: true, once: true });
+      // (released elsewhere, no click comes: the next one is not eaten)
+      const swallow = (ev) => ev.stopPropagation();
+      addEventListener('click', swallow, { capture: true, once: true });
+      setTimeout(() => removeEventListener('click', swallow, { capture: true }), 0);
     };
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
@@ -252,17 +265,21 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   }
 
   function resetPos(e) {
-    if (mode !== 'float') return;
-    if (e.target.closest('button:not(.composer__title--btn), input, .composer__grip')) return;
+    if (mode !== 'float' || st?.min) return;
+    if (e.target.closest('button, input, .composer__grip')) return;
     pos = null;
     savePos(null);
     applyPos(el);
   }
 
-  addEventListener('resize', () => {
-    applyPos(el);
-    placeOver();
-  });
+  addEventListener(
+    'resize',
+    () => {
+      applyPos(el);
+      placeOver();
+    },
+    bound,
+  );
 
   // "Fill the pane": the form lies over the pane showing its thread (the
   // focused one when none does), kept there as the panes change (checked
@@ -355,31 +372,95 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   // One with anything in it stays, as a pill in the tray when its form is
   // not open, until it is posted, saved for later or deleted by hand.
   const fileKey = (k) => `a:${k}`;
+
+  // Every window has its own copy of the drafts and they all share one
+  // store: a window writes only its own changes into what is stored now
+  // (the newer write of a reply wins), then takes in the others' replies.
+  const keepKeys = () => new Set([...dirty.keys(), ...posting.keys(), ...(st ? [key(st.board, st.thread)] : [])]);
+
+  /** Writes this window's changes; the stored drafts after (null: no
+   *  storage, or nothing to write). */
   function persistDrafts() {
     clearTimeout(saveTimer);
     saveTimer = 0;
+    if (!dirty.size) return null;
+    const changes = new Map(dirty);
+    let merged = null;
     try {
-      const list = [...drafts.entries()].filter(([, d]) => C.hasContent(d));
-      list.sort((a, b) => (b[1].at || 0) - (a[1].at || 0));
-      localStorage.setItem(DRAFTS_KEY, JSON.stringify(Object.fromEntries(list.slice(0, MAX_DRAFTS))));
+      merged = C.mergeDrafts(C.parseDrafts(localStorage.getItem(DRAFTS_KEY)), changes);
+      localStorage.setItem(DRAFTS_KEY, JSON.stringify(Object.fromEntries(merged)));
+      dirty.clear();
+      C.adoptDrafts(drafts, merged, keepKeys());
     } catch (_) {
-      /* no storage: drafts last until the app closes */
+      merged = null; // no storage: drafts last until the app closes
+    }
+    // A delete that went in takes the reply's file too; one that did not
+    // (another window wrote that reply since) leaves it to that reply.
+    for (const [k, d] of changes) if (!C.hasContent(d) && !C.hasContent(merged?.get(k))) delFile(fileKey(k));
+    return merged;
+  }
+
+  /** Another window changed the drafts (or opening a form): take them in.
+   *  The stored drafts (null: no storage). */
+  function reloadDrafts() {
+    try {
+      const stored = C.parseDrafts(localStorage.getItem(DRAFTS_KEY));
+      C.adoptDrafts(drafts, stored, keepKeys());
+      return stored;
+    } catch (_) {
+      return null; // no storage: this window's drafts are all there is
     }
   }
 
-  const draftOf = (s) => ({ com: s.com, sub: s.sub, email: s.email, file: C.fileMeta(s.file), at: Date.now() });
+  // A change to write: `base` (the copy this window had) makes it go in only
+  // when no other window changed that reply since; without, the newer wins.
+  function setDraft(k, d, base = 0) {
+    if (C.hasContent(d)) drafts.set(k, d);
+    else drafts.delete(k);
+    dirty.set(k, base ? { ...d, base } : d);
+  }
+  const dropDraft = (k, base) => setDraft(k, C.goneDraft(Date.now(), base), base);
 
+  const draftOf = (s, at = Date.now()) => ({ com: s.com, sub: s.sub, email: s.email, file: C.fileMeta(s.file), at });
+
+  // Each form keeps `base`: when the copy it shows was written (by this
+  // window or another), so only what the person changed here is written.
   function typed() {
-    if (!st) return;
-    drafts.set(key(st.board, st.thread), draftOf(st));
+    // a reply going out stays as it was when Post was pressed
+    if (!st || st.busy) return;
+    const d = draftOf(st);
+    const was = st.base;
+    const k = key(st.board, st.thread);
+    // Another window is posting this reply: nothing is written and base
+    // stays, so when that post lands followStored empties this form (a
+    // keystroke here must not drop the stored marker: no second post).
+    if (!posting.has(k) && C.postingNow(reloadDrafts()?.get(k))) {
+      if (!st.problems.some((p) => p.message === POSTING_ELSEWHERE)) {
+        st.problems = [{ field: 'submit', message: POSTING_ELSEWHERE }];
+        draw('keep');
+      }
+      return;
+    }
+    if (C.hasContent(d)) {
+      st.base = d.at;
+      setDraft(k, d);
+    } else if (was) {
+      // emptied by hand: a delete of the copy it had (never of a newer one)
+      st.base = d.at;
+      setDraft(k, C.goneDraft(d.at, was), was);
+    } else return; // nothing written yet, nothing to write
     clearTimeout(saveTimer);
     saveTimer = setTimeout(persistDrafts, 400);
   }
 
-  addEventListener('pagehide', () => {
-    stash();
-    persistDrafts();
-  });
+  addEventListener(
+    'pagehide',
+    () => {
+      stash();
+      persistDrafts(); // writes only when this window changed something
+    },
+    bound,
+  );
 
   function pwd(settings) {
     if (settings.post?.pwd) return settings.post.pwd;
@@ -389,27 +470,28 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     return made;
   }
 
-  /** Keeps the open form's reply; an empty one is not kept. */
+  /** Keeps the open form's reply: what the person changed in it here is
+   *  written now (every change went through typed()). A form left as it
+   *  was writes nothing, so an older copy never comes back over a reply
+   *  posted or deleted in another window, and an empty one never deletes
+   *  another window's reply. A reply going out was stored when Post was
+   *  pressed, so a crash meanwhile still has it. */
   function stash() {
     if (!st) return;
-    const k = key(st.board, st.thread);
-    if (C.hasContent(st)) drafts.set(k, draftOf(st));
-    else {
-      drafts.delete(k);
-      delFile(fileKey(k));
-    }
     persistDrafts();
   }
 
-  /** Forgets a reply being written, file and all. */
-  function forget(k) {
-    drafts.delete(k);
-    delFile(fileKey(k));
+  /** Forgets a reply being written, file and all: the copy written at
+   *  `base` (a newer one from another window stays, with its file). */
+  function forget(k, base) {
+    dropDraft(k, base || Date.now());
     persistDrafts();
   }
 
   // ------------------------------------------------------ saved replies
 
+  // Another window may have changed the list: it is read again before each
+  // change, so one window's list is never written over another's.
   function persistSaved() {
     try {
       localStorage.setItem(SAVED_KEY, JSON.stringify(saved));
@@ -435,16 +517,22 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
    *  under the tray's Later, file and all, and the next Reply starts empty. */
   function saveForLater() {
     if (!st || st.busy) return;
-    const before = saved;
-    saved = C.saveReply(saved, { board: st.board, thread: st.thread, com: st.com, sub: st.sub, email: st.email, file: st.file });
+    const reply = { board: st.board, thread: st.thread, com: st.com, sub: st.sub, email: st.email, file: st.file };
+    const before = (saved = loadSaved());
+    if (C.hasContent(st) && C.savedFull(before, reply)) {
+      toast('Later is full: delete a saved reply first.');
+      return;
+    }
+    saved = C.saveReply(before, reply);
     if (saved === before) {
       toast('Nothing to save yet: write something first.');
       return;
     }
     persistSaved();
+    for (const id of C.droppedIds(before, saved)) delFile(`s:${id}`); // a list stored over the limit
     const k = key(st.board, st.thread);
     if (st.file) putFile(`s:${saved[0].id}`, st.file);
-    forget(k);
+    forget(k, st.base);
     const node = dropForm();
     laterOpen = true;
     drawTray(`s:${saved[0].id}`);
@@ -456,44 +544,82 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   /** A pill under Later opens as the form. A reply already being written
    *  for that thread goes under Later in its place, so the two never mix;
    *  the open form (another thread) stays as a pill of its own. */
+  let openingSaved = false; // a double press moves the files once
   async function openSaved(id, pill) {
-    if (st?.busy) return;
+    if (st?.busy || openingSaved || closed) return;
+    saved = loadSaved(); // another window may have opened or deleted it
     let { entry, list } = C.takeSaved(saved, id);
-    if (!entry) return;
-    const from = pill?.getBoundingClientRect();
-    const k = key(entry.board, entry.thread);
-    const here = Boolean(st && key(st.board, st.thread) === k);
-    const cur = here ? st : drafts.get(k);
-    if (C.hasContent(cur)) {
-      list = C.saveReply(list, { board: entry.board, thread: entry.thread, com: cur.com, sub: cur.sub, email: cur.email, file: cur.file });
-      if (here && st.file) {
-        await putFile(`s:${list[0].id}`, st.file);
-        await delFile(fileKey(k));
-      } else if (cur.file) await moveFile(fileKey(k), `s:${list[0].id}`);
-    }
-    if (entry.file) await moveFile(`s:${entry.id}`, fileKey(k));
-    else await delFile(fileKey(k));
-    drafts.set(k, { com: entry.com, sub: entry.sub, email: entry.email || '', file: entry.file, at: Date.now() });
-    saved = list;
-    persistSaved();
-    persistDrafts();
-    if (here) {
-      // the same thread: the captcha already there stays
-      const f = entry.file ? await getFile(fileKey(k)) : null;
-      Object.assign(st, { com: entry.com, sub: entry.sub, email: entry.email || st.email, file: f, caret: entry.com.length, problems: [], message: '', min: false });
-      draw('none');
-      morph(el, from);
-      focusComment();
+    if (!entry) {
       drawTray();
       return;
     }
+    const from = pill?.getBoundingClientRect();
+    const k = key(entry.board, entry.thread);
+    // that thread's reply is going out: its form comes back, this one stays saved
+    if (posting.has(k)) return open({ board: entry.board, thread: entry.thread, from });
+    // (as stored: this window's copy of the open form's reply is its own)
+    if (C.postingNow(reloadDrafts()?.get(k))) {
+      toast(POSTING_ELSEWHERE); // its reply there would be written over
+      return;
+    }
+    const form = st && key(st.board, st.thread) === k ? st : null;
+    const cur = form || drafts.get(k);
+    openingSaved = true;
+    // held while the files move: not stashed or typed into meanwhile
+    if (form) form.busy = true;
+    try {
+      const before = list;
+      if (C.hasContent(cur)) {
+        list = C.saveReply(list, { board: entry.board, thread: entry.thread, com: cur.com, sub: cur.sub, email: cur.email, file: cur.file });
+        if (form?.file) {
+          await putFile(`s:${list[0].id}`, form.file);
+          await delFile(fileKey(k));
+        } else if (cur.file) await moveFile(fileKey(k), `s:${list[0].id}`);
+      }
+      for (const gone of C.droppedIds(before, list)) delFile(`s:${gone}`);
+      if (entry.file) await moveFile(`s:${entry.id}`, fileKey(k));
+      else await delFile(fileKey(k));
+      const at = Date.now();
+      setDraft(k, { com: entry.com, sub: entry.sub, email: entry.email || '', file: entry.file, at });
+      if (form) form.base = at;
+      // Read again: another window may have saved or deleted one while the
+      // files moved. Only this change goes in: the entry taken out, and the
+      // reply put in its place (saveReply puts it first; its file is s:<id>).
+      const added = list !== before ? list[0] : null;
+      let fresh = C.takeSaved(loadSaved(), entry.id).list;
+      if (added) {
+        const next = [added, ...fresh.filter((e) => e.id !== added.id)].slice(0, C.MAX_SAVED_REPLIES);
+        for (const gone of C.droppedIds(fresh, next)) if (gone !== added.id) delFile(`s:${gone}`);
+        fresh = next;
+      }
+      saved = fresh;
+      persistSaved();
+      persistDrafts();
+      if (form && st === form) {
+        // the same thread: the captcha already there stays
+        const f = entry.file ? await getFile(fileKey(k)) : null;
+        if (st === form) {
+          form.busy = false;
+          Object.assign(form, { com: entry.com, sub: entry.sub, email: entry.email || form.email, file: f, caret: entry.com.length, problems: [], message: '', min: false });
+          draw('none');
+          morph(el, from);
+          focusComment();
+          drawTray();
+          return;
+        }
+      }
+    } finally {
+      if (form) form.busy = false;
+      openingSaved = false;
+    }
+    // another thread, or the form went meanwhile: opened from the draft
     await open({ board: entry.board, thread: entry.thread, from });
   }
 
   /** A pill of a reply being written opens as the form (the open one
    *  becomes a pill). */
   function openActive(k, pill) {
-    if (st?.busy) return;
+    if (st?.busy || closed) return;
     const [board, thread] = k.split('/');
     open({ board, thread: Number(thread), from: pill?.getBoundingClientRect() });
   }
@@ -505,7 +631,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     const ok = await confirmDialog({ title: 'Delete this reply?', text: `“${C.savedLabel(d, 80)}” is deleted for good.`, confirm: 'Delete', opener });
     if (!ok) return;
     const item = tray?.querySelector(`[data-active-key="${CSS.escape(k)}"]`);
-    forget(k);
+    forget(k, d.at); // the reply shown (one written since in another window stays)
     fadeOut(item);
   }
 
@@ -535,7 +661,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     const ok = await confirmDialog({ title: 'Delete this saved reply?', text: `“${C.savedLabel(entry, 80)}” is deleted for good.`, confirm: 'Delete', opener });
     if (!ok) return;
     const item = tray?.querySelector(`[data-saved-id="${CSS.escape(entry.id)}"]`);
-    saved = C.takeSaved(saved, entry.id).list;
+    saved = C.takeSaved(loadSaved(), entry.id).list;
     persistSaved();
     delFile(`s:${entry.id}`);
     fadeOut(item);
@@ -557,6 +683,9 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   let trayIds = new Set();
   let stackOpen = false; // the pile fanned out (pointed at, or focus inside)
   let fanTimer = 0;
+  let trayPress = false; // a press began in the tray
+  let trayStale = false; // another window changed a pill meanwhile
+  let postingTimer = 0; // a pill hidden while posted elsewhere comes back
 
   // The replies being written lie in a pile, one on another, the newest
   // (or the folded form) in front and the edges of the others showing
@@ -583,7 +712,8 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   function activeList() {
     const open = st ? key(st.board, st.thread) : '';
     return [...drafts.entries()]
-      .filter(([k, d]) => k !== open && C.hasContent(d))
+      // one going out (here or in another window) is no pill
+      .filter(([k, d]) => k !== open && !posting.has(k) && !C.postingNow(d) && C.hasContent(d))
       .map(([k, d]) => {
         const [board, thread] = k.split('/');
         return { k, board, thread: Number(thread), ...d };
@@ -612,6 +742,14 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   }
 
   function drawTray(fresh = '') {
+    if (closed) return; // something that finished after the shell closed
+    trayStale = false;
+    // one hidden while another window posts it is a pill again if that
+    // window never says how it went (it crashed)
+    clearTimeout(postingTimer);
+    const now = Date.now();
+    const back = Math.min(...[...drafts.values()].filter((d) => C.postingNow(d, now)).map((d) => d.posting + C.POSTING_MS));
+    postingTimer = Number.isFinite(back) ? setTimeout(() => drawTray(), back - now + 50) : 0;
     const active = activeList();
     const later = saved;
     if (!active.length && !later.length) {
@@ -679,10 +817,31 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
         : null,
     );
     trayIds = new Set([...active.map((e) => `a:${e.k}`), ...later.map((e) => `s:${e.id}`)]);
+    // the focus stays on the same pill or button in the new tray
+    const had = tray?.contains(document.activeElement) ? document.activeElement.getAttribute('data-key') : null;
     if (tray) tray.replaceWith(next);
     else document.body.append(next);
     tray = next;
+    if (had) next.querySelector(`[data-key="${CSS.escape(had)}"]`)?.focus({ preventScroll: true });
     placeTray();
+  }
+
+  // What the tray shows: drawn again only when that changed.
+  const traySig = () =>
+    JSON.stringify([activeList().map((e) => [e.k, e.com, e.sub, e.file?.name || '']), saved.map((e) => [e.id, e.com, e.sub, e.file?.name || ''])]);
+
+  /** The open form's copy was posted or deleted in another window (and
+   *  nothing was changed in it here since): it empties, so it is not posted
+   *  again. */
+  function followStored(stored) {
+    if (!st || st.busy || !stored) return;
+    const k = key(st.board, st.thread);
+    if (dirty.has(k) || !C.hasContent(st) || !C.deletedSince(stored, k, st.base)) return;
+    Object.assign(st, { com: '', sub: '', file: null, caret: 0, problems: [], message: '', base: stored.get(k).at || 0 });
+    drafts.delete(k); // no pill of it either once the form closes
+    draw('keep');
+    if (st.min) drawHeadNote();
+    toast('This reply was posted or deleted in another window.');
   }
 
   /** Above a folded form, to the left of an open floating one; out of the
@@ -717,15 +876,76 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     tray.style.maxHeight = `${Math.max(120, innerHeight - b - top - 8)}px`;
   }
 
-  addEventListener('resize', placeTray);
-  // another window saved or used one
-  addEventListener('storage', (e) => {
-    if (e.key !== SAVED_KEY) return;
-    saved = loadSaved();
-    drawTray();
-  });
+  addEventListener('resize', placeTray, bound);
+  // Another window saved, used or wrote one (null: its storage was cleared).
+  // It writes as it is typed into: the tray is drawn again only when a pill
+  // changed, and not under a press (the click would land on a pill gone).
+  addEventListener(
+    'storage',
+    (e) => {
+      if (e.key !== SAVED_KEY && e.key !== DRAFTS_KEY && e.key !== null) return;
+      const before = traySig();
+      if (e.key !== DRAFTS_KEY) saved = loadSaved();
+      if (e.key !== SAVED_KEY) followStored(reloadDrafts());
+      if (traySig() === before) return;
+      if (trayPress) trayStale = true;
+      else drawTray();
+    },
+    bound,
+  );
+  addEventListener('pointerdown', (e) => (trayPress = Boolean(tray?.contains(e.target))), { ...bound, capture: true });
+  const pressEnd = () => {
+    trayPress = false;
+    // after the click that ends the press
+    if (trayStale) setTimeout(() => trayStale && drawTray(), 0);
+  };
+  addEventListener('pointerup', pressEnd, bound);
+  addEventListener('pointercancel', pressEnd, bound);
   if (document.body) drawTray();
-  else addEventListener('DOMContentLoaded', () => drawTray(), { once: true });
+  else addEventListener('DOMContentLoaded', () => drawTray(), { once: true, signal: ac.signal });
+
+  // Files no reply points at any more (one cut off a list, or left by an
+  // older version) are deleted a while after the start: see sweepFiles.
+  // A reply another window could not write to storage (full) lives only in
+  // that window: before the sweep every window is asked what it holds, and
+  // the answers come in during sweepFiles' wait, before its second look.
+  const ownFiles = () => {
+    const s = new Set();
+    for (const k of [...drafts.keys(), ...keepKeys()]) s.add(fileKey(k));
+    for (const e of saved) s.add(`s:${e.id}`);
+    return s;
+  };
+  const othersFiles = new Set();
+  let filesChan = null;
+  try {
+    filesChan = new BroadcastChannel(FILES_CHANNEL);
+  } catch (_) {
+    filesChan = null; // no way to ask the other windows: nothing is swept
+  }
+  filesChan?.addEventListener('message', (e) => {
+    if (closed) return;
+    if (e.data?.ask) filesChan.postMessage({ keys: [...ownFiles()] });
+    else if (Array.isArray(e.data?.keys)) for (const k of e.data.keys) othersFiles.add(String(k));
+  });
+  ac.signal.addEventListener('abort', () => filesChan?.close());
+  const liveFiles = () => {
+    if (!filesChan) return null;
+    try {
+      const live = new Set();
+      for (const [k, d] of C.parseDrafts(localStorage.getItem(DRAFTS_KEY))) if (C.hasContent(d)) live.add(fileKey(k));
+      for (const e of C.normalizeSaved(JSON.parse(localStorage.getItem(SAVED_KEY) || '[]'))) live.add(`s:${e.id}`);
+      for (const k of ownFiles()) live.add(k);
+      for (const k of othersFiles) live.add(k);
+      return live;
+    } catch (_) {
+      return null; // no storage to tell by: nothing is deleted
+    }
+  };
+  const sweepTimer = setTimeout(() => {
+    if (closed) return;
+    filesChan?.postMessage({ ask: true });
+    sweepFiles(liveFiles).catch(() => {});
+  }, 10_000);
 
   // ------------------------------------------------------------ motion
 
@@ -764,10 +984,25 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     );
   }
 
+  /** The focus back where it was when the form opened (the thread's Reply
+   *  button, a post's No.): the same control drawn anew since is found by
+   *  its data-key. Else it just leaves the form. */
+  function focusBack() {
+    let to = openedFrom;
+    openedFrom = null;
+    const k = to?.dataset?.key;
+    if (to && !to.isConnected && k) to = document.querySelector(`[data-key="${CSS.escape(k)}"]`);
+    if (to?.isConnected && !to.closest('[inert], .composer') && typeof to.focus === 'function') to.focus({ preventScroll: true });
+    if (document.activeElement?.closest?.('.composer')) document.activeElement.blur();
+  }
+
   /** A form going away: into `to` (a rect: the pill it became), else down
    *  and out. The node is removed at the end. */
   function leave(node, to) {
     if (!node) return;
+    // The focus never stays in a form that is going: the shell ignores keys
+    // (Esc back to the catalog, G, U) while the focus is in a .composer.
+    if (node.contains(document.activeElement)) focusBack();
     if (still() || !node.animate || !node.isConnected) {
       node.remove();
       return;
@@ -818,9 +1053,16 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   /** The app closing: the reply is kept as it is. */
   function close() {
     stash();
+    persistDrafts(); // the last keystrokes too (a write still waiting)
     dropForm()?.remove();
+    clearTimeout(fanTimer);
+    fanTimer = 0;
+    clearTimeout(sweepTimer);
+    clearTimeout(postingTimer);
     tray?.remove();
     tray = null;
+    closed = true;
+    ac.abort();
   }
 
   /** The form's ×: an empty form just closes; a reply with something in
@@ -831,18 +1073,37 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       const mine = st;
       const ok = await confirmDialog({ title: 'Delete this reply?', text: `“${C.savedLabel(mine, 80)}” is deleted for good. To keep it, minimise it or save it for later.`, confirm: 'Delete', opener });
       if (!ok || st !== mine) return;
-      forget(key(mine.board, mine.thread));
+      forget(key(mine.board, mine.thread), mine.base);
     } else stash();
     leave(dropForm(), null);
     drawTray();
   }
 
   async function open({ board, thread = 0, quote = 0, selection = '', from = null }) {
-    const same = st && st.board === board && st.thread === thread;
+    if (closed) return;
+    const before = document.activeElement;
+    if (before && before !== document.body && !before.closest?.('.composer, .reply-tray')) openedFrom = before;
+    let same = st && st.board === board && st.thread === thread;
     // An open form takes the quote at its caret; a form opened now, at the end.
     const ta0 = same ? el?.querySelector('[data-key="compose-com"]') : null;
     const caret = ta0 && document.activeElement === ta0 ? ta0.selectionStart : same ? st.caret : null;
-    if (!same) {
+    const flying = same ? null : posting.get(key(board, thread));
+    if (flying) {
+      // that thread's reply is going out: its form comes back (never a
+      // second one from the draft, which could post it twice)
+      stash();
+      st = flying;
+      same = true;
+      reloadDrafts();
+      drawTray();
+    } else if (!same) {
+      // another window may have posted, deleted or written one
+      if (C.postingNow(reloadDrafts()?.get(key(board, thread)))) {
+        // another window is posting that thread's reply: a second form
+        // could post it twice
+        toast(POSTING_ELSEWHERE);
+        return;
+      }
       stash(); // the form open now stays, as a pill
       saved = loadSaved(); // another window may have saved some
       const d = drafts.get(key(board, thread)) || {};
@@ -850,6 +1111,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       st = {
         board,
         thread,
+        base: d.at || 0, // when the copy shown was written (see typed)
         com: d.com || '',
         sub: d.sub || '',
         email: d.email || '',
@@ -866,6 +1128,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
         info: null,
         min: false, // folded down to its title bar
       };
+      reloadDrafts(); // the form left is a pill of what is stored for it now
     }
     if (!same) {
       drawTray(); // this thread's pill is the form now
@@ -884,11 +1147,15 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     st.min = false;
     const picked = String(selection || '').trim() ? String(selection) : '';
     // The selection comes in as greentext under the >>N; a bare >>N only
-    // when the comment does not quote that post yet.
-    if (picked || (quote && !st.com.includes(`>>${quote}`))) {
+    // when the comment does not quote that post yet. Not into a reply going
+    // out: it would not be in what is sent.
+    if (st.busy) {
+      /* the quote is left out */
+    } else if (picked || (quote && !st.com.includes(`>>${quote}`))) {
       const r = C.insertAtCaret(st.com, Number.isFinite(caret) ? caret : st.com.length, C.quoteText(quote, picked));
       st.com = r.text;
       st.caret = r.caret;
+      typed(); // a change like any typed one: kept
     } else if (Number.isFinite(caret)) st.caret = caret;
     const fresh = !el;
     draw();
@@ -964,6 +1231,9 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
                 onclick: async () => {
                   try {
                     const file = await library.asFile(e);
+                    // closed while the file was read: the pick was cancelled
+                    // (and the form open now may be another thread's)
+                    if (!d.isConnected) return;
                     finish();
                     await pickFile(file);
                     el?.querySelector('[data-key="compose-com"]')?.focus({ preventScroll: true });
@@ -1014,11 +1284,15 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   }
 
   async function pickFile(file) {
-    if (!st || !file) return;
+    const mine = st;
+    if (!mine || !file || mine.busy) return;
     const bytes = new Uint8Array(await file.arrayBuffer());
+    // another form opened (or this one went out) while a big file was read:
+    // it is not attached to that one
+    if (st !== mine || mine.busy) return;
     const name = file.name || 'pasted.png';
-    st.file = { name, size: bytes.length, type: file.type || '', bytes, randomName: C.randomFileName(name) };
-    putFile(fileKey(key(st.board, st.thread)), st.file); // kept with the reply
+    mine.file = { name, size: bytes.length, type: file.type || '', bytes, randomName: C.randomFileName(name) };
+    putFile(fileKey(key(mine.board, mine.thread)), mine.file); // kept with the reply
     typed();
     draw('keep');
   }
@@ -1039,12 +1313,29 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     if (st.problems.length) {
       draw('keep');
       // only the captcha left: straight to its slider, for the arrow keys
-      if (st.problems.every((p) => p.field === 'captcha') && st.captcha.state === 'ready') focusSlider();
+      // (expired: to New captcha; the site would refuse it)
+      const onlyCaptcha = st.problems.every((p) => p.field === 'captcha') && st.captcha.state === 'ready';
+      if (onlyCaptcha && C.captchaExpired(st.captcha)) el?.querySelector('[data-key="compose-captcha-new"]')?.focus({ preventScroll: true });
+      else if (onlyCaptcha) focusSlider();
       else el?.querySelector('.composer__problems')?.focus?.();
       return;
     }
     const mine = st;
+    const k = key(mine.board, mine.thread);
+    if (C.postingNow(reloadDrafts()?.get(k))) {
+      // the same reply open in two windows, Post pressed in the other one
+      st.problems = [{ field: 'submit', message: POSTING_ELSEWHERE }];
+      draw('keep');
+      return;
+    }
+    // Stored as going out, so other windows show no pill and open no second
+    // form for it (and a crash meanwhile still has it). Only over the copy
+    // this form has: a newer one from another window is left as it is.
+    const pressed = Date.now();
+    setDraft(k, { ...draftOf(mine, pressed), posting: pressed }, mine.base || pressed);
+    if (persistDrafts()?.get(k)?.posting === pressed) mine.base = pressed;
     st.busy = true;
+    posting.set(k, mine);
     st.message = 'Posting…';
     // A reply goes into its thread at once, grey until the site says it is
     // posted; the form folds down meanwhile so it can be seen arriving.
@@ -1097,9 +1388,15 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     }
     if (pid) onPending(result.ok ? { type: 'posted', id: pid, no: result.no } : { type: 'failed', id: pid, message: result.message });
     mine.busy = false;
+    posting.delete(k);
     if (!result.ok) {
+      // a reply again, not one going out (unless another window wrote it since)
+      const at = Date.now();
+      setDraft(k, draftOf(mine, at), mine.base);
+      if (persistDrafts()?.get(k)?.at === at) mine.base = at;
       if (st !== mine) {
         toast(`Not posted: ${result.message}`); // the form was closed meanwhile; the draft is kept
+        drawTray(); // and is a pill again
         return;
       }
       mine.message = result.message;
@@ -1114,14 +1411,12 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     if (wait) cooldowns.set(mine.board, Date.now() + wait * 1000);
     const next = C.addYou({ ...getSettings(), post: { ...(getSettings().post || {}), name: mine.name } }, mine.board, result.no);
     saveSettings(next);
-    forget(key(mine.board, mine.thread));
+    forget(k, mine.base); // the copy sent (one written since in another window stays)
     const left = C.savedFor(saved, mine.board, mine.thread).length;
     const leftNote = left === 1 ? ' · 1 saved reply left for this thread' : left ? ` · ${left} saved replies left for this thread` : '';
     toast(`Posted: No. ${result.no}${cleaned ? ' · location and camera data removed' : ''}${leftNote}`);
-    if (st === mine) {
-      leave(dropForm(), null);
-      placeTray();
-    }
+    if (st === mine) leave(dropForm(), null);
+    drawTray();
     onPosted({ board: mine.board, thread: result.thread, no: result.no });
   }
 
@@ -1180,11 +1475,14 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       c.tasks.map((_, i) => h('li', { class: i < c.picks.length ? 'done' : i === c.step ? 'now' : '', text: String(i + 1) })),
     );
     if (C.captchaDone(c)) {
+      const expired = C.captchaExpired(c);
       return h(
         'div',
         { class: 'captcha' },
         progress,
-        h('p', { class: 'state-line', role: 'status' }, icon('check'), 'Captcha answered. Post when ready.'),
+        expired
+          ? h('p', { class: 'state-line', role: 'status' }, icon('info'), expiresText(0))
+          : h('p', { class: 'state-line', role: 'status' }, icon('check'), 'Captcha answered. Post when ready.'),
         h('div', { class: 'captcha__row' }, again),
       );
     }
@@ -1582,6 +1880,12 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       const left = el.querySelector('[data-captcha-left]');
       const s = Math.max(0, Math.ceil((c.expires - Date.now()) / 1000));
       if (left) left.textContent = expiresText(s);
+      // it just ran out: an answered one says so, and so does the folded title
+      if (!st.busy && !c.expiredDrawn && C.captchaExpired(c)) {
+        c.expiredDrawn = true;
+        if (C.captchaDone(c)) draw('keep');
+        if (st.min) drawHeadNote();
+      }
       return;
     }
     if (!c.until) return;
@@ -1608,6 +1912,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     if (st.busy) return 'Posting…';
     if (c.state === 'loading' || c.state === 'idle') return 'Loading captcha…';
     if (c.state === 'wait' && c.until) return `Wait ${formatLeft(Math.max(0, Math.ceil((c.until - Date.now()) / 1000)))}`;
+    if (C.captchaExpired(c)) return 'Captcha expired';
     if (C.captchaDone(c)) return 'Ready to post';
     if (c.state === 'ready') return 'Captcha to solve';
     return c.state === 'error' || c.state === 'blocked' ? 'Captcha problem' : '';

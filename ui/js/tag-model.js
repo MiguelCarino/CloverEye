@@ -93,40 +93,80 @@ export function matchesText(tag, text) {
 /** 'hit' (a word is in it), 'out' (a -word is: left out whatever else
  *  matches) or 'miss'. */
 function textState(tag, text) {
-  const hay = fold(text);
-  const has = tag.whole ? (w) => wholeIn(hay, fold(w)) : (w) => hay.includes(fold(w));
+  return foldedState(prepOf(tag), text, fold(text));
+}
+
+/** textState() on a text already folded (`hay`); regular expressions test
+ *  the text as it is (`raw`). */
+function foldedState(prep, raw, hay) {
+  const has = prep.whole ? (w) => wholeIn(hay, w) : (w) => hay.includes(w);
   let hit = false;
-  for (const term of tag.terms) {
-    const re = regexOf(term);
-    if (re === false) continue; // a broken pattern finds nothing
-    if (re) {
-      if (re.test(text)) hit = true;
+  for (const it of prep.items) {
+    if (it.re) {
+      if (it.re.test(raw)) hit = true;
       continue;
     }
-    if (term.startsWith('-') && term.length > 1) {
-      if (has(term.slice(1))) return 'out';
+    if (it.out !== undefined) {
+      if (has(it.out)) return 'out';
       continue;
     }
-    if (has(term)) hit = true;
+    if (has(it.word)) hit = true;
   }
   return hit ? 'hit' : 'miss';
 }
 
-/** A post's flag, every way it can be named: country code and name, board
- *  flag code and name (folded). */
+// A tag's terms and flags folded once per tag object. An edit replaces the
+// tag (normalizeTag); the stored references are checked all the same.
+const prepared = new WeakMap(); // tag → { terms, flagList, whole, items, flags }
+function prepOf(tag) {
+  const had = prepared.get(tag);
+  if (had && had.terms === tag.terms && had.flagList === tag.flags && had.whole === Boolean(tag.whole)) return had;
+  const items = [];
+  for (const term of tag.terms || []) {
+    const re = regexOf(term);
+    if (re === false) continue; // a broken pattern finds nothing
+    if (re) items.push({ re }); // flags i, m, s, u only: test() keeps no state
+    else if (term.startsWith('-') && term.length > 1) items.push({ out: fold(term.slice(1)) });
+    else items.push({ word: fold(term) });
+  }
+  const prep = { terms: tag.terms, flagList: tag.flags, whole: Boolean(tag.whole), items, flags: (tag.flags || []).map(fold) };
+  prepared.set(tag, prep);
+  return prep;
+}
+
+// A post's words (threadText) and their folded form, once per post object
+// and `plain` function: the same posts are matched against every tag, on
+// every redraw. Checked against the post's own fields, so a post changed in
+// place is read again.
+const identity = (s) => s;
+const texts = new WeakMap(); // post → { plain, sub, com, filename, raw, folded }
+function textOf(p, plain) {
+  const had = texts.get(p);
+  if (had && had.plain === plain && had.sub === p.sub && had.com === p.com && had.filename === p.filename) return had;
+  const raw = threadText(p, plain);
+  const entry = { plain, sub: p.sub, com: p.com, filename: p.filename, raw, folded: fold(raw) };
+  texts.set(p, entry);
+  return entry;
+}
+
+/** A post's flag, every way it can be named (folded): a country's code and
+ *  name, a board flag's name. Not a board flag's code: /pol/'s NZ or TR is a
+ *  country's code too, and a code in a tag always means the country. */
 export function postFlags(p) {
-  return [p?.country, p?.country_name, p?.board_flag, p?.flag_name].filter(Boolean).map((f) => fold(String(f).replace(/&amp;/g, '&')));
+  return [p?.country, p?.country_name, p?.flag_name].filter(Boolean).map((f) => fold(String(f).replace(/&amp;/g, '&')));
 }
 
 /** Whether a post (or catalog thread) matches a tag: one of its words, or
  *  one of its flags, and none of its -words. */
-export function matchesPost(tag, p, plain = (x) => x) {
-  const state = textState(tag, threadText(p, plain));
+export function matchesPost(tag, p, plain = identity) {
+  const prep = prepOf(tag);
+  const text = textOf(p, plain);
+  const state = foldedState(prep, text.raw, text.folded);
   if (state === 'out') return false;
   if (state === 'hit') return true;
-  if (!tag.flags?.length) return false;
+  if (!prep.flags.length) return false;
   const have = postFlags(p);
-  return tag.flags.some((f) => have.includes(fold(f)));
+  return prep.flags.some((f) => have.includes(f));
 }
 
 const isWordChar = (c) => Boolean(c) && /[\p{L}\p{N}_]/u.test(c);

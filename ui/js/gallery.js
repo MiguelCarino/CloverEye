@@ -2,7 +2,7 @@
 // as the window allows. Arrow keys, J/K, Home/End and the mouse wheel move;
 // D saves; Esc or G closes. Lives outside the shell's redraws.
 
-import { step, saveName } from './gallery-model.js';
+import { step, saveName, pictureShown, currentView, preloadable } from './gallery-model.js';
 import { preloadIndices } from './display-model.js';
 import { autoplay, h, icon, toast } from './dom.js';
 import { formatBytes } from './render.js';
@@ -59,29 +59,74 @@ export function openGallery({ items, start = 0, title = '', onSave, preload = tr
     strip,
   );
 
+  // Spoilers and work mode (Settings → Posts) as in the thread: a spoiler
+  // that is not revealed is a blank box in the strip and a "show" button on
+  // the stage; in work mode the strip has no pictures, and a file shows
+  // once it is moved to (opening the gallery asks for the files), except a
+  // spoiler, which still waits for Show this file. Revealed or shown ones
+  // keep their picture while the gallery is open.
+  const revealed = new Set(); // revealed with Show this file
+  const opened = new Set(); // work-mode files moved to
+  const face = (it, i) =>
+    pictureShown(it, i, revealed, opened) && it.thumb
+      ? h('img', { src: it.thumb, alt: '', loading: 'lazy', decoding: 'async' })
+      : h('span', { class: 'gallery__face', text: currentView(it, i, revealed, opened) === 'spoiler' ? 'Spoiler' : it.ext });
   items.forEach((it, i) =>
     strip.append(
       h(
         'button',
         { type: 'button', class: 'gallery__thumb', role: 'option', 'aria-label': it.name, 'data-index': String(i), onclick: () => show(i) },
-        it.thumb ? h('img', { src: it.thumb, alt: '', loading: 'lazy', decoding: 'async' }) : h('span', { text: it.ext }),
+        face(it, i),
         it.video ? h('span', { class: 'gallery__badge', 'aria-hidden': 'true', text: '▶' }) : null,
       ),
     ),
   );
 
+  /** The strip's picture for item `i`, after it was revealed. */
+  function refreshFace(i) {
+    strip.querySelector(`[data-index="${i}"]`)?.firstElementChild?.replaceWith(face(items[i], i));
+  }
+
+  function reveal(i) {
+    revealed.add(i);
+    refreshFace(i);
+    if (index === i) show(i);
+    root.focus({ preventScroll: true });
+  }
+
   function show(i) {
     index = i;
     const it = items[index];
     for (const v of stage.querySelectorAll('video')) v.pause();
+    // work mode: moving to a file is asking for it
+    if (it.view === 'line' && !opened.has(index)) {
+      opened.add(index);
+      refreshFace(index);
+    }
+    const hidden = !pictureShown(it, index, revealed, opened);
     stage.replaceChildren(
-      it.video
-        ? Object.assign(autoplay(h('video', { class: 'gallery__media', controls: true, autoplay: true, loop: true, playsinline: true })), { src: it.full })
-        : h('img', { class: 'gallery__media', src: it.full, alt: it.name, decoding: 'async' }),
+      hidden
+        ? h(
+            'button',
+            {
+              type: 'button',
+              class: 'btn gallery__reveal',
+              'aria-label': it.video ? `Play the spoiler ${it.name}` : `Expand the spoiler ${it.name}`,
+              'data-key': 'gallery-reveal',
+              // centred on the stage, like the file itself
+              style: { position: 'absolute', inset: '0', margin: 'auto', width: 'fit-content', height: 'fit-content' },
+              onclick: () => reveal(index),
+            },
+            icon('eye'),
+            h('span', { text: 'Show this file' }),
+          )
+        : it.video
+          ? Object.assign(autoplay(h('video', { class: 'gallery__media', controls: true, autoplay: true, loop: true, playsinline: true })), { src: it.full })
+          : h('img', { class: 'gallery__media', src: it.full, alt: it.name, decoding: 'async' }),
     );
     counter.textContent = `${index + 1} / ${items.length}`;
     // Stats → You counts files viewed (stats.js; nothing while that is off)
-    document.dispatchEvent(new CustomEvent('clovereye:file-view', { detail: { how: 'gallery' } }));
+    if (!hidden) document.dispatchEvent(new CustomEvent('clovereye:file-view', { detail: { how: 'gallery' } }));
     name.textContent = `${it.name}${it.w && it.h ? ` · ${it.w}×${it.h}` : ''}${it.size ? ` · ${formatBytes(it.size)}` : ''}`;
     for (const t of strip.children) {
       const on = Number(t.dataset.index) === index;
@@ -90,12 +135,15 @@ export function openGallery({ items, start = 0, title = '', onSave, preload = tr
     }
     // the next and previous images start loading now, so moving either way
     // is instant (from the image host, as the gallery itself loads them)
-    preloaded = preloadIndices(items, index, preload).map((i) => {
-      const pre = new Image();
-      pre.decoding = 'async';
-      pre.src = items[i].full;
-      return pre;
-    });
+    // (never a spoiler that is not revealed: it would be fetched for nothing)
+    preloaded = preloadIndices(items, index, preload)
+      .filter((i) => preloadable(items[i], i, revealed))
+      .map((i) => {
+        const pre = new Image();
+        pre.decoding = 'async';
+        pre.src = items[i].full;
+        return pre;
+      });
   }
 
   function go(delta) {

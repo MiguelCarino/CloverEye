@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { createBridge, safeStorage, mockOptionsFromSearch, CANNED_FFMPEG, postFlag } from '../ui/js/bridge.js';
+import { createBridge, safeStorage, mockOptionsFromSearch, CANNED_FFMPEG, postFlag, waitingMs } from '../ui/js/bridge.js';
 import { findLinks, embedFor } from '../ui/js/link-model.js';
 import { parseComment } from '../ui/js/render.js';
 
@@ -222,4 +222,15 @@ test('mock: ?mock-cross adds a reply quoting another thread, a gone thread and a
   assert.match(com, /href="\/g\/thread\/1#p2"/);
   assert.match(com, /<span class="deadlink">&gt;&gt;\d+<\/span>/);
   await assert.rejects(cross.fetchThread('g', 1), /not-found/);
+});
+
+
+test('waitingMs: the queue holding requests back says when it asks again', () => {
+  assert.equal(waitingMs(new Error('holding requests back after an error; next try in 42 s')), 42_000);
+  assert.equal(waitingMs('holding requests back after an error; next try in 1 s'), 1_000);
+  // anything else: the usual pace
+  assert.equal(waitingMs(new Error('network error (timed out); retrying in 4 s')), 0);
+  assert.equal(waitingMs(new Error('not-found')), 0);
+  assert.equal(waitingMs(null), 0);
+  assert.equal(waitingMs(undefined), 0);
 });

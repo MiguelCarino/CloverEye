@@ -7,6 +7,8 @@
 //   added (ms), tags [], collections [], ai [] (tags the assistant suggested),
 //   dhash (look-alike fingerprint, 16 hex digits) }
 
+import { postFileName } from './render.js';
+
 export const INDEX_VERSION = 1;
 export const MAX_TAGS = 40;
 /** Two pictures this close (bits of 64) look the same. */
@@ -16,8 +18,13 @@ const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const str = (v, max = 300) => (typeof v === 'string' ? v.slice(0, max) : '');
 const num = (v) => (Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0);
 
+/** How many paths a folder keeps of files taken out by hand (`removed`) or
+ *  dropped as copies of one kept (`dupes`): a rescan leaves these out. */
+export const MAX_FOLDER_PATHS = 50000;
+
+/** `rev`: the index's revision on disk (each write adds one; see library.rs). */
 export function emptyIndex() {
-  return { version: INDEX_VERSION, items: [], collections: [], folders: {} };
+  return { version: INDEX_VERSION, rev: 0, items: [], collections: [], folders: {} };
 }
 
 /** A tag as kept: lower case, words joined by "-", no odd characters. */
@@ -83,15 +90,107 @@ export function normalizeIndex(raw) {
       items.push(n);
     }
   }
-  const collections = nameList([...(Array.isArray(raw.collections) ? raw.collections : []), ...items.flatMap((e) => e.collections)]);
+  const collections = collectionsOf({ collections: raw.collections, items });
   // folders imported: how (with sub-folders or not) and when last scanned
   const folders = {};
   for (const [path, f] of Object.entries(isObj(raw.folders) ? raw.folders : {})) {
-    if (typeof path === 'string' && path && path.length <= 1000 && isObj(f)) {
-      folders[path] = { deep: f.deep !== false, at: num(f.at), removed: (Array.isArray(f.removed) ? f.removed : []).filter((x) => typeof x === 'string').slice(-5000) };
-    }
+    if (typeof path === 'string' && path && path.length <= 1000 && isObj(f)) folders[path] = normalizeFolder(f);
   }
-  return { version: INDEX_VERSION, items, collections, folders };
+  return { version: INDEX_VERSION, rev: num(raw.rev), items, collections, folders };
+}
+
+const pathList = (v) => [...new Set((Array.isArray(v) ? v : []).filter((x) => typeof x === 'string' && x))].slice(-MAX_FOLDER_PATHS);
+
+/** An imported folder's record: `removed` (taken out by hand) and `dupes`
+ *  (copies of a file already kept) are paths inside it a rescan leaves out. */
+export function normalizeFolder(f) {
+  return { deep: f?.deep !== false, at: num(f?.at), removed: pathList(f?.removed), dupes: pathList(f?.dupes) };
+}
+
+// each path list's paths as a set, made once per list (a list read again
+// is a new array, so it gets a new set)
+const pathSets = new WeakMap();
+
+/** Adds `path` to a folder record's `removed` or `dupes` list, in place,
+ *  unless it is there already; the oldest go past MAX_FOLDER_PATHS. Costs
+ *  the same however long the list is, so an import of thousands of copies
+ *  stays quick. */
+export function addFolderPath(rec, key, path) {
+  if (!rec || typeof path !== 'string' || !path) return;
+  if (!Array.isArray(rec[key])) rec[key] = [];
+  const list = rec[key];
+  let set = pathSets.get(list);
+  if (!set) pathSets.set(list, (set = new Set(list)));
+  if (set.has(path)) return;
+  list.push(path);
+  set.add(path);
+  if (list.length > MAX_FOLDER_PATHS) for (const old of list.splice(0, list.length - MAX_FOLDER_PATHS)) set.delete(old);
+}
+
+/** The collection names: those made, then any an entry is in. */
+export function collectionsOf(index) {
+  return nameList([...(Array.isArray(index?.collections) ? index.collections : []), ...(index?.items || []).flatMap((e) => e.collections)]);
+}
+
+// ------------------------------------------------- several windows, one file
+
+/** What an index held when it was last read or written, to tell later
+ *  what this window changed: entries and folders as JSON, by key. */
+export function snapshotOf(index) {
+  return {
+    items: new Map(index.items.map((e) => [e.id, JSON.stringify(e)])),
+    collections: [...index.collections],
+    folders: new Map(Object.entries(index.folders || {}).map(([k, v]) => [k, JSON.stringify(v)])),
+  };
+}
+
+const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/** This window's changes since `base` (a snapshotOf), made again on
+ *  `theirs` (the file as another window left it). Entries added here are
+ *  kept (one the other window added too stays as theirs, and this
+ *  window's copy of the file is in `dropped`); entries removed here are
+ *  removed; fields changed here win; what the other window removed stays
+ *  removed. { index, dropped: [entries whose files no entry uses] } */
+export function mergeIndex(base, mine, theirs) {
+  const b = base || snapshotOf(emptyIndex());
+  const items = theirs.items.map((e) => ({ ...e }));
+  const byId = new Map(items.map((e) => [e.id, e]));
+  const mineIds = new Set(mine.items.map((e) => e.id));
+  const added = [];
+  const dropped = [];
+  for (const e of mine.items) {
+    const was = b.items.get(e.id);
+    const there = byId.get(e.id);
+    if (was === undefined) {
+      if (!there) added.push(e);
+      else if (there.rel !== e.rel) dropped.push(e);
+      continue;
+    }
+    // gone from the file: the other window removed it (and its file)
+    if (!there || JSON.stringify(e) === was) continue;
+    const old = JSON.parse(was);
+    for (const k of Object.keys(e)) if (!sameJson(e[k], old[k])) there[k] = e[k];
+  }
+  const kept = items.filter((e) => !b.items.has(e.id) || mineIds.has(e.id));
+  const out = [...added, ...kept];
+  const used = new Set(out.map((e) => e.rel));
+  // collections made or removed here
+  const had = new Set(b.collections);
+  const now = new Set(mine.collections);
+  const collections = [...theirs.collections.filter((c) => !had.has(c) || now.has(c)), ...mine.collections.filter((c) => !had.has(c))];
+  // folders: changed here, else theirs; paths to leave out from both
+  const folders = { ...(theirs.folders || {}) };
+  for (const k of b.folders.keys()) if (!mine.folders?.[k]) delete folders[k];
+  for (const [k, f] of Object.entries(mine.folders || {})) {
+    if (JSON.stringify(f) === b.folders.get(k)) continue;
+    const t = theirs.folders?.[k];
+    folders[k] = normalizeFolder({ ...f, removed: [...(t?.removed || []), ...f.removed], dupes: [...(t?.dupes || []), ...(f.dupes || [])] });
+  }
+  return {
+    index: { version: INDEX_VERSION, rev: theirs.rev, items: out, collections: collectionsOf({ collections, items: out }), folders },
+    dropped: dropped.filter((e) => !used.has(e.rel)),
+  };
 }
 
 // ------------------------------------------------------------------ hashes
@@ -195,40 +294,92 @@ export function greyOf(rgba, w = 9, h = 8) {
   return out.map((v, i) => (n[i] ? v / n[i] : 0));
 }
 
+/** The 1 bits of a 32-bit number. */
+function bitCount(x) {
+  x -= (x >>> 1) & 0x55555555;
+  x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
+  x = (x + (x >>> 4)) & 0x0f0f0f0f;
+  return Math.imul(x, 0x01010101) >>> 24;
+}
+
+/** How many bits two fingerprints (hex, the same length) differ in. */
 export function hamming(a, b) {
   if (!a || !b || a.length !== b.length) return 64;
   let d = 0;
-  for (let i = 0; i < a.length; i++) {
-    let x = parseInt(a[i], 16) ^ parseInt(b[i], 16);
-    while (x) {
-      d += x & 1;
-      x >>= 1;
-    }
-  }
+  for (let i = 0; i < a.length; i += 8) d += bitCount(parseInt(a.slice(i, i + 8), 16) ^ parseInt(b.slice(i, i + 8), 16));
   return d;
 }
 
-/** Groups of look-alikes (two or more each), the largest first; within a
- *  group, the biggest file first (the one to keep). */
+const biggerFirst = (a, b) => b.w * b.h - a.w * a.h || b.size - a.size;
+
+/** Groups of look-alikes (two or more each), the largest first. A group
+ *  forms around its biggest file (first: the one to keep), and every other
+ *  file in it is within `bits` of that one, so keeping it never takes out
+ *  a picture that does not look like it. Fingerprints are compared only
+ *  with those sharing a part of them (any two within `bits` share one of
+ *  bits + 1 parts), so a big library does not compare every pair. */
 export function lookalikeGroups(items, bits = LOOKALIKE_BITS) {
-  const withHash = items.filter((e) => e.dhash && e.kind !== 'video');
-  const parent = withHash.map((_, i) => i);
-  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
-  for (let i = 0; i < withHash.length; i++) {
-    for (let j = i + 1; j < withHash.length; j++) {
-      if (hamming(withHash[i].dhash, withHash[j].dhash) <= bits) parent[find(i)] = find(j);
-    }
+  const withHash = items.filter((e) => /^[0-9a-f]{16}$/.test(e.dhash) && e.kind !== 'video').sort(biggerFirst);
+  // one place per fingerprint: copies of the same picture share it
+  const byHash = new Map();
+  for (const e of withHash) {
+    const list = byHash.get(e.dhash);
+    if (list) list.push(e);
+    else byHash.set(e.dhash, [e]);
   }
-  const groups = new Map();
-  withHash.forEach((e, i) => {
-    const r = find(i);
-    if (!groups.has(r)) groups.set(r, []);
-    groups.get(r).push(e);
-  });
-  return [...groups.values()]
-    .filter((g) => g.length > 1)
-    .map((g) => g.sort((a, b) => b.w * b.h - a.w * a.h || b.size - a.size))
-    .sort((a, b) => b.length - a.length);
+  const hashes = [...byHash.keys()];
+  const index = new Map(hashes.map((x, i) => [x, i]));
+  const hi = Int32Array.from(hashes, (x) => parseInt(x.slice(0, 8), 16) | 0);
+  const lo = Int32Array.from(hashes, (x) => parseInt(x.slice(8), 16) | 0);
+  const parts = bits + 1;
+  let buckets = null;
+  if (parts <= 16) {
+    buckets = new Map();
+    const cuts = Array.from({ length: parts + 1 }, (_, i) => Math.round((i * 16) / parts));
+    hashes.forEach((x, i) => {
+      for (let p = 0; p < parts; p++) {
+        const key = `${p}:${x.slice(cuts[p], cuts[p + 1])}`;
+        const list = buckets.get(key);
+        if (list) list.push(i);
+        else buckets.set(key, [i]);
+      }
+    });
+    buckets.cuts = cuts;
+  }
+  const placed = new Set();
+  const spent = new Uint8Array(hashes.length); // every file of it placed
+  const seen = new Int32Array(hashes.length).fill(-1);
+  const groups = [];
+  for (const centre of withHash) {
+    if (placed.has(centre)) continue;
+    const c = index.get(centre.dhash);
+    const group = [];
+    const take = (j) => {
+      for (const e of byHash.get(hashes[j])) {
+        if (!placed.has(e)) {
+          placed.add(e);
+          group.push(e);
+        }
+      }
+      spent[j] = 1;
+    };
+    const near = (j) => bitCount(hi[c] ^ hi[j]) + bitCount(lo[c] ^ lo[j]) <= bits;
+    take(c);
+    if (buckets) {
+      const { cuts } = buckets;
+      for (let p = 0; p < parts; p++) {
+        for (const j of buckets.get(`${p}:${hashes[c].slice(cuts[p], cuts[p + 1])}`)) {
+          if (spent[j] || seen[j] === c) continue;
+          seen[j] = c;
+          if (near(j)) take(j);
+        }
+      }
+    } else {
+      for (let j = 0; j < hashes.length; j++) if (!spent[j] && near(j)) take(j);
+    }
+    if (group.length > 1) groups.push([centre, ...group.filter((e) => e !== centre).sort(biggerFirst)]);
+  }
+  return groups.sort((a, b) => b.length - a.length);
 }
 
 // ----------------------------------------------------------------- entries
@@ -239,7 +390,7 @@ export function entryFromPost({ board, thread, post, subject = '', text = '', re
     // the site's sum; a post without one (rare) gets one from its file's name
     id: md5Hex(post.md5) || md5(new TextEncoder().encode(`${board}/${post.tim}${post.ext}`)),
     rel,
-    name: `${post.filename || post.tim}${post.ext}`,
+    name: postFileName(post),
     ext: String(post.ext || '').replace(/^\./, ''),
     size: size || post.fsize,
     w: post.w,
@@ -320,7 +471,7 @@ export function knownFiles(threads, plain = (s) => s) {
     for (const p of t.posts || []) {
       const id = md5Hex(p.md5);
       if (!id || out.has(id)) continue;
-      out.set(id, { board: t.board, thread: op?.no || p.no, post: p.no, sub, text: plain(p.com || '').slice(0, 500), posted: num(p.time) * 1000, name: `${p.filename || p.tim}${p.ext}`, w: p.w, h: p.h });
+      out.set(id, { board: t.board, thread: op?.no || p.no, post: p.no, sub, text: plain(p.com || '').slice(0, 500), posted: num(p.time) * 1000, name: postFileName(p), w: p.w, h: p.h });
     }
   }
   return out;

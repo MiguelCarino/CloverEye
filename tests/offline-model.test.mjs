@@ -41,6 +41,11 @@ test('downloadJobs: original names, the same name made unique the same way every
   const twice = O.downloadJobs([{ no: 1, tim: 11, ext: '.png', filename: 'a' }, { no: 2, tim: 22, ext: '.png', filename: 'a' }, { no: 3, tim: 33, ext: '.png', filename: 'a/b' }], urlOf);
   assert.deepEqual(twice.map((j) => j.name), ['a.png', 'a-22.png', 'a_b.png']);
   assert.deepEqual(O.downloadJobs(twice, urlOf).length, 0, 'jobs are not posts');
+  // names as the post shows them (entities decoded), a long one cut in its stem
+  const named = O.downloadJobs([{ no: 4, tim: 44, ext: '.jpg', filename: 'don&#039;t' }, { no: 5, tim: 55, ext: '.webm', filename: '😀'.repeat(130) }, { no: 6, tim: 66, ext: '.webm', filename: '😀'.repeat(130) }], urlOf);
+  assert.equal(named[0].name, "don't.jpg");
+  assert.equal(named[1].name, '😀'.repeat(115) + '.webm');
+  assert.equal(named[2].name, '😀'.repeat(112) + '-66.webm');
   assert.equal(O.downloadJobs(posts, () => null).length, 0, 'no URL, no job');
   assert.equal(jobs[0].url, 'https://i.4cdn.org/g/1700000000001.jpg');
 });

@@ -86,6 +86,10 @@ for (const f of RUST) {
     const s = m[1].replace(/\{[^}]*\}/g, () => `{${n++}}`);
     if (looksLikeText(s) && /\s/.test(s)) keys.add(s);
   }
+  // messages kept in a constant and returned as Err(NAME.to_string())
+  for (const m of readFileSync(f, 'utf8').matchAll(/^\s*const [A-Z_]+: &str = "([^"]+)";/gm)) {
+    if (looksLikeText(m[1]) && /\s/.test(m[1])) keys.add(m[1]);
+  }
 }
 const html = readFileSync(join(root, 'ui/index.html'), 'utf8').replace(/<(script|style)[\s\S]*?<\/\1>/g, '');
 for (const m of html.matchAll(/>([^<>]*\p{L}[^<>]*)</gu)) {

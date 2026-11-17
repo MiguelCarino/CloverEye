@@ -128,6 +128,16 @@ fn ram_bytes() -> u64 {
     0
 }
 
+/// How long nvidia-smi may take before the card's memory reads 0.
+const NVIDIA_SMI_LIMIT: Duration = Duration::from_secs(5);
+
+/// Whether nvidia-smi is on the PATH (so no answer means it hung, not that
+/// there is no NVIDIA driver).
+fn nvidia_smi_present() -> bool {
+    let names: &[&str] = if cfg!(windows) { &["nvidia-smi.exe"] } else { &["nvidia-smi"] };
+    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| names.iter().any(|n| d.join(n).is_file())))
+}
+
 /// The largest NVIDIA GPU's memory (nvidia-smi), or an AMD GPU's (sysfs).
 fn gpu() -> (u64, String) {
     let mut best = (0u64, String::new());
@@ -139,7 +149,12 @@ fn gpu() -> (u64, String) {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
-    if let Ok(o) = cmd.output() {
+    // A hung driver can leave nvidia-smi waiting for ever: give it 5 s.
+    let answer = crate::diag::output_within(&mut cmd, NVIDIA_SMI_LIMIT);
+    if answer.is_none() && nvidia_smi_present() {
+        crate::diag::quiet("assistant: nvidia-smi did not answer within 5 s; graphics memory reads 0", false);
+    }
+    if let Some(o) = answer {
         if !o.status.success() {
             // e.g. "Failed to initialize NVML: Driver/library version mismatch"
             // after a driver update without a restart: say why it reads 0

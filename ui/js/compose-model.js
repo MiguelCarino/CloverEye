@@ -29,7 +29,8 @@ export function preflight({ board = null, isThread = false, com = '', sub = '', 
       out.push({ field: 'file', message: 'The site takes JPG, PNG, GIF, WebM and MP4 files (PDF on some boards).' });
     }
   }
-  if (captcha?.state === 'ready' && !captchaDone(captcha)) out.push({ field: 'captcha', message: 'Finish the captcha: pick an answer for every step.' });
+  if (captchaExpired(captcha, now)) out.push({ field: 'captcha', message: 'The captcha expired: get a new one.' });
+  else if (captcha?.state === 'ready' && !captchaDone(captcha)) out.push({ field: 'captcha', message: 'Finish the captcha: pick an answer for every step.' });
   if (captcha && captcha.state !== 'ready' && captcha.state !== 'none') out.push({ field: 'captcha', message: 'Get and solve the captcha first.' });
   if (cooldownUntil > now) out.push({ field: 'submit', message: `Wait ${Math.ceil((cooldownUntil - now) / 1000)} s: the board's cooldown.` });
   return out;
@@ -121,6 +122,11 @@ const dataUrl = (b64) => (String(b64).startsWith('data:') ? String(b64) : `data:
 
 /** The captcha is answered: one pick per task. */
 export const captchaDone = (c) => c?.state === 'none' || (c?.state === 'ready' && c.picks.length === c.tasks.length);
+
+/** The time for the captcha is up (or all but up: 3 s are left for the post to
+ *  travel). The site refuses an expired one, and asking it anyway counts
+ *  against its rate checks, so the form asks for a new one first. */
+export const captchaExpired = (c, now = Date.now()) => c?.state === 'ready' && c.expires > 0 && c.expires - now <= 3000;
 
 /** Shows item `n` (0 = the prompt) of the current task. */
 export function captchaShow(c, n) {
@@ -371,16 +377,129 @@ export function normalizeSaved(raw) {
 /** This thread's saved replies, the newest first. */
 export const savedFor = (list, board, thread) => list.filter((e) => e.board === board && e.thread === (thread || 0)).sort((a, b) => b.at - a.at);
 
+// The same reply already kept for that thread: same words, same file name.
+const sameSaved = (list, { board, thread = 0, com = '', sub = '', file = null }) => {
+  const name = fileMeta(file)?.name || '';
+  return list.find((e) => e.board === board && e.thread === (thread || 0) && e.com === com && e.sub === sub && (e.file?.name || '') === name);
+};
+
+/** Later is full and this reply is not one of those kept already (which
+ *  would only move up): nothing is dropped to make room, the person
+ *  deletes one first. */
+export const savedFull = (list, reply) => list.length >= MAX_SAVED_REPLIES && !sameSaved(list, reply);
+
+/** The ids in `before` that are not in `after` (cut off a list). */
+export const droppedIds = (before, after) => {
+  const kept = new Set(after.map((e) => e.id));
+  return before.filter((e) => !kept.has(e.id)).map((e) => e.id);
+};
+
 /** Keeps a reply for later. Nothing to keep (empty), or the same text and
  *  file already kept for this thread: the list as it was (that one moves up). */
 export function saveReply(list, { board, thread = 0, com = '', sub = '', email = '', file = null }, { now = Date.now(), id = `r${now.toString(36)}` } = {}) {
   const meta = fileMeta(file);
   if (!hasContent({ com, sub, file: meta })) return list;
-  const same = list.find((e) => e.board === board && e.thread === (thread || 0) && e.com === com && e.sub === sub && (e.file?.name || '') === (meta?.name || ''));
+  const same = sameSaved(list, { board, thread, com, sub, file: meta });
   const rest = list.filter((e) => e !== same);
   const entry = same ? { ...same, email, at: now } : { id, board, thread: thread || 0, com, sub, email, file: meta, at: now };
   return [entry, ...rest].slice(0, MAX_SAVED_REPLIES);
 }
+
+// ------------------------------------------------- replies being written
+
+/** Replies being written, as kept in storage: "board/thread" → { com, sub,
+ *  email, file (fileMeta), at }. Several windows share that storage, so a
+ *  window never writes its whole copy over it: it writes only what it
+ *  changed (mergeDrafts), and takes in what the others wrote (adoptDrafts).
+ *  A deleted one stays a while as an empty entry (`at`: when, `base`: the
+ *  copy it deleted), so an older copy written back later never brings back
+ *  a reply posted or deleted in another window. One going out carries
+ *  `posting` (when Post was pressed). */
+export const MAX_DRAFTS = 500;
+export const DRAFT_GONE_MS = 24 * 3600 * 1000; // how long a delete is remembered
+export const POSTING_MS = 5 * 60 * 1000; // a post never takes longer (a crash meanwhile: shown again after)
+const MAX_GONE = 200;
+const DRAFT_KEY = /^[a-z0-9]{1,10}\/\d{1,12}$/;
+
+const stamp = (v) => (Number(v) > 0 ? Number(v) : 0);
+const draftEntry = (d) => {
+  const e = { com: String(d.com || ''), sub: String(d.sub || ''), email: String(d.email || ''), file: fileMeta(d.file), at: stamp(d.at) };
+  if (hasContent(e)) {
+    if (stamp(d.posting)) e.posting = stamp(d.posting);
+  } else if (stamp(d.base)) e.base = stamp(d.base);
+  return e;
+};
+const newestFirst = (a, b) => (b[1].at || 0) - (a[1].at || 0);
+
+/** An empty entry: a delete, at `at`, of the copy written at `base`. */
+export const goneDraft = (at, base = at) => ({ com: '', sub: '', email: '', file: null, at, base: Math.min(base || at, at) });
+
+/** Being posted now (by some window): not a pill, and no second form. */
+export const postingNow = (d, now = Date.now()) => stamp(d?.posting) > 0 && d.posting <= now + 60_000 && now - d.posting < POSTING_MS;
+
+/** The stored drafts (JSON text, or null), cleaned: a Map (deletes too). */
+export function parseDrafts(json) {
+  const out = new Map();
+  let raw = null;
+  try {
+    raw = JSON.parse(json || '{}');
+  } catch {
+    return out;
+  }
+  for (const [k, d] of Object.entries(raw && typeof raw === 'object' ? raw : {})) {
+    if (DRAFT_KEY.test(k) && d && typeof d === 'object') out.set(k, draftEntry(d));
+  }
+  return out;
+}
+
+/** What a window writes: the stored drafts with its own changes put in
+ *  (`changes`: key → entry; an empty entry is a delete). A change with a
+ *  `base` (the copy this window had) is put in only when what is stored is
+ *  not newer than that copy: a delete never removes a reply another window
+ *  wrote after it. One without is put in when it is newer than what is
+ *  stored (the last write wins; a delete wins a tie). The newest `max`
+ *  replies kept, and the deletes of the last day. */
+export function mergeDrafts(stored, changes, { max = MAX_DRAFTS, now = Date.now() } = {}) {
+  const out = new Map(stored);
+  for (const [k, d] of changes) {
+    const at = stamp(d?.at);
+    const base = stamp(d?.base) ? Math.min(stamp(d.base), at) : at;
+    const had = out.get(k);
+    if (had) {
+      const hadAt = had.at || 0;
+      if (hadAt > base) continue; // another window wrote or deleted it since
+      if (hadAt === at && !hasContent(had) && hasContent(d)) continue; // an old copy back: the delete stands
+    }
+    if (hasContent(d)) {
+      const e = draftEntry(d);
+      delete e.base;
+      out.set(k, e);
+    } else out.set(k, goneDraft(at, base));
+  }
+  const live = [...out].filter(([, d]) => hasContent(d)).sort(newestFirst).slice(0, max);
+  const gone = [...out]
+    .filter(([, d]) => !hasContent(d) && now - (d.at || 0) < DRAFT_GONE_MS)
+    .sort(newestFirst)
+    .slice(0, MAX_GONE);
+  return new Map([...live, ...gone]);
+}
+
+/** Takes the stored drafts into the own map of a window (in place), except the
+ *  keys in `keep`: its open form, changes not written yet, replies going out.
+ *  The window's map holds replies only, never deletes. */
+export function adoptDrafts(local, stored, keep = new Set()) {
+  for (const k of [...local.keys()]) if (!keep.has(k) && !hasContent(stored.get(k))) local.delete(k);
+  for (const [k, d] of stored) if (!keep.has(k) && hasContent(d)) local.set(k, d);
+  return local;
+}
+
+/** The open form's copy (written at `base`) was posted or deleted in another
+ *  window since: what is stored for it now is a delete of that copy or a
+ *  newer one. */
+export const deletedSince = (stored, k, base) => {
+  const d = stored.get(k);
+  return Boolean(base > 0 && d && !hasContent(d) && (d.base || d.at || 0) >= base);
+};
 
 /** Takes one out of the list: { entry, list } (entry null when not there). */
 export function takeSaved(list, id) {
