@@ -23,6 +23,8 @@ import { putFile, getFile, delFile, moveFile, sweepFiles } from './reply-files.j
  * @param {(board: string, thread: number) => Element|null} [o.paneFor]   the pane the
  *   form fills in its "Fill the pane" mode
  * @param {object} [o.library]   the library (library.js), for "From library"
+ * @param {(anchor: Element, where: {board: string, thread: number}) => void} [o.onPastas]
+ *   the form's "Pre-written posts" button: opens the pastas popup for this form
  */
 const DRAFTS_KEY = 'clovereye-drafts';
 const SAVED_KEY = 'clovereye-saved-replies';
@@ -160,7 +162,7 @@ export function postSelection(post) {
   }
 }
 
-export function createComposer({ bridge, getSettings, saveSettings, getBoard, onPosted, onSitePage = null, onPending = null, paneFor = null, library = null }) {
+export function createComposer({ bridge, getSettings, saveSettings, getBoard, onPosted, onSitePage = null, onPending = null, paneFor = null, library = null, onPastas = null }) {
   const drafts = loadDrafts(); // "board/thread" → { com, sub, email, at }
   // What this window changed in `drafts` and has not stored yet (key →
   // entry; an empty entry is a delete): only these are written, so another
@@ -1829,6 +1831,24 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
         h(
           'span',
           { class: 'composer__actions' },
+          // the pre-written posts (the shell's pastas popup) for this form
+          onPastas
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  class: 'icon-btn composer__pastas',
+                  'aria-label': 'Pre-written posts',
+                  title: 'Pre-written posts',
+                  'aria-haspopup': 'dialog',
+                  'aria-expanded': 'false',
+                  'data-key': 'compose-pastas',
+                  disabled: st.busy,
+                  onclick: (e) => onPastas(e.currentTarget, { board: st.board, thread: st.thread }),
+                },
+                icon('copy'),
+              )
+            : null,
           h(
             'button',
             {
@@ -1923,9 +1943,81 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     if (n) n.textContent = headNote();
   }
 
+  /**
+   * Puts `text` (a pre-written post: pasta-view.js) into the open form's
+   * comment at its caret, as if it were typed there: on a line of its own
+   * (a new line before it unless the caret is at a line start, one after
+   * it when text follows), a selection replaced, the draft kept and merged
+   * across windows like any keystroke (the input event: typed()), the
+   * count updated (past the board's limit it turns red, as when typing,
+   * and a toast says by how much), the comment focused; Ctrl+Z takes it
+   * out again where the webview keeps an undo step for it.
+   *
+   * It opens nothing: open the form first, then insert, passing `where`
+   * so the text never lands in another thread's form (open() leaves the
+   * form that was up when another window is posting that reply):
+   *   composer.open({ board, thread });   // thread 0: a new thread on board
+   *   composer.insertText(text, { board, thread });
+   * open() sets the form up before its first wait, so the insert can
+   * follow it at once (or after awaiting it).
+   *
+   * Returns false when nothing went in: no form, another thread's form,
+   * empty text, the reply going out (Post was pressed), or that reply
+   * being posted in another window (shown in the form, as a keystroke
+   * there shows it: POSTING_ELSEWHERE).
+   */
+  function insertText(text, where = null) {
+    if (closed || !st || !el) return false;
+    if (where && (st.board !== where.board || Number(st.thread || 0) !== Number(where.thread || 0))) return false;
+    const snippet = String(text ?? '').replace(/\r\n?/g, '\n');
+    if (!snippet.trim() || st.busy) return false;
+    const k = key(st.board, st.thread);
+    if (!posting.has(k) && C.postingNow(reloadDrafts()?.get(k))) {
+      if (!st.problems.some((p) => p.message === POSTING_ELSEWHERE)) {
+        st.problems = [{ field: 'submit', message: POSTING_ELSEWHERE }];
+        draw('keep');
+      }
+      return false;
+    }
+    if (st.min) {
+      // folded: it opens, as Reply opens it
+      const box = el.getBoundingClientRect();
+      st.min = false;
+      draw();
+      morph(el, box);
+    }
+    const ta = el.querySelector('[data-key="compose-com"]');
+    if (!ta) return false;
+    const focused = document.activeElement === ta;
+    const start = focused ? ta.selectionStart : Number.isFinite(st.caret) ? Math.min(st.caret, ta.value.length) : ta.value.length;
+    const end = focused ? Math.max(start, ta.selectionEnd) : start;
+    const r = C.insertAtCaret(ta.value.slice(0, start) + ta.value.slice(end), start, snippet);
+    const add = r.text.slice(start, r.caret); // the new line(s) around it too
+    ta.focus({ preventScroll: true });
+    ta.setSelectionRange(start, end);
+    // as an edit of the field (an undo step, the input event); by hand
+    // where the webview does not take it
+    let done = false;
+    try {
+      done = document.execCommand('insertText', false, add) && ta.value === r.text;
+    } catch (_) {
+      done = false;
+    }
+    if (!done) {
+      ta.value = r.text;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    ta.setSelectionRange(r.caret, r.caret);
+    if (st) st.caret = r.caret;
+    const max = st?.info?.max_comment_chars || 2000;
+    if (st && st.com.length > max) toast(`The comment is ${st.com.length - max} characters over the limit.`);
+    return true;
+  }
+
   return {
     open,
     close,
+    insertText,
     isOpen: () => Boolean(st),
     state: () => st,
   };

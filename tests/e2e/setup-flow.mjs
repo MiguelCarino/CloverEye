@@ -590,9 +590,12 @@ const ghostGone = (page) =>
   await page.locator('.catalog__item [data-key^="beside-"]').nth(2).click();
   await page.waitForSelector('[data-pane="1"] .thread .post');
   check('panes: a thread opens in a second pane', (await page.locator('.pane').count()) === 2);
-  await page.locator('[data-pane="0"] .catalog-card').nth(3).click({ modifiers: ['Control'] });
+  // Ctrl+click: a background tab of that pane (shell.js tabs; tests/e2e/tabs.mjs)
+  await page.locator('[data-pane="0"] .catalog-card').nth(3).click({ modifiers: ['Control'] }); await settled(page);
+  check('panes: Ctrl+click opens a background tab, not a pane', (await page.locator('.pane').count()) === 2 && (await page.locator('[data-pane="0"] > .pane-tabs [role="tab"]').count()) === 2 && (await page.locator('[data-pane="0"] .catalog').count()) === 1);
+  await page.locator('[data-pane="0"] .catalog__item [data-key^="beside-"]').nth(3).click();
   await page.waitForSelector('[data-pane="1"] .thread .post');
-  check('panes: Ctrl+click opens another pane beside', (await page.locator('.pane').count()) === 3);
+  check('panes: Open beside opens another pane', (await page.locator('.pane').count()) === 3);
   await page.locator('[data-key="panel-toggle"]').click(); await settled(page);
   await page.locator('[data-key="panel-toggle"]').click(); await settled(page);
   check('panes: five panes', (await page.locator('.pane').count()) === 5);

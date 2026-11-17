@@ -31,8 +31,11 @@ test('a closed shell saves nothing: a late fetch never writes over newer setting
 test('a thread grown in place keeps the post in sight where it was', () => {
   const grow = body(SHELL, 'function growPane(pane)', 'function renderPaneOf(');
   assert.ok(grow.indexOf('scrollAnchor(body)') < grow.indexOf('updateThreadView('), 'anchor taken before the update');
-  assert.match(grow, /anchorEl\(body, a\)/);
-  assert.match(grow, /restoreScroll\(body, body\.scrollTop \+ d\)/);
+  // along the thread's axis: down a list, or sideways in columns (columns.js)
+  assert.match(grow, /keepAnchor\(body, a\)/);
+  const keep = body(SHELL, 'function keepAnchor(body, a)', 'function anchorEl(');
+  assert.match(keep, /anchorEl\(body, a\)/);
+  assert.match(keep, /setScroll\(sc, scrollPos\(sc\) \+ d\)/);
 });
 
 test('pane redraws wait while a full redraw waits for a sidebar drag', () => {
@@ -42,10 +45,11 @@ test('pane redraws wait while a full redraw waits for a sidebar drag', () => {
 
 test('a board link opens beside the pane it was clicked in, found again after the await', () => {
   const fn = body(SHELL, 'async function openBoardLink(', 'function showJump(');
-  assert.match(fn, /\{ board, search = '' \}, from\)/);
+  assert.match(fn, /\{ board, search = '' \}, from, tab = null\)/);
   assert.ok(fn.indexOf('await boardInfo(board)') < fn.indexOf('st.panes.indexOf(from)'));
   assert.match(fn, /openBeside\(\{ kind: 'board', board \}, at\)/);
-  assert.equal((SHELL.match(/openBoardLink\(q, pane\)/g) || []).length, 2);
+  // (a Ctrl/⌘ or middle click: a new tab of that pane, tabs-model.js clickTab)
+  assert.equal((SHELL.match(/openBoardLink\(q, pane, T\.clickTab\(e\)\)/g) || []).length, 2);
   assert.doesNotMatch(SHELL, /openBoardLink\(q, i\)/);
 });
 

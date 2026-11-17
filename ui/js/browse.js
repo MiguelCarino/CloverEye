@@ -3,7 +3,8 @@
 
 import * as B from './browse-model.js';
 import { isHiddenMark, isGoneMark } from './filter-model.js';
-import { h, icon } from './dom.js';
+import { h, icon, cloverBusy, cloverClass } from './dom.js';
+import * as K from './keys-model.js';
 import { renderPost, backlinksRow } from './setup.js';
 import { quoteLinks } from './quotes.js';
 import { postSelection } from './compose.js';
@@ -14,6 +15,44 @@ import { catalogThumbView } from './display-model.js';
 import { saveControls, savedDate } from './offline.js';
 import { cardLabels } from './tag-view.js';
 import { threadDelta } from './redraw-model.js';
+import { attachColumns, revealPost, COLUMNS_CLASS } from './columns.js';
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+/** The layout toggle's picture: rows (a list) or two columns, in the
+ *  stroke style of dom.js icons. */
+function layoutIcon(columns) {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', 'icon');
+  svg.setAttribute('aria-hidden', 'true');
+  const paths = columns ? ['M4 4h7v16H4z', 'M13 4h7v16h-7z'] : ['M4 4h16v7H4z', 'M4 13h16v7H4z'];
+  for (const d of paths) {
+    const p = document.createElementNS(SVG_NS, 'path');
+    p.setAttribute('d', d);
+    svg.append(p);
+  }
+  return svg;
+}
+
+/** The thread's layout switch: a list, or columns read sideways. */
+function layoutButton(o) {
+  const columns = o.layout === 'columns';
+  const label = columns ? 'Posts in a list' : 'Posts in columns, scroll sideways';
+  return h(
+    'button',
+    {
+      type: 'button',
+      class: `btn btn--layout${columns ? ' btn--on' : ''}`,
+      'data-key': `${o.keyPrefix}thread-layout`,
+      'aria-pressed': String(columns),
+      'aria-label': 'Posts in columns, scroll sideways',
+      'aria-keyshortcuts': 'L',
+      title: label,
+      onclick: () => o.onLayout(),
+    },
+    layoutIcon(columns),
+  );
+}
 
 const VIDEO = /^\.(webm|mp4)$/i;
 
@@ -59,6 +98,67 @@ function errorBox(entry, what, onRetry, keyPrefix, extra = null) {
   );
 }
 
+/** An Update / Refresh button: a clover that spins while an update asked
+ *  for by hand runs (dom.js cloverBusy; polling never spins it). Drawn
+ *  anew mid-update, it keeps spinning (cloverClass). `onRefresh` returns
+ *  the fetch (a promise) to wait for. `run`: what it updates (a thread, a
+ *  catalog), so the spin stays with that work: another tab or view of the
+ *  pane draws its own button, with the same data-key, at rest.
+ *  While it loads it is aria-disabled, not disabled, so it keeps the focus
+ *  (a disabled button drops it to <body>); only a gone thread disables it. */
+function cloverButton(key, run, label, onRefresh, { loading = false, gone = false } = {}) {
+  const state = cloverClass(run);
+  return h(
+    'button',
+    {
+      type: 'button',
+      class: `btn${state ? ` ${state}` : ''}`,
+      'data-key': key,
+      'data-clover': run,
+      'aria-busy': state === 'clover-anim' ? 'true' : null,
+      'aria-disabled': loading && !gone ? 'true' : null,
+      title: B.refreshKeysLabel(),
+      disabled: Boolean(gone),
+      onclick: (e) => {
+        if (isBusyRefresh(e.currentTarget)) return;
+        cloverBusy(e.currentTarget, () => onRefresh(e));
+      },
+    },
+    icon('clover'),
+    label,
+  );
+}
+
+/** Whether an Update / Refresh button is waiting for its fetch. */
+export const isBusyRefresh = (btn) => Boolean(btn?.disabled) || btn?.getAttribute?.('aria-disabled') === 'true';
+
+/** Marks an Update / Refresh button drawn earlier as loading or not (the
+ *  shell's in-place patches), as cloverButton draws it. */
+export function markRefresh(btn, { loading = false, gone = false } = {}) {
+  if (!btn) return;
+  btn.disabled = Boolean(gone);
+  if (loading && !gone) btn.setAttribute('aria-disabled', 'true');
+  else btn.removeAttribute('aria-disabled');
+}
+
+/** Right-click, the ContextMenu key or Shift+F10 on a Reply or New thread
+ *  button: the pre-written posts (the shell's pastas popup) next to it. */
+function pastaEvents(onPastas) {
+  if (!onPastas) return {};
+  return {
+    'aria-description': 'Right-click or Shift+F10: pre-written posts',
+    oncontextmenu: (e) => {
+      e.preventDefault();
+      onPastas(e.currentTarget);
+    },
+    onkeydown: (e) => {
+      if (!K.isMenuKey(e)) return;
+      e.preventDefault();
+      onPastas(e.currentTarget);
+    },
+  };
+}
+
 /**
  * @param {object} o
  * @param {string} o.board
@@ -67,9 +167,10 @@ function errorBox(entry, what, onRetry, keyPrefix, extra = null) {
  * @param {object} o.bridge
  * @param {string} [o.keyPrefix]       data-key prefix for the second pane
  * @param {boolean} [o.canSplit]       offer "open beside" on each card
- * @param {(no: number, pane?: string) => void} o.onOpen
+ * @param {(no: number, where?: 'split' | 'tab' | 'tab-front') => void} o.onOpen  where: beside, a new background tab, a new tab in front
  * @param {() => void} o.onRefresh
  * @param {() => void} [o.onNewThread]
+ * @param {(anchor: Element) => void} [o.onPastas]   right-click on New thread
  * @param {(patch: object) => void} o.onView
  * @param {Map<number, string>} [o.marks]  thread No. → 'hidden' | 'hide' | 'highlight' (filter-model.js)
  * @param {(no: number) => void} [o.onHide]  hides a thread by hand, or shows it again
@@ -117,7 +218,7 @@ function hiderButton(src, title, onRemove, key) {
   );
 }
 
-export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSplit = false, onOpen, onRefresh, onNewThread = null, onView, marks = new Map(), onHide = null, display = null, tagBar = null, labels = new Map(), activeTag = '', hiderOf = null, onRemoveHider = null }) {
+export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSplit = false, onOpen, onRefresh, onNewThread = null, onPastas = null, onView, marks = new Map(), onHide = null, display = null, tagBar = null, labels = new Map(), activeTag = '', hiderOf = null, onRemoveHider = null }) {
   const out = h('div', { class: 'browse' });
   const tools = h(
     'div',
@@ -142,8 +243,10 @@ export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSpl
       { class: 'input browse__sort', 'aria-label': 'Sort threads', 'data-key': `${keyPrefix}catalog-sort`, onchange: (e) => onView({ sort: e.target.value }) },
       B.CATALOG_SORTS.map((s) => h('option', { value: s.value, selected: s.value === view.sort, text: s.label })),
     ),
-    h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}catalog-refresh`, onclick: onRefresh, title: B.refreshKeysLabel(), disabled: entry?.status === 'loading' }, icon('refresh'), 'Refresh'),
-    onNewThread ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}new-thread`, onclick: onNewThread }, icon('plus'), 'New thread') : null,
+    cloverButton(`${keyPrefix}catalog-refresh`, `${keyPrefix}catalog-refresh|${board}`, 'Refresh', onRefresh, { loading: entry?.status === 'loading' }),
+    onNewThread
+      ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}new-thread`, title: 'New thread (R)', 'aria-keyshortcuts': 'R', onclick: onNewThread, ...pastaEvents(onPastas) }, icon('plus'), 'New thread')
+      : null,
   );
   // the tags (tag-view.js tagChips) sit right after the search box, in the
   // same bar, always in sight
@@ -216,11 +319,16 @@ export function catalogView({ board, entry, view, bridge, keyPrefix = '', canSpl
               type: 'button',
               class: 'catalog-card',
               'data-key': `${keyPrefix}thread-${t.no}`,
-              onclick: (e) => onOpen(t.no, canSplit && (e.ctrlKey || e.metaKey) ? 'split' : undefined),
+              // Ctrl/⌘+click or a middle click: a new background tab of the
+              // pane (with Shift, in front); "Open beside" makes a pane
+              onclick: (e) => onOpen(t.no, canSplit && (e.ctrlKey || e.metaKey) ? (e.shiftKey ? 'tab-front' : 'tab') : undefined),
+              onmousedown: (e) => {
+                if (canSplit && e.button === 1) e.preventDefault(); // no autoscroll
+              },
               onauxclick: (e) => {
                 if (canSplit && e.button === 1) {
                   e.preventDefault();
-                  onOpen(t.no, 'split');
+                  onOpen(t.no, e.shiftKey ? 'tab-front' : 'tab');
                 }
               },
             },
@@ -412,6 +520,7 @@ function postStub(no, why, { keyPrefix, onReveal, onUnhide, src = null, onRemove
  * @param {() => void} o.onRefresh
  * @param {() => void} [o.onWatch]
  * @param {(quote?: number, selection?: string) => void} [o.onReply]  selection: text picked in that post (quoted as greentext)
+ * @param {(anchor: Element) => void} [o.onPastas]   right-click on Reply: the pre-written posts
  * @param {Map<number, string>} [o.marks]   post No. → 'hidden' | 'hide' | 'highlight' (filter-model.js)
  * @param {Set<number>} [o.youReplies]      posts that quote one of yours
  * @param {Map<number, {reason: string, via?: number}>} [o.hidden]  hidden posts and why (hide-model.js)
@@ -472,6 +581,7 @@ const THREAD_DEFAULTS = {
   isYou: () => false,
   onWatch: null,
   onReply: null,
+  onPastas: null,
   onGallery: null,
   marks: new Map(),
   hidden: new Map(),
@@ -498,6 +608,10 @@ const THREAD_DEFAULTS = {
   save: null,
   pending: [],
   landed: null,
+  /** 'list' or 'columns' (columns-model.js layoutOf) */
+  layout: 'list',
+  /** switches the layout (the thread tools' toggle) */
+  onLayout: null,
 };
 
 /** The options with their defaults (an option passed as null or undefined
@@ -518,7 +632,7 @@ function threadTools(o, frozen) {
     offline
       ? // a saved copy, read from disk: no updates; the live thread is one click away
         h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-live`, title: 'Read the live thread in this pane', onclick: offline.onLive }, icon('refresh'), 'Open live thread')
-      : h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-refresh`, onclick: o.onRefresh, title: B.refreshKeysLabel(), disabled: entry?.status === 'loading' || entry?.gone }, icon('refresh'), 'Update'),
+      : cloverButton(`${keyPrefix}thread-refresh`, `${keyPrefix}thread-refresh|${o.board}/${o.no}`, 'Update', o.onRefresh, { loading: entry?.status === 'loading', gone: Boolean(entry?.gone) }),
     o.onWatch
       ? h(
           'button',
@@ -527,8 +641,11 @@ function threadTools(o, frozen) {
           watched ? 'Watching' : 'Watch',
         )
       : null,
-    o.onReply && !frozen ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-reply`, onclick: () => o.onReply() }, icon('reply'), 'Reply') : null,
+    o.onReply && !frozen
+      ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-reply`, title: 'Reply (R)', 'aria-keyshortcuts': 'R', onclick: () => o.onReply(), ...pastaEvents(o.onPastas) }, icon('reply'), 'Reply')
+      : null,
     o.onGallery ? h('button', { type: 'button', class: 'btn', 'data-key': `${keyPrefix}thread-gallery`, title: 'Gallery (G)', onclick: o.onGallery }, icon('grid'), 'Gallery') : null,
+    o.onLayout ? layoutButton(o) : null,
     o.save ? saveControls({ ...o.save, keyPrefix }) : null,
     offline ? h('span', { class: 'pill pill--saved', text: offline.savedAt ? `Saved copy · ${savedDate(offline.savedAt)}` : 'Saved copy' }) : null,
     unread
@@ -602,7 +719,8 @@ export function updateThreadView(node, next) {
 export function threadView(raw) {
   let o = threadOptions(raw);
   const { board, no, entry, keyPrefix } = o;
-  const out = h('div', { class: 'browse' });
+  const columns = o.layout === 'columns';
+  const out = h('div', { class: columns ? 'browse browse--columns' : 'browse' });
   const first = entry?.posts?.[0];
   const frozen = entry?.gone || first?.closed || first?.archived;
   out.append(threadTools(o, frozen));
@@ -619,11 +737,15 @@ export function threadView(raw) {
   const shown = B.shownPosts(entry.posts, o.hidden, o.revealed);
   let refs = shown.refs;
   const reachable = new Map(shown.posts);
-  const list = h('div', { class: 'thread', 'aria-label': `Thread ${no}` });
+  // In columns the list itself scrolls (sideways), and takes the focus for
+  // its keys (columns.js attachColumns).
+  // (a region in columns: a keyboard stop of its own, which says what it is)
+  const list = h('div', { class: columns ? `thread ${COLUMNS_CLASS}` : 'thread', role: columns ? 'region' : null, 'aria-label': `Thread ${no}`, tabindex: columns ? '0' : null });
+  if (columns) attachColumns(list);
   const jump = (target) => {
     const el = list.querySelector(`[data-no="${target}"]`);
     if (!el) return;
-    el.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    revealPost(el, { align: 'center', smooth: true });
     el.classList.remove('post--flash');
     void el.offsetWidth;
     el.classList.add('post--flash');
@@ -740,7 +862,7 @@ export function threadView(raw) {
 
   /** Whether the posts already drawn would be drawn the same with `n`. */
   const sameOld = (n) => {
-    if (n.board !== o.board || n.no !== o.no || n.keyPrefix !== o.keyPrefix || n.bridge !== o.bridge) return false;
+    if (n.board !== o.board || n.no !== o.no || n.keyPrefix !== o.keyPrefix || n.bridge !== o.bridge || n.layout !== o.layout) return false;
     if (n.offline || o.offline || o.pending.length || n.pending.length) return false;
     if (JSON.stringify(n.display) !== JSON.stringify(o.display) || JSON.stringify(n.sauce) !== JSON.stringify(o.sauce)) return false;
     if (Boolean(n.links) !== Boolean(o.links) || n.links?.embeds !== o.links?.embeds) return false;

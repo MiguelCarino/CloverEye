@@ -78,3 +78,14 @@ export function askKey(target) {
 export function quietUpdate(prev, posts) {
   return Boolean(prev?.posts) && prev.status === 'ok' && !prev.gone && samePosts(prev.posts, posts);
 }
+
+/** The indexes of a pane's background tabs (every tab but the active one)
+ *  whose view matches `pred(view)`: a fetch for one of them changes only
+ *  the pane's tab strip (its title), never what the pane shows. */
+export function backgroundTabs(tabs, active, pred) {
+  const out = [];
+  (tabs || []).forEach((t, i) => {
+    if (i !== active && t?.view && pred(t.view)) out.push(i);
+  });
+  return out;
+}

@@ -119,19 +119,113 @@ const ICONS = {
   splitOpen: ['M4 4h16v16H4z', 'M12 4v16', 'M15 10l2 2l-2 2'],
   more: ['M5 12h.01', 'M12 12h.01', 'M19 12h.01'],
   eyeOff: ['M3 3l18 18', 'M10.6 5.1A10.6 10.6 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4', 'M6.6 6.6C3.7 8.4 2 12 2 12s3.6 7 10 7a9.7 9.7 0 0 0 5.4-1.6', 'M9.9 9.9a3 3 0 0 0 4.2 4.2'],
+  // Four heart-shaped leaves (tips at the centre, clockwise from the top)
+  // and a curved stem. A part given as [d, class] carries that class, so
+  // CSS can move it: .clover-anim and .clover-done in app.css.
+  clover: [
+    ['M14.5 14.5c2.2 1.3 3.8 3.3 4.8 6.3', 'clover__stem'],
+    ['M12 10.7C10.67 9.45 8.2 7.95 8.2 5.7A1.9 1.9 0 0 1 12 5.7A1.9 1.9 0 0 1 15.8 5.7C15.8 7.95 13.33 9.45 12 10.7z', 'clover__leaf clover__leaf--1'],
+    ['M13.3 12C14.55 10.67 16.05 8.2 18.3 8.2A1.9 1.9 0 0 1 18.3 12A1.9 1.9 0 0 1 18.3 15.8C16.05 15.8 14.55 13.33 13.3 12z', 'clover__leaf clover__leaf--2'],
+    ['M12 13.3C13.33 14.55 15.8 16.05 15.8 18.3A1.9 1.9 0 0 1 12 18.3A1.9 1.9 0 0 1 8.2 18.3C8.2 16.05 10.67 14.55 12 13.3z', 'clover__leaf clover__leaf--3'],
+    ['M10.7 12C9.45 13.33 7.95 15.8 5.7 15.8A1.9 1.9 0 0 1 5.7 12A1.9 1.9 0 0 1 5.7 8.2C7.95 8.2 9.45 10.67 10.7 12z', 'clover__leaf clover__leaf--4'],
+  ],
 };
+
+/** An icon: an inline SVG, aria-hidden, drawn in currentColor. An icon
+ *  with classed parts also carries icon--<name>: icon('clover') is
+ *  svg.icon.icon--clover holding path.clover__stem and four
+ *  path.clover__leaf (clover__leaf--1 to --4, clockwise from the top). */
 
 export function icon(name, extraClass = '') {
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('class', `icon ${extraClass}`.trim());
+  const parts = ICONS[name] || [];
+  const own = parts.some(Array.isArray) ? `icon--${name}` : '';
+  svg.setAttribute('class', ['icon', own, extraClass].filter(Boolean).join(' '));
   svg.setAttribute('aria-hidden', 'true');
-  for (const d of ICONS[name] || []) {
+  for (const part of parts) {
+    const [d, cls] = Array.isArray(part) ? part : [part];
     const p = document.createElementNS(SVG_NS, 'path');
     p.setAttribute('d', d);
+    if (cls) p.setAttribute('class', cls);
     svg.append(p);
   }
   return svg;
+}
+
+// The clover's update animation: .clover-anim on a button (or on the svg)
+// while the work runs, then .clover-done for a short pop (app.css). The
+// state is kept per run key: the button's data-clover (what it updates: a
+// pane's thread or catalog), else its data-key. So a button drawn anew
+// meanwhile for the same work takes it back (cloverBusy() finds it by that
+// key, and a renderer may ask cloverClass(key) when it draws the button),
+// and one drawn for other work (another tab of the pane) does not.
+export const CLOVER_MIN_MS = 600;
+export const CLOVER_DONE_MS = 420;
+const cloverRuns = new Map(); // run key → { n, since, state, timer, el }
+
+/** The class a button with this run key (data-clover, else data-key)
+ *  should carry right now: 'clover-anim', 'clover-done' or ''. */
+export function cloverClass(key) {
+  return (key && cloverRuns.get(key)?.state) || '';
+}
+
+/**
+ * Plays the clover's update animation on a button while `work` (a promise,
+ * or a function returning one) runs: .clover-anim (and aria-busy) for at
+ * least CLOVER_MIN_MS, then .clover-done for CLOVER_DONE_MS. Returns a
+ * promise that settles as the work does (its value, or its error); the
+ * animation's tail does not delay it. When the button is replaced in the
+ * DOM meanwhile, the state moves to the element with the same data-key in
+ * the document (a button without a data-key cannot be followed). Calls for
+ * the same data-key while one runs join it: one spin until the last ends.
+ */
+export function cloverBusy(button, work) {
+  const attr = button?.dataset?.clover ? 'data-clover' : 'data-key';
+  const key = button?.dataset?.clover || button?.dataset?.key || '';
+  const run = (key && cloverRuns.get(key)) || { n: 0, since: 0, state: '', timer: 0, el: button };
+  if (key) cloverRuns.set(key, run);
+  if (button?.isConnected || !run.el) run.el = button;
+  const target = () => {
+    if (!key || run.el?.isConnected) return run.el;
+    const found = document.querySelector(`[${attr}="${globalThis.CSS?.escape ? CSS.escape(key) : key}"]`);
+    if (found) run.el = found;
+    return found;
+  };
+  const show = (state) => {
+    run.state = state;
+    const el = target();
+    if (!el) return;
+    el.classList.toggle('clover-anim', state === 'clover-anim');
+    el.classList.toggle('clover-done', state === 'clover-done');
+    if (state === 'clover-anim') el.setAttribute('aria-busy', 'true');
+    else el.removeAttribute('aria-busy');
+  };
+  clearTimeout(run.timer);
+  run.n++;
+  if (run.state !== 'clover-anim') {
+    run.since = performance.now();
+    show('clover-anim');
+  }
+  const settle = () => {
+    if (--run.n > 0) return;
+    const left = Math.max(0, CLOVER_MIN_MS - (performance.now() - run.since));
+    run.timer = setTimeout(() => {
+      show('clover-done');
+      run.timer = setTimeout(() => {
+        show('');
+        if (cloverRuns.get(key) === run) cloverRuns.delete(key);
+      }, CLOVER_DONE_MS);
+    }, left);
+  };
+  let p;
+  try {
+    p = Promise.resolve(typeof work === 'function' ? work() : work);
+  } catch (e) {
+    p = Promise.reject(e);
+  }
+  p.then(settle, settle);
+  return p;
 }
 
 let toastTimer = 0;

@@ -176,3 +176,11 @@ test('isMenuAnchor: the same button, or the one a redraw drew in its place', asy
   assert.equal(isMenuAnchor(null, old), false, 'no menu open');
   assert.equal(isMenuAnchor(cur, null), false);
 });
+
+test('backgroundTabs: only the tabs a pane is not showing', () => {
+  const tabs = [{ view: { kind: 'thread', board: 'g', no: 1 } }, { view: { kind: 'board', board: 'g' } }, { view: { kind: 'thread', board: 'g', no: 1 } }];
+  assert.deepEqual(R.backgroundTabs(tabs, 0, R.showsThread('g', 1)), [2]);
+  assert.deepEqual(R.backgroundTabs(tabs, 2, R.showsThread('g', 1)), [0]);
+  assert.deepEqual(R.backgroundTabs(tabs, 1, R.usesCatalog('g')), [0, 2]);
+  assert.deepEqual(R.backgroundTabs(null, 0, () => true), []);
+});

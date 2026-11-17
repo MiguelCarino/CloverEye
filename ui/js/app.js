@@ -9,7 +9,7 @@ import { openShell } from './shell.js';
 import { toast } from './dom.js';
 import { installHoverPreview } from './hover.js';
 import { installQuotePreview } from './quotes.js';
-import { panesFromHash } from './browse-model.js';
+import { decodePanes } from './tabs-model.js';
 import { tr } from './i18n.js';
 import { titleWithCount } from './unread-model.js';
 
@@ -189,7 +189,9 @@ function storeSettings(s, sig) {
   return saving;
 }
 
-const extraPanes = panesFromHash(location.hash);
+// An extra window's panes, each with its tabs (tabs-model.js): the older
+// address (a list of views) opens one-tab panes.
+const extraPanes = decodePanes(location.hash);
 
 // Ends the open shell's say over the settings: its close() still stores
 // what it held back, and anything it saves after that (a late fetch) goes

@@ -2,6 +2,7 @@
 // under `node --test`.
 
 import { backlinks, commentText, decodeEntities, parseComment } from './render.js';
+import { decodePanes } from './tabs-model.js';
 
 /** catalog.json's pages flattened into one list, in bump order. Each
  *  thread keeps the number of the page it was on as `page` (stats-model.js). */
@@ -213,34 +214,11 @@ export function loadErrorText(err, what = 'thread') {
 }
 
 /** An extra window (opened from a pane) carries its panes in the address:
- *  #panes=<encoded JSON list of views>. Only known view shapes pass. */
+ *  #panes=<encoded JSON list>, of views or of panes with tabs (tabs-model.js
+ *  decodePanes). Each pane's shown view; only known view shapes pass. */
 export function panesFromHash(hash) {
-  const m = /^#panes=(.+)$/.exec(hash || '');
-  if (!m) return null;
-  let list;
-  try {
-    list = JSON.parse(decodeURIComponent(m[1]));
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(list)) return null;
-  const ok = list.filter(
-    (v) =>
-      v &&
-      (v.kind === 'boards' ||
-        v.kind === 'saved' ||
-        v.kind === 'stats' ||
-        v.kind === 'library' ||
-        (v.kind === 'tag' && /^[a-z0-9-]{1,40}$/.test(v.id)) ||
-        v.kind === 'ask' ||
-        (v.kind === 'board' && /^[a-z0-9]{1,10}$/.test(v.board)) ||
-        ((v.kind === 'thread' || v.kind === 'offline') && /^[a-z0-9]{1,10}$/.test(v.board) && Number.isSafeInteger(v.no) && v.no > 0)),
-  );
-  return ok.length
-    ? ok.slice(0, 5).map((v) =>
-        v.kind === 'thread' || v.kind === 'offline' ? { kind: v.kind, board: v.board, no: v.no } : v.kind === 'board' ? { kind: 'board', board: v.board } : v.kind === 'tag' ? { kind: 'tag', id: v.id } : { kind: v.kind },
-      )
-    : null;
+  const groups = decodePanes(hash);
+  return groups ? groups.map((g) => g.tabs[g.active]) : null;
 }
 
 /** The browser's reload keys: F5 and Ctrl+R (⌘R on a Mac), each also with

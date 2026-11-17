@@ -20,8 +20,44 @@ export function savedDate(ms) {
 }
 
 /**
+ * What a key does in a confirm dialog's row of `count` buttons, the one at
+ * `at` focused (-1: none of them). Returns { move: i } (the arrows,
+ * Home/End, and Tab/Shift+Tab, all wrapping, so focus stays on the
+ * buttons), 'press' (Enter, Space), 'cancel' (Escape) or null (not one of
+ * these: left to the page).
+ */
+export function confirmKey({ key, shiftKey = false, altKey = false, ctrlKey = false, metaKey = false } = {}, at, count) {
+  if (altKey || ctrlKey || metaKey || !(count > 0)) return null;
+  const step = (dir) => ({ move: at < 0 ? (dir > 0 ? 0 : count - 1) : (at + dir + count) % count });
+  switch (key) {
+    case 'ArrowRight':
+    case 'ArrowDown':
+      return step(1);
+    case 'ArrowLeft':
+    case 'ArrowUp':
+      return step(-1);
+    case 'Home':
+      return { move: 0 };
+    case 'End':
+      return { move: count - 1 };
+    case 'Tab':
+      return step(shiftKey ? -1 : 1);
+    case 'Enter':
+    case ' ':
+      return at < 0 ? null : 'press';
+    case 'Escape':
+    case 'Esc':
+      return 'cancel';
+    default:
+      return null;
+  }
+}
+
+/**
  * A modal "are you sure" (uses the page's <dialog> styles). Resolves true
  * when confirmed; Esc, Cancel or the backdrop's close resolve false.
+ * Focus starts on Cancel; the arrow keys, Home/End and Tab move between
+ * Cancel and the confirm button, Enter or Space picks the focused one.
  */
 export function confirmDialog({ title, text, confirm, opener = null }) {
   return new Promise((resolve) => {
@@ -31,26 +67,52 @@ export function confirmDialog({ title, text, confirm, opener = null }) {
     const finish = (answer) => {
       if (done) return;
       done = true;
+      document.removeEventListener('keydown', onKey, true);
       if (d.open) d.close();
       d.remove();
       if (opener?.isConnected) opener.focus();
       resolve(answer);
     };
+    const buttons = [
+      h('button', { type: 'button', class: 'btn', 'data-key': 'confirm-cancel', autofocus: true, onclick: () => finish(false), text: 'Cancel' }),
+      h('button', { type: 'button', class: 'btn btn--danger', 'data-key': 'confirm-ok', onclick: () => finish(true) }, confirm),
+    ];
     const d = h(
       'dialog',
       { class: 'confirm-dialog', 'aria-labelledby': 'confirm-title', 'aria-describedby': 'confirm-text' },
-      h('div', { class: 'dialog__body' }, h('h2', { class: 'dialog__title', id: 'confirm-title', text: title }), h('p', { class: 'dialog__text', id: 'confirm-text', text })),
       h(
         'div',
-        { class: 'dialog__actions' },
-        h('button', { type: 'button', class: 'btn', 'data-key': 'confirm-cancel', autofocus: true, onclick: () => finish(false), text: 'Cancel' }),
-        h('button', { type: 'button', class: 'btn btn--danger', 'data-key': 'confirm-ok', onclick: () => finish(true) }, confirm),
+        { class: 'dialog__body' },
+        h('h2', { class: 'dialog__title', id: 'confirm-title', text: title }),
+        h('p', { class: 'dialog__text', id: 'confirm-text', text }),
+        h('p', { class: 'confirm-dialog__hint', text: '← → to choose, Enter to select, Esc to cancel' }),
       ),
+      h('div', { class: 'dialog__actions' }, buttons),
     );
+    // On the document (capture), so the keys work wherever focus sits
+    // while the dialog is up, and nothing behind it sees them.
+    function onKey(e) {
+      if (done || !d.isConnected) return;
+      const at = buttons.indexOf(document.activeElement);
+      const what = confirmKey(e, at, buttons.length);
+      if (!what) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (what === 'cancel') finish(false);
+      else if (what === 'press') {
+        if (!e.repeat) buttons[at].click();
+      } else {
+        // moved by keys: the ring shows even when the dialog was opened
+        // with the mouse (WebKit has no focusVisible option)
+        d.classList.add('confirm-dialog--keys');
+        buttons[what.move].focus({ focusVisible: true });
+      }
+    }
     d.addEventListener('close', () => finish(false));
+    document.addEventListener('keydown', onKey, true);
     document.body.append(d);
     d.showModal();
-    d.querySelector('[autofocus]')?.focus();
+    buttons[0].focus();
   });
 }
 

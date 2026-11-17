@@ -471,6 +471,24 @@ function postsSection(s, onChange) {
       class: 'field__hint',
       text: 'Local time shows when each post was made in your time and language. Relative shows its age, “3 min ago”, kept up to date, with the full time on hover. Board time shows the time as the site writes it.',
     }),
+    segmented(
+      'threadlayout',
+      'Thread layout',
+      [
+        { value: 'list', label: 'List' },
+        { value: 'columns', label: 'Columns' },
+      ],
+      d.threadLayout,
+      (v) => {
+        const next = structuredClone(s);
+        next.display = { ...d, threadLayout: v };
+        onChange(next, { focus: `threadlayout-${v}` });
+      },
+    ),
+    h('p', {
+      class: 'field__hint',
+      text: 'How threads open. Columns fill the pane’s height and you scroll sideways, like a newspaper. Each tab can switch with the button in the thread’s bar, or with L.',
+    }),
     displaySwitch(s, onChange, {
       key: 'spoilers',
       field: 'revealSpoilers',

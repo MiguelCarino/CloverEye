@@ -6,9 +6,11 @@
 
 import * as M from './setup-model.js';
 import * as B from './browse-model.js';
-import { h, clear, icon, toast, restoreScroll, isRestoreScroll } from './dom.js';
+import { h, clear, icon, toast, restoreScroll, cloverBusy } from './dom.js';
+import * as CM from './columns-model.js';
+import { scrollerOf, axisOfBox, scrollPos, setScroll, isRestoreAnyAxis, isColumnsBox, revealPost, firstPart, fitColumns } from './columns.js';
 import { renderSettings, showSection } from './settings-view.js';
-import { catalogView, threadView, updateThreadView, statusLine, statsLine } from './browse.js';
+import { catalogView, threadView, updateThreadView, statusLine, statsLine, markRefresh } from './browse.js';
 import * as R from './redraw-model.js';
 import { createComposer } from './compose.js';
 import { galleryItems } from './gallery-model.js';
@@ -37,6 +39,10 @@ import { commentText } from './render.js';
 import { menuAnchorRedrawn } from './post-menu.js';
 import * as TG from './tag-model.js';
 import { tagChips, editTag, tagPage } from './tag-view.js';
+import * as T from './tabs-model.js';
+import * as P from './pasta-model.js';
+import * as K from './keys-model.js';
+import { openPastas, pastasOpen } from './pasta-view.js';
 
 /** A catalog is fetched again on its own after this long (manual Refresh
  *  any time; the queue still keeps ≤ 1 request/s). */
@@ -87,9 +93,35 @@ export function openShell({
   const root = document.getElementById('shell');
   const titleOf = (code) => boards?.find((b) => b.board === code)?.title || '';
   let paneSeq = 0;
-  // past / ahead: the pane's own back and forward (mouse side buttons,
-  // Alt+←/→); motion: how its next draws move in (see paneMotion)
-  const newPane = (view) => ({ id: ++paneSeq, view, catView: { query: '', sort: 'bump' }, statsView: { tab: 'boards', sort: 'ppm', dir: 'desc', metric: 'time' }, ask: newAsk(), past: [], ahead: [], motion: null });
+  let tabSeq = 0;
+  // A pane holds browser-like tabs (tabs-model.js): `tabs`, and `active`,
+  // the one shown. Each tab has its own view, its own back and forward
+  // (past / ahead: mouse side buttons, Alt+←/→), its catalog search and
+  // sort, its Stats tabs, its Ask, and its scroll (st.scroll, by tab id).
+  // `opener`: the tab it was opened from (where the next ones go).
+  const newTab = (view, opener = null) => ({ id: ++tabSeq, opener, view, catView: { query: '', sort: 'bump' }, statsView: { tab: 'boards', sort: 'ppm', dir: 'desc', metric: 'time' }, ask: newAsk(), past: [], ahead: [], jump: null });
+  // pane.view, .past, .ahead, .catView, .statsView and .ask are the active
+  // tab's, so what reads a pane reads what it shows. motion: how its next
+  // draws move in (see paneMotion).
+  const TAB_FIELDS = ['view', 'past', 'ahead', 'catView', 'statsView', 'ask'];
+  const newPane = (entry) => {
+    const group = Array.isArray(entry?.tabs) && entry.tabs.length ? entry : { tabs: [entry], active: 0 };
+    const pane = { id: ++paneSeq, tabs: group.tabs.map((v) => newTab(v)), active: 0, motion: null };
+    pane.active = Math.max(0, Math.min(Number(group.active) || 0, pane.tabs.length - 1));
+    for (const k of TAB_FIELDS) {
+      Object.defineProperty(pane, k, {
+        enumerable: true,
+        get() {
+          return this.tabs[this.active][k];
+        },
+        set(x) {
+          this.tabs[this.active][k] = x;
+        },
+      });
+    }
+    return pane;
+  };
+  const tabOf = (pane) => pane.tabs[pane.active];
   const st = {
     panes: (initialPanes?.length ? initialPanes : [M.firstDestination(settings, boards)]).slice(0, MAX_PANES).map(newPane),
     focus: 0,
@@ -100,7 +132,9 @@ export function openShell({
     threads: {}, // "board/no" → { status, posts, error, at, freshness, gone, fresh }
     timers: new Map(), // "board/no" → timeout, for threads open in a pane
     catRetry: new Map(), // board → timeout: its catalog asked for again once the queue lets it
-    scroll: {}, // "paneId:viewKey" → scrollTop
+    scroll: {}, // "tabId:viewKey" → scrollTop
+    anchors: new Map(), // "tabId:viewKey" → what was at its top (scrollAnchor), for a tab shown again
+    closedTabs: [], // tabs closed, newest last, for Ctrl+Shift+T: { tab, paneId, index }
     watchBusy: false,
     revealed: new Set(), // "board/no" of filtered posts shown anyway (this session)
     lines: new Map(), // "board/no" → the "New posts" line (after this No.; unread-model.js)
@@ -199,7 +233,8 @@ export function openShell({
           if (no !== thread) {
             setTimeout(() => {
               const k = st.panes.indexOf(pane);
-              if (k >= 0) root.querySelector(`[data-pane="${k}"] [data-no="${no}"]`)?.scrollIntoView({ block: 'center' });
+              const el = k >= 0 && root.querySelector(`[data-pane="${k}"] [data-no="${no}"]`);
+              if (el) revealPost(el, { align: 'center' });
             }, 600);
           }
         },
@@ -615,7 +650,28 @@ export function openShell({
     return boards?.find((b) => b.board === code) || null;
   }
 
-  async function loadCatalog(board, force = false) {
+  // The fetch under way for each catalog and thread ('c:board' / 't:board/no'):
+  // a manual update pressed while a poll is out waits for that one (the
+  // clover spins until it is back).
+  const inFlight = new Map();
+  function joinFetch(key, run) {
+    if (inFlight.has(key)) return inFlight.get(key);
+    const p = run();
+    // run() marks the entry loading before its first wait: only then is it out
+    if (p && (key.startsWith('c:') ? st.cats[key.slice(2)] : st.threads[key.slice(2)])?.status === 'loading') {
+      inFlight.set(key, p);
+      p.finally(() => inFlight.get(key) === p && inFlight.delete(key));
+    }
+    return p;
+  }
+
+  /** Fetches a board's catalog (unless a fresh copy is here, or `force`).
+   *  Resolves when the fetch is back (at once when none was needed). */
+  function loadCatalog(board, force = false) {
+    return joinFetch(`c:${board}`, () => fetchCatalogNow(board, force));
+  }
+
+  async function fetchCatalogNow(board, force) {
     if (!bridge) return;
     const prev = st.cats[board];
     if (prev?.status === 'loading') return;
@@ -717,7 +773,7 @@ export function openShell({
       if (!node) return;
       patchStatus(node, entry, 'catalog');
       const btn = node.querySelector(`[data-key="${CSS.escape(`${prefixOf(i)}catalog-refresh`)}"]`);
-      if (btn) btn.disabled = entry?.status === 'loading';
+      markRefresh(btn, { loading: entry?.status === 'loading' });
     });
   }
 
@@ -732,7 +788,7 @@ export function openShell({
       if (!node) return;
       patchStatus(node, entry, 'thread');
       const btn = node.querySelector(`[data-key="${CSS.escape(`${prefixOf(i)}thread-refresh`)}"]`);
-      if (btn) btn.disabled = entry?.status === 'loading' || Boolean(entry?.gone);
+      markRefresh(btn, { loading: entry?.status === 'loading', gone: Boolean(entry?.gone) });
       if (!entry?.fresh?.size) for (const el of node.querySelectorAll('.post--new')) el.classList.remove('post--new');
     });
   }
@@ -749,7 +805,11 @@ export function openShell({
   /** Fetches a thread (through the queue: never more often than every 10 s
    *  per thread). Updates its watch record and, if it is open, schedules
    *  the next update. */
-  async function loadThread(board, no) {
+  function loadThread(board, no) {
+    return joinFetch(`t:${tkey(board, no)}`, () => fetchThreadNow(board, no));
+  }
+
+  async function fetchThreadNow(board, no) {
     if (!bridge || closed) return;
     const key = tkey(board, no);
     const prev = st.threads[key];
@@ -819,7 +879,7 @@ export function openShell({
     } else {
       // new posts at the end are added in place (growPane); anything else
       // redraws the pane
-      invalidate({ grown: panesWhere(R.showsThread(board, no)) });
+      invalidate({ grown: panesWhere(R.showsThread(board, no)), strips: tabbedWhere(R.showsThread(board, no)) });
       scheduleStats();
     }
     if (watch || (!quiet && M.isWatched(settings, board, no))) invalidate({ rail: true });
@@ -920,10 +980,19 @@ export function openShell({
     showJump();
   }
 
+  /** A quote link to another thread's post: Ctrl/⌘+clicked (in the
+   *  default inline mode, where a plain click opens a copy), a new tab of
+   *  the pane, scrolled to the post once shown; else beside (openCross). */
+  function crossQuote(q, i, e) {
+    const tab = T.clickTab(e);
+    if (tab) openTab({ kind: 'thread', board: q.board, no: q.thread }, i, { ...tab, jump: { board: q.board, no: q.thread, post: q.no } });
+    else openCross(q, i);
+  }
+
   /** A board link (>>>/g/, >>>/g/search/) clicked in pane `from` (the pane
    *  object: indexes shift while the board list loads): that board's
    *  catalog opens beside it, with the link's search in its search box. */
-  async function openBoardLink({ board, search = '' }, from) {
+  async function openBoardLink({ board, search = '' }, from, tab = null) {
     if (!board) return;
     // the board list, loaded once if need be (it failing: the catalog says)
     const known = await boardInfo(board);
@@ -937,6 +1006,11 @@ export function openShell({
     // an NSFW board while they are hidden: never opened from a link
     if (known && !M.visibleBoards([known], settings).length) {
       toast(`/${board}/ is an NSFW board: Settings → Content can show NSFW boards.`);
+      return;
+    }
+    // Ctrl/⌘+click or a middle click: a new tab of its pane, searched
+    if (tab) {
+      openTab({ kind: 'board', board }, at, { ...tab, query: search });
       return;
     }
     const before = st.panes.length;
@@ -963,7 +1037,7 @@ export function openShell({
     const el = root.querySelector(`[data-pane="${i}"] .thread > [data-no="${j.post}"]`);
     if (!el) return;
     st.jumpTo = null;
-    el.scrollIntoView({ block: 'center', behavior: 'auto' });
+    revealPost(el, { align: 'center' });
     el.classList.remove('post--flash');
     void el.offsetWidth;
     el.classList.add('post--flash');
@@ -1095,7 +1169,16 @@ export function openShell({
    *  comes in (forward, or back); `record`: kept in the pane's history. */
   function goto(view, paneIndex = st.focus, { motion = 'forward', record = true } = {}) {
     const i = Math.max(0, Math.min(paneIndex, st.panes.length - 1));
+    // a Ctrl/⌘+click (or a middle click) on whatever navigates: a new tab
+    // of that pane instead (in front with Shift), as a browser does
+    const intent = record ? takeClickIntent() : null;
+    if (intent) {
+      openTab(view, i, intent);
+      return;
+    }
     const pane = st.panes[i];
+    // the same thread keeps the layout its tab chose (columns-model.js)
+    view = CM.carryLayout(pane.view, view);
     const wasRail = st.rail;
     const boardsBefore = activeBoardsKey();
     const changed = !sameView(pane.view, view);
@@ -1111,6 +1194,15 @@ export function openShell({
     // and forward, not the panes a window starts with)
     if (changed && record && view?.kind === 'thread') stats.count('threads', 1, view.board);
     pane.view = view;
+    showPaneView(i, wasRail, boardsBefore);
+  }
+
+  /** Pane i shows something else (goto, or another tab of it): drawn, with
+   *  what follows it, and started (enter: its polling; the threads no
+   *  longer shown stop theirs). */
+  function showPaneView(i, wasRail, boardsBefore) {
+    const pane = st.panes[i];
+    const view = pane.view;
     st.focus = i;
     st.rail = false;
     startLine(view);
@@ -1130,6 +1222,361 @@ export function openShell({
       syncFocus();
     }
     enter(view);
+  }
+
+  // ------------------------------------------------------------------ tabs
+
+  // Browser-like tabs in each pane (tabs-model.js). Only a pane's active
+  // tab is drawn and polled: views() lists active tabs, so a background
+  // tab costs nothing until it is shown (a thread's first fetch aside, for
+  // its title, when the catalog does not have it).
+
+  /** Ctrl/⌘ (or the middle button) on the click being handled: set by the
+   *  root's click listener (and the middle-click one), read once by goto. */
+  let clickIntent = null;
+  let forcedIntent = null;
+  function takeClickIntent() {
+    const x = clickIntent;
+    clickIntent = null;
+    return x;
+  }
+
+  /** Opens `view` in a new tab of pane i: in the background (the pane
+   *  goes on showing what it shows; only its tab strip changes) or in
+   *  front. `jump`: { board, no, post }, a post to scroll to once shown;
+   *  `query`: a catalog's search. Says whether it opened (20 tabs at most). */
+  function openTab(view, i = st.focus, { background = true, jump = null, query = '' } = {}) {
+    clickIntent = null;
+    const pane = st.panes[Math.max(0, Math.min(i, st.panes.length - 1))];
+    if (!pane || !view || pane.motion?.kind === 'closing') return false;
+    const tab = newTab(view, tabOf(pane).id);
+    if (query) tab.catView.query = query;
+    if (jump) tab.jump = jump;
+    const r = T.addTab({ tabs: pane.tabs, active: pane.active }, tab, { background });
+    if (!r) {
+      toast(`At most ${T.MAX_TABS} tabs in a pane.`);
+      return false;
+    }
+    if (view.kind === 'thread') stats.count('threads', 1, view.board);
+    const at = st.panes.indexOf(pane);
+    if (background) {
+      pane.tabs = r.tabs;
+      pane.active = r.active;
+      primeTitle(view);
+      patchStrip(pane, tab.id);
+      return true;
+    }
+    const boardsBefore = activeBoardsKey();
+    const wasRail = st.rail;
+    pane.tabs = r.tabs;
+    pane.active = r.active;
+    if (pane.motion?.kind !== 'closing') pane.motion = null;
+    takeJump(pane);
+    showPaneView(at, wasRail, boardsBefore);
+    return true;
+  }
+
+  /** A thread opened in a background tab is fetched once (through the
+   *  queue) for its title in the strip, only when neither it nor its board's
+   *  catalog is here (a quote link, a link to a thread the catalog does not
+   *  list): tabName reads the catalog's first post otherwise, and a card
+   *  Ctrl+clicked N times must not queue N fetches ahead of the pane in
+   *  sight. It is not polled meanwhile; it loads when it is shown. */
+  function primeTitle(v) {
+    if (v?.kind !== 'thread' || st.threads[tkey(v.board, v.no)]?.posts) return;
+    if (st.cats[v.board]?.threads?.some((t) => t.no === v.no)) return;
+    loadThread(v.board, v.no);
+  }
+
+  /** The tab now shown carries a post to scroll to (a quote link opened
+   *  in a tab): showJump scrolls there once the thread is drawn. */
+  function takeJump(pane) {
+    const t = tabOf(pane);
+    if (!t.jump) return;
+    st.jumpTo = { paneId: pane.id, ...t.jump };
+    t.jump = null;
+  }
+
+  /** Shows tab `index` of pane i: that pane alone is drawn (its scroll as
+   *  the tab left it); the tab left stops polling, the one shown starts. */
+  function activateTab(i, index) {
+    const pane = st.panes[i];
+    if (!pane || !pane.tabs[index] || pane.motion?.kind === 'closing') return;
+    if (index === pane.active) {
+      if (st.focus !== i) {
+        st.focus = i;
+        syncFocus();
+      }
+      return;
+    }
+    const boardsBefore = activeBoardsKey();
+    const wasRail = st.rail;
+    pane.active = index;
+    pane.motion = null;
+    takeJump(pane);
+    showPaneView(i, wasRail, boardsBefore);
+  }
+
+  /** Closes tab `index` of pane i (default: its active tab). A pane's last
+   *  tab closes the pane, when there are others; the last tab of the last
+   *  pane stays. Closed tabs come back with Ctrl+Shift+T. */
+  function closeTab(i = st.focus, index = st.panes[i]?.active) {
+    const pane = st.panes[i];
+    if (!pane || !pane.tabs[index] || pane.motion?.kind === 'closing') return;
+    if (pane.tabs.length <= 1) {
+      if (livePanes().length <= 1) return;
+      // the pane went with it: Ctrl+Shift+T makes it again, where it was
+      st.closedTabs = T.pushClosed(st.closedTabs, { tab: pane.tabs[0], paneId: pane.id, index: 0, paneAt: i });
+      closePane(i);
+      return;
+    }
+    const wasActive = index === pane.active;
+    const boardsBefore = activeBoardsKey();
+    const wasRail = st.rail;
+    const r = T.closeTab({ tabs: pane.tabs, active: pane.active }, index);
+    if (!r) return;
+    stopAsk(r.closed.ask, bridge);
+    st.closedTabs = T.pushClosed(st.closedTabs, { tab: r.closed, paneId: pane.id, index });
+    pane.tabs = r.tabs;
+    pane.active = r.active;
+    if (!wasActive) {
+      patchStrip(pane);
+      return;
+    }
+    pane.motion = null;
+    takeJump(pane);
+    showPaneView(i, wasRail, boardsBefore);
+  }
+
+  /** Ctrl+Shift+T: the last tab closed, back where it was, in front, with
+   *  its history and scroll: in its pane if it is still here; a pane's last
+   *  tab brings its pane back, at its place (five panes already: in the
+   *  focused pane, after its tab shown). */
+  function reopenTab() {
+    const p = T.popClosed(st.closedTabs);
+    if (!p) return;
+    const { tab, paneId, index, paneAt } = p.entry;
+    let i = st.panes.findIndex((x) => x.id === paneId && x.motion?.kind !== 'closing');
+    if (i < 0 && Number.isInteger(paneAt) && st.panes.length < MAX_PANES) {
+      st.closedTabs = p.stack;
+      const pane = newPane(tab.view);
+      pane.tabs = [tab];
+      pane.active = 0;
+      setMotion(pane, 'enter');
+      const at = Math.max(0, Math.min(paneAt, st.panes.length));
+      st.panes.splice(at, 0, pane);
+      st.focus = at;
+      st.rail = false;
+      takeJump(pane);
+      startLine(tab.view);
+      render();
+      enter(tab.view);
+      return;
+    }
+    let at = index;
+    if (i < 0) {
+      i = Math.min(st.focus, st.panes.length - 1);
+      at = T.insertIndex(st.panes[i].tabs, st.panes[i].active);
+    }
+    const pane = st.panes[i];
+    const r = T.addTab({ tabs: pane.tabs, active: pane.active }, tab, { background: false, at });
+    if (!r) {
+      toast(`At most ${T.MAX_TABS} tabs in a pane.`);
+      return;
+    }
+    st.closedTabs = p.stack;
+    const boardsBefore = activeBoardsKey();
+    const wasRail = st.rail;
+    pane.tabs = r.tabs;
+    pane.active = r.active;
+    pane.motion = null;
+    showPaneView(i, wasRail, boardsBefore);
+  }
+
+  /** Ctrl+T: a new tab in front, on the active tab's board catalog (or
+   *  where a window starts). */
+  function newTabHere(i = st.focus) {
+    const v = st.panes[i]?.view;
+    const view = v?.kind === 'board' || v?.kind === 'thread' ? { kind: 'board', board: v.board } : M.firstDestination(settings, boards);
+    openTab(view, i, { background: false });
+  }
+
+  /** A tab's name in its strip: [board tag, text, whether the text is the
+   *  site's own (kept from the page translator)]. */
+  function tabName(v) {
+    if (v?.kind === 'board') return { board: v.board, text: titleOf(v.board) || T.kindLabel('board'), site: Boolean(titleOf(v.board)) };
+    if (v?.kind === 'thread' || v?.kind === 'offline') {
+      const op =
+        v.kind === 'offline'
+          ? st.offline[tkey(v.board, v.no)]?.posts?.[0]
+          : st.threads[tkey(v.board, v.no)]?.posts?.[0] || st.cats[v.board]?.threads?.find((t) => t.no === v.no);
+      const listed = v.kind === 'offline' ? st.saved.list.find((e) => e.board === v.board && e.no === v.no)?.title : '';
+      const text = op ? B.threadTitle(op, 60) : listed || '';
+      return { board: v.board, text: text || `No. ${v.no}`, site: Boolean(text) };
+    }
+    if (v?.kind === 'tag') {
+      const t = tagOf(v.id);
+      return { board: null, text: t ? t.name : T.kindLabel('tag'), site: Boolean(t) };
+    }
+    return { board: null, text: T.kindLabel(v?.kind) || T.kindLabel('boards'), site: false };
+  }
+
+  /** Pane i's tab strip (two tabs or more), or null. */
+  function stripEl(i) {
+    const pane = st.panes[i];
+    if (!pane || pane.tabs.length < 2) return null;
+    const prefix = prefixOf(i);
+    const here = () => st.panes.indexOf(pane);
+    const strip = h('div', {
+      class: 'pane-tabs',
+      role: 'tablist',
+      'aria-label': 'Tabs in this pane',
+      'data-strip': String(pane.id),
+      onkeydown: (e) => {
+        const btns = [...e.currentTarget.querySelectorAll('[role="tab"]')];
+        const at = btns.indexOf(document.activeElement);
+        if (at < 0 || e.ctrlKey || e.metaKey || e.altKey) return;
+        let to = null;
+        if (e.key === 'ArrowRight') to = (at + 1) % btns.length;
+        else if (e.key === 'ArrowLeft') to = (at - 1 + btns.length) % btns.length;
+        else if (e.key === 'Home') to = 0;
+        else if (e.key === 'End') to = btns.length - 1;
+        else if (e.key === 'Delete') {
+          e.preventDefault();
+          const k = here();
+          if (k < 0) return;
+          closeTab(k, at);
+          // the focus goes on to the tab shown now (none left: its pane)
+          const node = root.querySelector(`.workspace__grid section[data-pane="${st.panes.indexOf(pane)}"]`);
+          if (node && !node.contains(document.activeElement)) (node.querySelector('.pane-tabs [aria-selected="true"]') || node.querySelector('.pane__head button'))?.focus({ preventScroll: true });
+          return;
+        }
+        if (to === null) return;
+        e.preventDefault();
+        // the focus moves along; Enter or Space shows the tab
+        for (const [j, b] of btns.entries()) b.tabIndex = j === to ? 0 : -1;
+        btns[to].focus();
+        btns[to].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      },
+    });
+    pane.tabs.forEach((t, j) => {
+      const name = tabName(t.view);
+      const on = j === pane.active;
+      strip.append(
+        h(
+          'div',
+          {
+            class: `pane-tab${on ? ' pane-tab--on' : ''}`,
+            role: 'presentation',
+            'data-tab': String(t.id),
+            // the middle button closes a tab (and never starts autoscroll)
+            onmousedown: (e) => e.button === 1 && e.preventDefault(),
+            onauxclick: (e) => {
+              if (e.button !== 1) return;
+              e.preventDefault();
+              const k = here();
+              if (k >= 0) closeTab(k, st.panes[k].tabs.indexOf(t));
+            },
+          },
+          h(
+            'button',
+            {
+              type: 'button',
+              role: 'tab',
+              class: 'pane-tab__btn',
+              id: `pane-tab-${t.id}`,
+              'aria-selected': String(on),
+              // only the tab shown has its panel drawn (markPanel)
+              'aria-controls': on ? `pane-panel-${pane.id}` : null,
+              'aria-keyshortcuts': 'Delete',
+              tabindex: on ? '0' : '-1',
+              title: name.text,
+              translate: name.site ? 'no' : null,
+              'data-key': `${prefix}tab-${t.id}`,
+              onclick: () => {
+                const k = here();
+                if (k >= 0) activateTab(k, st.panes[k].tabs.indexOf(t));
+              },
+            },
+            name.board ? tag(name.board) : null,
+            h('span', { class: 'pane-tab__text', text: name.text }),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              class: 'pane-tab__close',
+              tabindex: '-1',
+              // a mouse target: the tablist holds tabs only (Delete on a tab,
+              // its aria-keyshortcuts, or Ctrl+W close one from the keyboard)
+              'aria-hidden': 'true',
+              'aria-label': 'Close tab',
+              title: 'Close tab (Ctrl+W)',
+              'data-key': `${prefix}tab-close-${t.id}`,
+              onclick: () => {
+                const k = here();
+                if (k >= 0) closeTab(k, st.panes[k].tabs.indexOf(t));
+              },
+            },
+            icon('x'),
+          ),
+        ),
+      );
+    });
+    return strip;
+  }
+
+  /** A pane's tab strip redrawn in place (a tab opened in the background
+   *  or closed, a title that came): the pane itself stays. `show`: the id
+   *  of a tab to bring into sight in the strip. */
+  function patchStrip(pane, show = null) {
+    if (closed || renderAfterDrag) return;
+    toDraw.strips.delete(pane);
+    const i = st.panes.indexOf(pane);
+    const node = i >= 0 ? root.querySelector(`.workspace__grid section[data-pane="${i}"]`) : null;
+    if (!node) return;
+    const old = node.querySelector('.pane-tabs[data-strip]');
+    const x = old?.scrollLeft || 0;
+    const active = document.activeElement;
+    const focusKey = old?.contains(active) ? active.dataset.key : null;
+    const next = stripEl(i);
+    if (old && next) old.replaceWith(next);
+    else if (old) old.remove();
+    else if (next) node.prepend(next);
+    node.classList.toggle('pane--tabbed', Boolean(next));
+    markPanel(node, pane, Boolean(next));
+    if (!next) return;
+    next.scrollLeft = x;
+    fitStrip(next, show);
+    if (focusKey) {
+      const el = next.querySelector(`[data-key="${CSS.escape(focusKey)}"]`) || next.querySelector('[aria-selected="true"]');
+      el?.focus({ preventScroll: true });
+    }
+  }
+
+  /** A pane with tabs: its body is the shown tab's tabpanel (an id the tab's
+   *  aria-controls names, labelled by that tab); without tabs, a plain div. */
+  function markPanel(node, pane, tabbed) {
+    const body = node?.querySelector(':scope > .centre__body');
+    if (!body) return;
+    if (tabbed) {
+      body.setAttribute('role', 'tabpanel');
+      body.id = `pane-panel-${pane.id}`;
+      body.setAttribute('aria-labelledby', `pane-tab-${tabOf(pane).id}`);
+    } else {
+      for (const k of ['role', 'id', 'aria-labelledby']) body.removeAttribute(k);
+    }
+  }
+
+  /** Keeps the shown tab (or tab `show`) in sight in a crowded strip. */
+  function fitStrip(strip, show = null) {
+    if (strip.scrollWidth <= strip.clientWidth) return;
+    const el = show !== null ? strip.querySelector(`[data-tab="${show}"]`) : strip.querySelector('.pane-tab--on');
+    if (!el) return;
+    const s = strip.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    if (r.left < s.left) strip.scrollLeft -= s.left - r.left;
+    else if (r.right > s.right) strip.scrollLeft += r.right - s.right;
   }
 
   /** Back in a pane's own history (mouse back button, Alt+←); a thread
@@ -1188,7 +1635,7 @@ export function openShell({
     const pane = st.panes[i];
     // the last pane that stays never goes (one fading out does not count)
     if (!pane || pane.motion?.kind === 'closing' || livePanes().length <= 1) return;
-    stopAsk(pane.ask, bridge); // an answer under way ends with its pane
+    for (const t of pane.tabs) stopAsk(t.ask, bridge); // an answer under way ends with its pane
     if (reducedMotion()) return removePane(pane);
     setMotion(pane, 'closing');
     // what is opened next goes to a pane that stays
@@ -1215,19 +1662,22 @@ export function openShell({
     scheduleOpen();
   }
 
-  async function newWindow(viewsList) {
+  /** A new window with these panes: views, or panes with tabs
+   *  ({ tabs: [view…], active }); tabs-model.js encodePanes (Settings
+   *  stays here; All boards when nothing is left). */
+  async function newWindow(entries) {
     if (!bridge?.openWindow) return;
-    const clean = viewsList.filter((v) => v && v.kind !== 'settings').slice(0, MAX_PANES);
     try {
-      await bridge.openWindow(encodeURIComponent(JSON.stringify(clean.length ? clean : [{ kind: 'boards' }])));
+      await bridge.openWindow(T.encodePanes(entries));
     } catch (e) {
       toast(`Couldn’t open a window: ${e?.message || e}`);
     }
   }
 
   function popOut(i) {
-    const v = st.panes[i].view;
-    newWindow([v]);
+    // the pane with all its tabs
+    const p = st.panes[i];
+    newWindow([{ tabs: p.tabs.map((t) => t.view), active: p.active }]);
     if (livePanes().length > 1) closePane(i);
   }
 
@@ -1249,7 +1699,75 @@ export function openShell({
       return root.querySelector(`[data-pane="${i >= 0 ? i : st.focus}"]`);
     },
     onPosted: (p) => posted(p),
+    onPastas: (anchor, where) => openPastasFor(anchor, where),
   });
+
+  // ------------------------------------------------- pre-written posts (pastas)
+
+  // The pastas popup (pasta-view.js) open from this window: right-click (or
+  // the ContextMenu key, Shift+F10) on a Reply or New thread button, or the
+  // reply form's own button. A pick opens the form that button would and
+  // puts the text in at its caret. Pins and own posts are saved like any
+  // setting (an op, so they merge with another window's).
+  let pastaPopup = null;
+  let pastaFrom = { key: '', at: 0 };
+  /** Opens the popup next to `anchor` for the form of `where`
+   *  ({ board, thread }: thread 0 is a new thread on the board). */
+  function openPastasFor(anchor, where) {
+    if (closed || !anchor) return;
+    const key = anchor.dataset?.key || '';
+    // the ContextMenu key, caught on keydown, may still send a contextmenu
+    if (pastaPopup && key && pastaFrom.key === key && performance.now() - pastaFrom.at < 500) return;
+    pastaFrom = { key, at: performance.now() };
+    const popup = openPastas({
+      anchor,
+      settings,
+      // built on this window's settings now (the popup's copy may be older)
+      onSettings: (_next, op) => {
+        save(op[1](settings), { op });
+        pastaPopup?.update(settings);
+      },
+      onPick: (text) => {
+        composer.open({ board: where.board, thread: where.thread || 0 });
+        composer.insertText(text, { board: where.board, thread: where.thread || 0 });
+      },
+      onClose: () => {
+        if (pastaPopup === popup) pastaPopup = null;
+        if (anchor.hasAttribute?.('aria-expanded')) anchor.setAttribute('aria-expanded', 'false');
+      },
+    });
+    pastaPopup = popup;
+    if (anchor.hasAttribute?.('aria-expanded')) anchor.setAttribute('aria-expanded', 'true');
+  }
+
+  /** The R key on the focused pane: a thread's reply form, or a board's new
+   *  thread form, as its Reply / New thread button opens it (an open form
+   *  takes the focus in its comment). A thread that takes no replies says
+   *  why. Says whether the key was used. */
+  function replyKey(i) {
+    const v = st.panes[i]?.view;
+    if (v?.kind === 'board') {
+      composer.open({ board: v.board, thread: 0 });
+      return true;
+    }
+    if (v?.kind !== 'thread') return false;
+    const why = K.replyBlock(st.threads[tkey(v.board, v.no)]);
+    if (why) toast(K.REPLY_BLOCKED[why]);
+    else composer.open({ board: v.board, thread: v.no });
+    return true;
+  }
+
+  /** A manual update of pane i (F5, Ctrl+R, ⌘R): refreshPane, with the
+   *  clover of its Update or Refresh button spinning until it is done. */
+  function manualRefresh(i) {
+    const v = st.panes[i]?.view;
+    const name = v?.kind === 'thread' ? 'thread-refresh' : v?.kind === 'board' ? 'catalog-refresh' : '';
+    const btn = name ? root.querySelector(`.workspace__grid [data-pane="${i}"] [data-key="${CSS.escape(`${prefixOf(i)}${name}`)}"]`) : null;
+    // a thread that is gone is not fetched again: nothing to show
+    const gone = v?.kind === 'thread' && st.threads[tkey(v.board, v.no)]?.gone;
+    if (btn && !gone) cloverBusy(btn, () => refreshPane(i));
+    else refreshPane(i);
+  }
 
   /** A post went out (compose.js). */
   function posted({ board, thread, no }) {
@@ -1411,7 +1929,7 @@ export function openShell({
       preload: settings.display?.galleryPreload !== false,
       onClose: (no) => {
         const el = root.querySelector(`[data-pane="${paneIndex}"] [data-no="${no}"]`);
-        el?.scrollIntoView({ block: 'center' });
+        if (el) revealPost(el, { align: 'center' });
       },
     });
   }
@@ -1810,10 +2328,45 @@ export function openShell({
     const first = unreadOf(v.board, v.no)[0];
     const el = first && root.querySelector(`[data-pane="${i}"] .thread > [data-no="${first}"]`);
     if (!el) return;
-    el.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    // in columns: its column first (columns.js)
+    revealPost(el, { align: 'start', smooth: true });
     el.classList.remove('post--flash');
     void el.offsetWidth;
     el.classList.add('post--flash');
+  }
+
+  // What each layout left behind when its thread was switched to the other
+  // one: "tabId:viewKey:layout" → { pos, arrived } (CM.placeAfterSwitch).
+  const switched = new Map();
+
+  /** Switches pane i's thread between a list and columns (the thread tools'
+   *  toggle, L). Only that tab's view changes (kept in its history and the
+   *  window's address) and only that pane is drawn. The post first in sight
+   *  stays first in sight; switched straight back, the thread is where it
+   *  was. */
+  function toggleLayout(i = st.focus) {
+    const pane = st.panes[i];
+    const v = pane?.view;
+    if (!v || (v.kind !== 'thread' && v.kind !== 'offline') || pane.motion?.kind === 'closing') return;
+    const bodyOf = () => root.querySelector(`.workspace__grid section[data-pane="${i}"] .centre__body[data-scroll-key]`);
+    const before = bodyOf();
+    const from = CM.layoutOf(v, settings.display);
+    const next = CM.flipLayout(v, settings.display);
+    const memoKey = (layout) => `${tabOf(pane).id}:${viewKey(v)}:${layout}`;
+    const now = before ? { pos: scrollPos(scrollerOf(before)), no: scrollAnchor(before)?.no } : { pos: 0 };
+    pane.view = next;
+    renderPane(i);
+    const body = bodyOf();
+    if (!body) return;
+    const sc = scrollerOf(body);
+    // (straight back: restore() in renderPane put it where it was)
+    const place = CM.placeAfterSwitch(now, switched.get(memoKey(next.layout)));
+    if (place.no) {
+      const el = body.querySelector(`.thread > [data-no="${place.no}"]`);
+      if (el) revealPost(el, { align: 'start' });
+    } else if (!place.back) setScroll(sc, 0);
+    switched.set(memoKey(from), { arrived: scrollPos(sc) });
+    trackRead(body);
   }
 
   /** The unread counts drawn outside a full redraw (reading only lowers
@@ -1853,17 +2406,20 @@ export function openShell({
     if (v?.kind !== 'thread' || document.visibilityState === 'hidden' || !document.hasFocus()) return;
     const list = body.querySelector('.thread');
     if (!list) return;
+    // in columns: every post up to the last one whose column is wholly in sight
+    const sc = scrollerOf(body);
+    const axis = axisOfBox(sc);
     const items = [];
     for (const el of list.children) {
       if (!el.dataset.no) continue;
       items.push({
         no: Number(el.dataset.no),
         get bottom() {
-          return el.getBoundingClientRect().bottom;
+          return CM.endOf(el.getBoundingClientRect(), axis);
         },
       });
     }
-    const last = U.lastOnScreen(items, body.getBoundingClientRect().bottom);
+    const last = U.lastOnScreen(items, CM.endOf(sc.getBoundingClientRect(), axis));
     const before = U.readOf(settings, v.board, v.no);
     const next = last ? U.markRead(settings, v.board, v.no, last) : settings;
     if (next === settings) return;
@@ -2107,6 +2663,9 @@ export function openShell({
       onRefresh: () => loadThread(v.board, v.no),
       onWatch: () => toggleWatchThread(v.board, v.no),
       onReply: (quote = null, selection = '') => composer.open({ board: v.board, thread: v.no, quote: quote || 0, selection }),
+      onPastas: (anchor) => openPastasFor(anchor, { board: v.board, thread: v.no }),
+      layout: CM.layoutOf(v, settings.display),
+      onLayout: () => toggleLayout(st.panes.indexOf(pane)),
       pending: st.pending.filter((p) => p.board === v.board && p.thread === v.no),
       landed: st.landed,
       onGallery: () => gallery(i),
@@ -2121,8 +2680,8 @@ export function openShell({
       menuFor: (post) => postMenu(v.board, post),
       inLibrary: library.available() ? (post) => library.has(post.md5) : null,
       quoteMode: () => settings.quotes?.links || 'inline',
-      onCrossQuote: (q) => openCross(q, i),
-      onBoardLink: (q) => openBoardLink(q, pane),
+      onCrossQuote: (q, e) => crossQuote(q, i, e),
+      onBoardLink: (q, e) => openBoardLink(q, pane, T.clickTab(e)),
       cross: crossThreads,
       archive: entry?.gone || entry?.posts?.[0]?.archived ? archiveLink(settings.archives, { board: v.board, thread: v.no }) : null,
       ids: entry?.posts
@@ -2164,7 +2723,10 @@ export function openShell({
       const op = entry?.posts?.[0] || st.cats[v.board]?.threads?.find((t) => t.no === v.no);
       return op ? B.threadTitle(op, 70) : `No. ${v.no}`;
     };
-    const body = h('div', { class: 'centre__body', 'data-scroll-key': `${pane.id}:${viewKey(v)}` });
+    // by tab: each tab keeps its own place, also when it comes back closed
+    // A thread in columns keeps its own (sideways) place apart from the list's.
+    const columns = CM.layoutOf(v, settings.display) === 'columns';
+    const body = h('div', { class: columns ? 'centre__body centre__body--columns' : 'centre__body', 'data-scroll-key': `${tabOf(pane).id}:${viewKey(v)}${columns ? ':x' : ''}` });
     let title;
     let windowTitle;
     if (v.kind === 'settings') {
@@ -2216,9 +2778,16 @@ export function openShell({
           bridge,
           keyPrefix: prefix,
           canSplit: true,
-          onOpen: (no, where) => (where === 'split' ? openBeside({ kind: 'thread', board: v.board, no }, i) : goto({ kind: 'thread', board: v.board, no }, i)),
+          // 'split': beside; 'tab' / 'tab-front': a new tab (Ctrl/⌘ or middle click)
+          onOpen: (no, where) =>
+            where === 'split'
+              ? openBeside({ kind: 'thread', board: v.board, no }, i)
+              : where === 'tab' || where === 'tab-front'
+                ? openTab({ kind: 'thread', board: v.board, no }, i, { background: where === 'tab' })
+                : goto({ kind: 'thread', board: v.board, no }, i),
           onRefresh: () => loadCatalog(v.board, true),
           onNewThread: () => composer.open({ board: v.board, thread: 0 }),
+          onPastas: (anchor) => openPastasFor(anchor, { board: v.board, thread: 0 }),
           onView: (patch) => {
             Object.assign(pane.catView, patch);
             renderPaneOf(pane);
@@ -2293,6 +2862,8 @@ export function openShell({
           isYou: (no) => isYouOn(v.board, no),
           onRefresh: () => loadOffline(v.board, v.no),
           onGallery: () => gallery(i),
+          layout: CM.layoutOf(v, settings.display),
+          onLayout: () => toggleLayout(st.panes.indexOf(pane)),
           marks: pm?.marks,
           hidden: pm?.why,
           hiderOf: (no) => (pm ? hiderOf(v.board, saved.posts, no) : null),
@@ -2305,8 +2876,8 @@ export function openShell({
           inLibrary: library.available() ? (post) => library.has(post.md5) : null,
           quoteMode: () => settings.quotes?.links || 'inline',
           // another thread's quote: nothing is fetched for previews; a click opens it live beside
-          onCrossQuote: (q) => openCross(q, i),
-          onBoardLink: (q) => openBoardLink(q, pane),
+          onCrossQuote: (q, e) => crossQuote(q, i, e),
+          onBoardLink: (q, e) => openBoardLink(q, pane, T.clickTab(e)),
           ids: saved?.posts
             ? {
                 counts: idsOf(saved.posts),
@@ -2325,6 +2896,7 @@ export function openShell({
       title = [icon('sparkle'), h('span', { class: 'centre__title-text', text: 'Ask' })];
       windowTitle = 'Ask';
       const target = askThread(i);
+      const askTab = tabOf(pane);
       askDrawn.set(pane, R.askKey(target));
       body.append(
         askView({
@@ -2338,8 +2910,13 @@ export function openShell({
           onSettings: () => openAssistantSettings(i),
           onUnload: () => unloadAi(),
           onShowLog: (opener) => showLog(opener),
-          // (the pane object: an answer can end after panes moved)
-          redraw: () => renderPaneOf(pane),
+          // the pane showing this Ask tab, wherever it is now (panes move);
+          // none while the tab is in the background: the answer is drawn
+          // when the tab is shown again (its turn is kept in tab.ask)
+          redraw: () => {
+            const p = st.panes.find((x) => tabOf(x) === askTab);
+            if (p) renderPaneOf(p);
+          },
         }),
       );
     } else if (v.kind === 'library') {
@@ -2563,18 +3140,21 @@ export function openShell({
     // opening (forward), going back, a new pane, a pane closing: picked up
     // where it was when the shell redraws during it
     const m = paneMotion(pane);
+    const strip = stripEl(i);
     const el = h(
       'section',
       {
-        class: `pane${m ? ` pane--${m.kind}` : ''}`,
+        class: `pane${strip ? ' pane--tabbed' : ''}${m ? ` pane--${m.kind}` : ''}`,
         'data-pane': String(i),
         'aria-label': `Pane ${i + 1}: ${c.windowTitle}`,
         'aria-current': many && i === st.focus ? 'true' : null,
         style: m ? { '--motion-delay': `${m.delay}ms` } : null,
       },
+      strip,
       head,
       c.body,
     );
+    markPanel(el, pane, Boolean(strip));
     return { el, windowTitle: c.windowTitle };
   }
 
@@ -2810,26 +3390,35 @@ export function openShell({
    *  are not the same place in a fresh page: a thumbnail not loaded yet
    *  has its given size, and a catalog's cards out of sight only their
    *  estimated one (app.css content-visibility). */
+  //  In columns (columns.js) the same along the other axis: the first
+  //  post whose column is in sight, and how far its first part's column
+  //  is from the box's left edge.
   function scrollAnchor(body) {
-    if (!body.scrollTop) return null;
+    const sc = scrollerOf(body);
+    if (!scrollPos(sc)) return null;
+    const axis = axisOfBox(sc);
     const thread = body.querySelector('.thread');
     const items = thread ? thread.querySelectorAll(':scope > [data-no]') : body.querySelectorAll('.catalog > .catalog__item');
     if (!items.length) return null;
-    const top = body.getBoundingClientRect().top;
-    // they go down in order: the first one whose bottom is in sight
-    let lo = 0;
-    let hi = items.length - 1;
-    let at = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (items[mid].getBoundingClientRect().bottom > top) {
-        at = mid;
-        hi = mid - 1;
-      } else lo = mid + 1;
-    }
+    const start = CM.startOf(sc.getBoundingClientRect(), axis);
+    // they go down (or along the columns) in order: the first one whose
+    // end is in sight
+    const at = CM.firstInView(items.length, (k) => CM.endOf(items[k].getBoundingClientRect(), axis), start);
     if (at < 0) return null;
-    const offset = items[at].getBoundingClientRect().top - top;
-    return thread ? { no: items[at].dataset.no, offset } : { index: at, offset };
+    const offset = CM.startOf(firstPart(items[at]), axis) - start;
+    return thread ? { no: items[at].dataset.no, offset, axis } : { index: at, offset, axis };
+  }
+
+  /** Puts what an anchor stands for back where it was in `body`, along the
+   *  axis it was taken on (a list's anchor means nothing to columns). */
+  function keepAnchor(body, a) {
+    const sc = scrollerOf(body);
+    const axis = axisOfBox(sc);
+    if (!a || (a.axis || 'y') !== axis) return;
+    const el = anchorEl(body, a);
+    if (!el) return;
+    const d = CM.anchorShift(CM.startOf(firstPart(el), axis), CM.startOf(sc.getBoundingClientRect(), axis), a.offset);
+    if (d) setScroll(sc, scrollPos(sc) + d);
   }
 
   /** The element an anchor (scrollAnchor) stands for in a fresh body. */
@@ -2848,10 +3437,16 @@ export function openShell({
     const caret = focusKey && /^(INPUT|TEXTAREA)$/.test(active.tagName) && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
     const anchors = new Map();
     for (const body of scope.querySelectorAll('.centre__body[data-scroll-key]')) {
-      st.scroll[body.dataset.scrollKey] = body.scrollTop;
+      st.scroll[body.dataset.scrollKey] = scrollPos(scrollerOf(body));
       const a = scrollAnchor(body);
       if (a) anchors.set(body.dataset.scrollKey, a);
+      // kept for a tab shown again later (another tab of the pane drawn now)
+      if (a) st.anchors.set(body.dataset.scrollKey, a);
+      else st.anchors.delete(body.dataset.scrollKey);
     }
+    // tab strips keep their sideways scroll
+    const strips = new Map();
+    for (const s of scope.querySelectorAll('.pane-tabs[data-strip]')) strips.set(s.dataset.strip, s.scrollLeft);
     // the sidebar keeps its place too (a long watched list)
     const railNode = scope.classList?.contains('rail__scroll') ? scope : scope.querySelector('.rail__scroll');
     const railY = railNode?.scrollTop || 0;
@@ -2865,7 +3460,7 @@ export function openShell({
       const post = fig.closest('.post');
       if (post?.id) openFiles.set(post.id, fig);
     }
-    return { focusKey, caret, anchors, railY, openFiles };
+    return { focusKey, caret, anchors, railY, openFiles, strips };
   }
 
   /** The other half of capture(), on what was drawn in its place: opened
@@ -2877,7 +3472,7 @@ export function openShell({
     }
     for (const body of scope.querySelectorAll('.centre__body[data-scroll-key]')) {
       const y = st.scroll[body.dataset.scrollKey];
-      const a = y ? saved.anchors.get(body.dataset.scrollKey) : null;
+      const a = y ? saved.anchors.get(body.dataset.scrollKey) || st.anchors.get(body.dataset.scrollKey) : null;
       // A fresh catalog's cards above the one in sight are laid out at
       // their real size while it is put back, and for its first frames
       // (then each keeps that size out of sight): estimates would move it.
@@ -2885,14 +3480,18 @@ export function openShell({
         body.classList.add('is-placing');
         requestAnimationFrame(() => requestAnimationFrame(() => body.classList.remove('is-placing')));
       }
-      if (y) restoreScroll(body, y);
-      const el = a && anchorEl(body, a);
-      if (el) {
-        const d = el.getBoundingClientRect().top - body.getBoundingClientRect().top - a.offset;
-        if (Math.abs(d) >= 1) restoreScroll(body, body.scrollTop + d);
-      }
+      const sc = scrollerOf(body);
+      // columns: their media fit a column's height before anything is measured
+      fitColumns(sc);
+      if (y) setScroll(sc, y);
+      keepAnchor(body, a);
       watchToolsScroll(body);
       watchReading(body);
+    }
+    for (const s of scope.querySelectorAll('.pane-tabs[data-strip]')) {
+      const x = saved.strips?.get(s.dataset.strip);
+      if (x) s.scrollLeft = x;
+      fitStrip(s);
     }
   }
 
@@ -2926,13 +3525,16 @@ export function openShell({
     const bar = body.querySelector('[data-thread-tools]');
     if (!bar) return;
     const k = body.dataset.scrollKey;
+    // In columns the body does not scroll and the bar stays: tucking it
+    // away would give the columns more height, and move every post.
+    if (isColumnsBox(scrollerOf(body))) return;
     bar.classList.toggle('is-tucked', Boolean(tucked.get(k)));
     let last = body.scrollTop;
     body.addEventListener(
       'scroll',
       (e) => {
         // put back where it was by a redraw: nobody scrolled
-        if (isRestoreScroll(e)) {
+        if (isRestoreAnyAxis(e)) {
           last = body.scrollTop;
           return;
         }
@@ -2990,11 +3592,12 @@ export function openShell({
   function watchReading(body) {
     if (!body.querySelector('.thread')) return;
     let frame = 0;
-    body.addEventListener(
+    // a thread in columns scrolls itself, sideways
+    scrollerOf(body).addEventListener(
       'scroll',
       (e) => {
         // a redraw putting it back: what is on screen was marked just now
-        if (frame || isRestoreScroll(e)) return;
+        if (frame || isRestoreAnyAxis(e)) return;
         frame = requestAnimationFrame(() => {
           frame = 0;
           if (body.isConnected) trackRead(body);
@@ -3016,6 +3619,7 @@ export function openShell({
     if (!pane) return;
     toDraw.panes.delete(pane);
     toDraw.grown.delete(pane);
+    toDraw.strips.delete(pane);
     const old = root.querySelector(`.workspace__grid section[data-pane="${i}"]`);
     if (!old) {
       pane.stale = true;
@@ -3054,7 +3658,8 @@ export function openShell({
    *  added in place (browse.js updateThreadView), which costs a few ms
    *  where a redraw of a long thread costs hundreds (and its layout). False
    *  when the pane has to be redrawn instead: settings changed beyond the
-   *  read marks and the watched list, or the view is not sure. */
+   *  read marks, the watched list and the pre-written posts, or the view is
+   *  not sure. */
   function growPane(pane) {
     const i = st.panes.indexOf(pane);
     // a full redraw waits for a sidebar drag: the sections' numbers may be stale
@@ -3066,11 +3671,11 @@ export function openShell({
       return true;
     }
     const drawn = drawnWith.get(pane);
-    if (drawn !== settings && !M.onlyWatchedDiffer(drawn, settings)) return false;
+    if (drawn !== settings && !M.onlyWatchedOrPastasDiffer(drawn, settings)) return false;
     const view = node.querySelector('.centre__body > .browse');
     if (!view) return false;
     const body = view.parentElement;
-    const a = scrollAnchor(body); // null at the top: nothing to keep
+    const a = scrollAnchor(body); // null at the start: nothing to keep
     // The view puts the focus back on a reply link or a control it drew
     // again: not the person moving to this pane (see restoreFocus).
     let grew;
@@ -3082,12 +3687,10 @@ export function openShell({
     }
     if (!grew) return false;
     // Backlink rows, reopened quote copies or the "New posts" line above the
-    // post in sight move it (WebKitGTK has no CSS scroll anchoring).
-    const el = a && anchorEl(body, a);
-    if (el) {
-      const d = el.getBoundingClientRect().top - body.getBoundingClientRect().top - a.offset;
-      if (Math.abs(d) >= 1) restoreScroll(body, body.scrollTop + d);
-    }
+    // post in sight move it (WebKitGTK has no CSS scroll anchoring); in
+    // columns they push it down its column, or into the next one.
+    fitColumns(scrollerOf(body));
+    keepAnchor(body, a);
     drawnWith.set(pane, settings);
     trackRead(body);
     showJump();
@@ -3107,6 +3710,9 @@ export function openShell({
 
   /** The panes whose view matches `pred(view)`. */
   const panesWhere = (pred) => st.panes.filter((p) => p.view && pred(p.view));
+  /** The panes with a background tab whose view matches `pred(view)`: their
+   *  tab strip names it (R.backgroundTabs). */
+  const tabbedWhere = (pred) => st.panes.filter((p) => R.backgroundTabs(p.tabs, p.active, pred).length > 0);
 
   /** Redraws the sidebar's lists. Its edge (and a drag on it) and its foot
    *  stay; the Settings button's marker follows. */
@@ -3130,15 +3736,17 @@ export function openShell({
   // nobody can see (hidden, minimised) waits until it is seen. What the
   // person does is drawn at once instead (code right after it reads the
   // page). A full render() drops what is waiting.
-  // `grown`: thread panes whose thread only got new posts (growPane).
-  let toDraw = { rail: false, panes: new Set(), grown: new Set() };
+  // `grown`: thread panes whose thread only got new posts (growPane);
+  // `strips`: panes whose tab strip changed alone (a background tab's title).
+  let toDraw = { rail: false, panes: new Set(), grown: new Set(), strips: new Set() };
   let drawFrame = 0;
-  function invalidate({ rail = false, panes = [], grown = [] } = {}) {
+  function invalidate({ rail = false, panes = [], grown = [], strips = [] } = {}) {
     if (closed) return;
     if (rail) toDraw.rail = true;
     for (const p of panes) toDraw.panes.add(p);
     for (const p of grown) toDraw.grown.add(p);
-    if (!drawFrame && (toDraw.rail || toDraw.panes.size || toDraw.grown.size)) drawFrame = requestAnimationFrame(flushDraw);
+    for (const p of strips) toDraw.strips.add(p);
+    if (!drawFrame && (toDraw.rail || toDraw.panes.size || toDraw.grown.size || toDraw.strips.size)) drawFrame = requestAnimationFrame(flushDraw);
     // A hidden or minimised window gets no frames: its title (the taskbar's
     // "(3) …", the focused thread's unread count) follows at once all the
     // same. It touches no pane.
@@ -3148,10 +3756,11 @@ export function openShell({
     drawFrame = 0;
     if (closed) return;
     const d = toDraw;
-    toDraw = { rail: false, panes: new Set(), grown: new Set() };
+    toDraw = { rail: false, panes: new Set(), grown: new Set(), strips: new Set() };
     if (d.rail) renderRail();
     for (const p of d.panes) renderPaneOf(p);
     for (const p of d.grown) if (!d.panes.has(p) && !growPane(p)) renderPaneOf(p);
+    for (const p of d.strips) if (!d.panes.has(p)) patchStrip(p);
     refreshAskPanes();
     showUnread();
     menuAnchorRedrawn();
@@ -3159,7 +3768,7 @@ export function openShell({
   function dropInvalidations() {
     if (drawFrame) cancelAnimationFrame(drawFrame);
     drawFrame = 0;
-    toDraw = { rail: false, panes: new Set(), grown: new Set() };
+    toDraw = { rail: false, panes: new Set(), grown: new Set(), strips: new Set() };
   }
 
   // An Ask pane's "This thread" is the nearest thread pane's (askThread):
@@ -3269,13 +3878,74 @@ export function openShell({
   root.addEventListener('pointerdown', focusPane, { capture: true, signal: ac.signal });
   root.addEventListener('focusin', focusPane, { signal: ac.signal });
 
+  // Ctrl/⌘+click on anything that navigates a pane opens it in a new tab
+  // of that pane (goto reads it: takeClickIntent); with Shift, in front.
+  // Set before the click reaches its control, dropped after it.
+  root.addEventListener(
+    'click',
+    (e) => {
+      clickIntent = forcedIntent || T.clickTab(e);
+      if (clickIntent) setTimeout(() => (clickIntent = null), 0);
+    },
+    { capture: true, signal: ac.signal },
+  );
+  root.addEventListener('click', () => (clickIntent = null), { signal: ac.signal });
+
+  // A middle click on what navigates: the same as Ctrl+click. Catalog
+  // cards draw their own (browse.js); quote and board links open their
+  // thread or board here; the rest gets a click that goto reads as such.
+  const MIDDLE_NAV = '.rail__item, .board-card__open, .saved__open, .stats-table__open, .catalog-card, .seg-boardlink, .seg-quotelink[data-thread]';
+  root.addEventListener(
+    'mousedown',
+    (e) => {
+      // no autoscroll (or paste) from the middle button on these
+      if (e.button === 1 && e.target.closest?.(MIDDLE_NAV)) e.preventDefault();
+    },
+    { signal: ac.signal },
+  );
+  root.addEventListener(
+    'auxclick',
+    (e) => {
+      if (e.button !== 1 || e.defaultPrevented || closed) return;
+      const el = e.target.closest?.(MIDDLE_NAV);
+      if (!el || el.disabled || !root.contains(el)) return;
+      e.preventDefault();
+      const at = Number(el.closest('[data-pane]')?.dataset.pane);
+      const i = Number.isInteger(at) ? at : st.focus;
+      const tab = T.clickTab(e);
+      const v = st.panes[i]?.view;
+      if (el.matches('.seg-boardlink')) {
+        if (st.panes[i]) openBoardLink({ board: el.dataset.board || '', search: el.dataset.search || '' }, st.panes[i], tab);
+        return;
+      }
+      if (el.matches('.seg-quotelink')) {
+        const board = el.dataset.board || v?.board;
+        const thread = Number(el.dataset.thread);
+        const post = Number(el.dataset.target) || thread;
+        // a quote of a post of this same thread: nothing to open
+        if (!board || !Number.isSafeInteger(thread) || thread <= 0 || ((v?.kind === 'thread' || v?.kind === 'offline') && v.board === board && v.no === thread)) return;
+        openTab({ kind: 'thread', board, no: thread }, i, { ...tab, jump: { board, no: thread, post } });
+        return;
+      }
+      forcedIntent = tab;
+      try {
+        el.click();
+      } finally {
+        forcedIntent = null;
+        clickIntent = null;
+      }
+    },
+    { signal: ac.signal },
+  );
+
   /** Fetches the pane's catalog or thread again now (the queue still keeps
    *  the 10 s per thread rule), or the board list on the board list. */
   function refreshPane(i) {
     const v = st.panes[i]?.view;
-    if (v?.kind === 'board') loadCatalog(v.board, true);
-    else if (v?.kind === 'thread') loadThread(v.board, v.no);
-    else if (v?.kind === 'boards') loadBoardList();
+    // a catalog or thread: the fetch, for the clover (manualRefresh)
+    if (v?.kind === 'board') return loadCatalog(v.board, true);
+    if (v?.kind === 'thread') return loadThread(v.board, v.no);
+    if (v?.kind === 'boards') loadBoardList();
     else if (v?.kind === 'saved') loadSaved();
     else if (v?.kind === 'library') library.load(true);
     else if (v?.kind === 'offline') loadOffline(v.board, v.no);
@@ -3290,6 +3960,35 @@ export function openShell({
 
   const typing = () => /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '') || document.activeElement?.isContentEditable;
 
+  /** A tab key (tabs-model.js tabKeyAction) on the focused pane. Held
+   *  down, only the moves between tabs repeat. */
+  function runTabKey(k, repeat = false) {
+    const i = Math.min(st.focus, st.panes.length - 1);
+    const pane = st.panes[i];
+    if (!pane) return;
+    const state = { tabs: pane.tabs, active: pane.active };
+    if (k.kind === 'next' || k.kind === 'prev') activateTab(i, T.cycleIndex(state, k.kind === 'next' ? 1 : -1));
+    else if (repeat) return;
+    else if (k.kind === 'pick') {
+      const j = T.pickIndex(k.digit, pane.tabs.length);
+      if (j !== null) activateTab(i, j);
+    } else if (k.kind === 'new') newTabHere(i);
+    else if (k.kind === 'close') closeTab(i, pane.active);
+    else if (k.kind === 'reopen') reopenTab();
+    keepTabFocus();
+  }
+
+  /** After a tab key the focus may have been in the view that went (it
+   *  falls to <body>): it goes to the focused pane's tab shown in its strip,
+   *  else its head (as the strip's Delete does), so a keyboard or screen
+   *  reader user keeps their place. */
+  function keepTabFocus() {
+    const a = document.activeElement;
+    if (a && a !== document.body && a.isConnected) return;
+    const node = root.querySelector(`.workspace__grid section[data-pane="${st.focus}"]`);
+    (node?.querySelector('.pane-tabs [aria-selected="true"]') || node?.querySelector('.pane__head button'))?.focus({ preventScroll: true });
+  }
+
   document.addEventListener(
     'keydown',
     (e) => {
@@ -3299,10 +3998,18 @@ export function openShell({
       // would drop every pane and any reply being written.
       if (B.isRefreshKey(e)) {
         e.preventDefault();
-        if (!e.repeat) refreshPane(st.focus);
+        if (!e.repeat) manualRefresh(st.focus);
         return;
       }
       if (document.querySelector('dialog[open], .gallery')) return;
+      // The tab keys (tabs-model.js tabKeyAction): never while typing, nor
+      // in the reply form; kept from the webview, which would do its own.
+      const tabKey = T.tabKeyAction(e);
+      if (tabKey && !typing() && !pastasOpen() && !document.activeElement?.closest?.('.composer')) {
+        e.preventDefault();
+        runTabKey(tabKey, e.repeat);
+        return;
+      }
       if (e.key === 'Escape') {
         if (e.defaultPrevented) return; // already used (a quote preview hid)
         // An open embedded player closes first (focus is usually still on
@@ -3325,6 +4032,26 @@ export function openShell({
         }
         if (v.kind === 'thread' && !typing() && document.activeElement?.tagName !== 'VIDEO' && !document.activeElement?.closest?.('.composer')) {
           backToCatalog(st.focus);
+        }
+        return;
+      }
+      // R: reply to the thread shown, or a new thread on the board shown
+      // (never with Ctrl/⌘, which is Update; nor while typing, in the reply
+      // form or with the pre-written posts open)
+      if (K.isReplyKey(e) && !typing() && !pastasOpen() && !document.activeElement?.closest?.('.composer')) {
+        const kind = focused()?.view?.kind;
+        if (kind === 'thread' || kind === 'board') {
+          e.preventDefault();
+          if (!e.repeat) replyKey(st.focus);
+        }
+        return;
+      }
+      // L: the focused thread in a list or in columns (columns-model.js)
+      if (K.isLayoutKey(e) && !typing() && !pastasOpen() && !document.activeElement?.closest?.('.composer')) {
+        const kind = focused()?.view?.kind;
+        if (kind === 'thread' || kind === 'offline') {
+          e.preventDefault();
+          if (!e.repeat) toggleLayout(st.focus);
         }
         return;
       }
@@ -3411,7 +4138,18 @@ export function openShell({
 
   // For the e2e checks only (tests/e2e/redraw.mjs): a pane drawn anew on
   // demand, to compare with one updated in place. Never with the real site.
-  if (bridge?.kind === 'mock') window.__ceDebug = { renderPane: (i) => renderPane(i), render: () => render(), posted: (p) => posted(p) };
+  if (bridge?.kind === 'mock') {
+    window.__ceDebug = {
+      renderPane: (i) => renderPane(i),
+      render: () => render(),
+      posted: (p) => posted(p),
+      // each pane's tabs: the views, which one is shown, the focused pane
+      tabs: () => ({ focus: st.focus, panes: st.panes.map((p) => ({ active: p.active, views: p.tabs.map((t) => t.view) })) }),
+      timers: () => [...st.timers.keys()],
+      // whether a thread ("board/no") was fetched this session
+      loaded: (key) => Boolean(st.threads[key]),
+    };
+  }
 
   root.hidden = false;
   for (const v of views()) startLine(v);
@@ -3432,8 +4170,13 @@ export function openShell({
 
   return {
     flush,
+    /** The focused pane's shown view (its active tab's). */
+    focusedView: () => focused()?.view || null,
+    /** Opens a view in a new tab of a pane (default: the focused one), in
+     *  the background unless `background: false`. */
+    openTab: (view, { pane = st.focus, background = true } = {}) => openTab(view, pane, { background }),
     close() {
-      for (const p of st.panes) stopAsk(p.ask, bridge);
+      for (const p of st.panes) for (const t of p.tabs) stopAsk(t.ask, bridge);
       closed = true;
       stats.close();
       clearTimeout(statsTimer);
@@ -3445,6 +4188,7 @@ export function openShell({
       if (tagHistoryTimer) writeTagHistory();
       library.flush();
       stopLibraryEvents?.();
+      pastaPopup?.close({ focus: false });
       composer.close();
       player.close();
       for (const t of st.timers.values()) clearTimeout(t);
@@ -3482,6 +4226,9 @@ export function openShell({
       }
       // Only the watched threads (a title, archived, 404, one watched or
       // not): the sidebar, and the threads whose Watch button changed.
+      // Only the pins or own pre-written posts: the popup, if open, nothing else
+      pastaPopup?.update(settings);
+      if (P.onlyPastasDiffer(prev, settings)) return;
       if (M.onlyWatchedDiffer(prev, settings)) {
         const was = new Set((prev.watched || []).map((w) => tkey(w.board, w.no)));
         const now = new Set((settings.watched || []).map((w) => tkey(w.board, w.no)));

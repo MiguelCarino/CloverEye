@@ -532,10 +532,10 @@ test('fitSettings drops the oldest read marks, then hidden posts, then (You)s', 
 });
 
 test('display switches (Settings → Posts): defaults, kept when read, junk falls back', () => {
-  const d = { time: 'local', revealSpoilers: false, hideImages: false, autoExpand: false, galleryPreload: true, anonymize: false };
+  const d = { time: 'local', revealSpoilers: false, hideImages: false, autoExpand: false, galleryPreload: true, anonymize: false, threadLayout: 'list' };
   assert.deepEqual(M.defaults().display, d);
   assert.deepEqual(M.normalizeSettings({}).display, d);
-  const all = { time: 'relative', revealSpoilers: true, hideImages: true, autoExpand: true, galleryPreload: false, anonymize: true };
+  const all = { time: 'relative', revealSpoilers: true, hideImages: true, autoExpand: true, galleryPreload: false, anonymize: true, threadLayout: 'columns' };
   assert.deepEqual(M.normalizeSettings({ display: all }).display, all);
   assert.deepEqual(M.normalizeSettings({ display: { time: 'board', anonymize: 'yes', junk: 1 } }).display, { ...d, time: 'board' });
   assert.deepEqual(M.normalizeSettings({ display: 'work' }).display, d);
@@ -613,6 +613,18 @@ test('onlyWatchedDiffer: the watched list and read marks only, in any key order'
   assert.equal(M.onlyWatchedDiffer(a, { ...a, theme: 'light' }), false);
   assert.equal(M.onlyWatchedDiffer(a, { ...a, favourites: ['g', 'v'] }), false);
   assert.equal(M.onlyWatchedDiffer(a, null), false);
+});
+
+test('onlyWatchedOrPastasDiffer: a pin or an own post is no reason to redraw a pane', () => {
+  const a = { theme: 'dark', watched: [], lastRead: {}, pastas: { pinned: [], own: [] } };
+  const pinned = { ...a, pastas: { pinned: ['arch-btw'], own: [] } };
+  assert.equal(M.onlyWatchedDiffer(a, pinned), false, 'the plain check sees the pin');
+  assert.equal(M.onlyWatchedOrPastasDiffer(a, pinned), true);
+  assert.equal(M.onlyWatchedOrPastasDiffer(a, { ...pinned, lastRead: { 'g/1': 5 } }), true, 'and read marks');
+  assert.equal(M.onlyWatchedOrPastasDiffer(a, { theme: 'dark', watched: [], lastRead: {} }), true, 'no pastas at all');
+  assert.equal(M.onlyWatchedOrPastasDiffer(a, { ...pinned, theme: 'light' }), false);
+  assert.equal(M.onlyWatchedOrPastasDiffer(undefined, a), false, 'nothing drawn yet');
+  assert.equal(M.onlyWatchedOrPastasDiffer(a, null), false);
 });
 
 test('setupOnto: setup’s changes go over what other windows saved meanwhile', () => {

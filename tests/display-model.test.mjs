@@ -18,7 +18,9 @@ test('defaults: local time, spoilers hidden, files shown, nothing expanded, gall
     autoExpand: false,
     galleryPreload: true,
     anonymize: false,
+    threadLayout: 'list',
   });
+  assert.deepEqual(D.THREAD_LAYOUTS, ['list', 'columns']);
   assert.deepEqual(D.TIME_MODES, ['local', 'relative', 'board']);
 });
 
@@ -26,10 +28,10 @@ test('normalizeDisplay keeps good values and repairs the rest', () => {
   assert.deepEqual(D.normalizeDisplay(undefined), D.displayDefaults());
   assert.deepEqual(D.normalizeDisplay([]), D.displayDefaults());
   assert.deepEqual(D.normalizeDisplay('relative'), D.displayDefaults());
-  const all = { time: 'relative', revealSpoilers: true, hideImages: true, autoExpand: true, galleryPreload: false, anonymize: true };
+  const all = { time: 'relative', revealSpoilers: true, hideImages: true, autoExpand: true, galleryPreload: false, anonymize: true, threadLayout: 'columns' };
   assert.deepEqual(D.normalizeDisplay(all), all);
   assert.deepEqual(D.normalizeDisplay({ ...all, junk: 1 }), all, 'unknown keys dropped');
-  assert.deepEqual(D.normalizeDisplay({ time: 'utc', revealSpoilers: 'yes', hideImages: 1, autoExpand: null, galleryPreload: 'no', anonymize: 0 }), D.displayDefaults());
+  assert.deepEqual(D.normalizeDisplay({ time: 'utc', revealSpoilers: 'yes', hideImages: 1, autoExpand: null, galleryPreload: 'no', anonymize: 0, threadLayout: 'rows' }), D.displayDefaults());
   assert.equal(D.normalizeDisplay({ time: 'board' }).time, 'board');
 });
 

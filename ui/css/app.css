@@ -2999,6 +2999,149 @@ video.post__media {
   color: var(--text);
 }
 
+/* ------------------------------------------------ a pane's tabs (strip) */
+
+/* Browser-like tabs inside a pane (shell.js stripEl, tabs-model.js): the
+   strip sits on top of the pane once it has two tabs; a crowded strip
+   scrolls sideways inside itself, never widening the page. */
+.pane--tabbed {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.pane-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  padding: 4px var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+/* the focused pane's marker goes on top of its strip */
+.pane--tabbed[aria-current='true'] .pane__head {
+  box-shadow: none;
+}
+
+.pane--tabbed[aria-current='true'] > .pane-tabs {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.pane-tab {
+  flex: 0 1 210px;
+  min-width: 132px;
+  display: flex;
+  align-items: center;
+  margin-bottom: -1px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  color: var(--text-muted);
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.pane-tab:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.pane-tab--on,
+.pane-tab--on:hover {
+  border-color: var(--border);
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: inset 0 2px 0 var(--accent-line);
+}
+
+.pane-tab__btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 2px 6px 8px;
+  border: 0;
+  border-radius: inherit;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-xs);
+  text-align: start;
+  cursor: pointer;
+}
+
+.pane-tab__btn .board-tag {
+  flex: none;
+  padding: 0 5px;
+}
+
+.pane-tab__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* at least 24 px (WCAG 2.2 target size), 28 px on a narrow window, and
+   2 px from its tab button */
+.pane-tab__close {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin-inline-start: 2px;
+  margin-inline-end: 4px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.pane-tab__close:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.pane-tab__close .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.pane-tab__btn:focus-visible,
+.pane-tab__close:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* a narrow window (one pane at a time, under the pane tabs): smaller tabs */
+@media (max-width: 900px) {
+  .pane-tabs {
+    padding-inline: var(--space-1);
+  }
+
+  .pane-tab {
+    flex-basis: 170px;
+    min-width: 120px;
+  }
+
+  .pane-tab__close {
+    width: 28px;
+    height: 28px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pane-tab {
+    transition: none;
+  }
+}
+
 /* (You) */
 
 .pill--you {
@@ -3054,6 +3197,19 @@ video.post__media {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* a phone-width form: its title takes two lines rather than cut the
+   thread's number ("Ответ на /g/ No. 50…") */
+@media (max-width: 480px) {
+  .composer:not(.composer--min) .composer__head > strong {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
 
 .composer__foot {
@@ -3429,11 +3585,22 @@ video.post__media {
   color: var(--accent);
 }
 
-/* the footer's buttons: Save for later, Post */
+/* the footer's buttons: Pre-written posts, Save for later, Post. They wrap
+   (Post last, on the right) rather than run past the form's edge: at 360 px
+   the Spanish, Portuguese and Russian labels do not fit on one line. */
 .composer__actions {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: var(--space-2);
   margin-left: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.composer__actions > .btn {
+  max-width: 100%;
+  min-width: 0;
 }
 
 /* replies saved for later: pills at the bottom right, like a folded form
@@ -6640,4 +6807,528 @@ dialog.tag-dialog--hide {
 .tag-stats td:nth-child(2),
 .tag-stats thead th:nth-child(2) {
   text-align: left;
+}
+
+/* ------------------------------------------ confirm dialog, by keyboard */
+/* offline.js confirmDialog: ← → / ↑ ↓ / Home / End / Tab move between
+   Cancel and the confirm button, Enter or Space picks, Esc cancels. */
+
+.confirm-dialog__hint {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+/* the focused answer stands out in every theme: the ring plus a soft halo
+   (--keys: focus moved by a key, shown even after a mouse opened it) */
+.confirm-dialog .dialog__actions .btn:focus-visible,
+.confirm-dialog--keys .dialog__actions .btn:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--focus) 30%, transparent);
+}
+
+@media (max-width: 480px) {
+  .confirm-dialog__hint {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------ clover: manual update */
+/* dom.js icon('clover') + cloverBusy(button, work): .clover-anim on the
+   button (or on the svg) while the update runs, a spin with a little
+   bounce while the leaves pulse in turn; .clover-done, a short pop at the
+   end. Transforms only, so the button never changes size. */
+
+.icon--clover {
+  overflow: visible;
+}
+
+.icon--clover .clover__leaf {
+  transform-box: view-box;
+  transform-origin: 50% 50%;
+}
+
+.clover-anim .icon--clover,
+.icon--clover.clover-anim {
+  animation: clover-spin 840ms cubic-bezier(0.5, 0, 0.25, 1) infinite;
+}
+
+.clover-anim .clover__leaf,
+.icon--clover.clover-anim .clover__leaf {
+  animation: clover-pulse 840ms ease-in-out infinite;
+}
+
+.clover-anim .clover__leaf--2,
+.icon--clover.clover-anim .clover__leaf--2 {
+  animation-delay: 105ms;
+}
+
+.clover-anim .clover__leaf--3,
+.icon--clover.clover-anim .clover__leaf--3 {
+  animation-delay: 210ms;
+}
+
+.clover-anim .clover__leaf--4,
+.icon--clover.clover-anim .clover__leaf--4 {
+  animation-delay: 315ms;
+}
+
+/* an update button is disabled while it loads: the clover stays clear */
+.btn.clover-anim:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+
+/* while it loads it is aria-disabled, not disabled, so the focus stays on
+   it (browse.js cloverButton): it looks disabled, unless it spins */
+.btn[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: progress;
+  transform: none;
+}
+
+.btn.clover-anim[aria-disabled="true"] {
+  opacity: 1;
+}
+
+.clover-done .icon--clover,
+.icon--clover.clover-done {
+  animation: clover-done 400ms cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+
+.clover-done .clover__leaf,
+.icon--clover.clover-done .clover__leaf {
+  animation: clover-pop 400ms cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+
+@keyframes clover-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  70% {
+    transform: rotate(378deg);
+  }
+  86% {
+    transform: rotate(355deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes clover-pulse {
+  0%,
+  60%,
+  100% {
+    transform: scale(1);
+  }
+  28% {
+    transform: scale(1.18);
+  }
+}
+
+@keyframes clover-done {
+  50% {
+    transform: scale(1.08);
+  }
+}
+
+@keyframes clover-pop {
+  0% {
+    transform: scale(0.82);
+  }
+  55% {
+    transform: scale(1.24);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes clover-fade {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clover-anim .icon--clover,
+  .icon--clover.clover-anim {
+    animation: clover-fade 1200ms ease-in-out infinite;
+  }
+
+  .clover-anim .clover__leaf,
+  .icon--clover.clover-anim .clover__leaf,
+  .clover-done .icon--clover,
+  .icon--clover.clover-done,
+  .clover-done .clover__leaf,
+  .icon--clover.clover-done .clover__leaf {
+    animation: none;
+  }
+}
+
+/* ========================================================= pastas (pre-written posts) */
+/* The popup next to Reply / New thread (pasta-view.js): search, the list
+   (pinned first), your own posts; a sheet along the bottom when narrow. */
+
+.pastas {
+  position: fixed;
+  z-index: 970;
+  display: flex;
+  flex-direction: column;
+  width: min(380px, calc(100vw - 16px));
+  max-height: min(560px, calc(100vh - 16px));
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+  animation: pastas-in var(--dur-fast) var(--ease);
+}
+
+@keyframes pastas-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+}
+
+.pastas--sheet {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: auto;
+  max-height: min(80vh, calc(100vh - var(--titlebar-h)));
+  border-bottom: 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  animation-name: pastas-up;
+}
+
+@keyframes pastas-up {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+}
+
+.pastas__head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.pastas__glass {
+  position: absolute;
+  left: calc(var(--space-2) + 10px);
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+.pastas__search {
+  flex: 1 1 auto;
+  padding-left: 34px;
+}
+
+/* the close button beside it is the only cross */
+.pastas__search::-webkit-search-cancel-button {
+  display: none;
+}
+
+.pastas__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--space-1) var(--space-2);
+}
+
+.pastas__section {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: var(--space-2) var(--space-2) 4px;
+  background: var(--surface);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.02em;
+}
+
+.pastas__rows {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pastas__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  border-radius: var(--radius-sm);
+}
+
+.pastas__row:hover,
+.pastas__row:focus-within {
+  background: var(--surface-2);
+}
+
+.pastas__pick {
+  flex: 1 1 auto;
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  padding: 6px var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pastas__pick:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--focus);
+}
+
+.pastas__title {
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pastas__preview {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--post-font);
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.pastas__pin[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+.pastas__pin[aria-pressed='true'] .icon {
+  fill: currentColor;
+}
+
+.pastas__edit-btn {
+  flex: none;
+  min-height: 28px;
+  padding: 0 var(--space-2);
+}
+
+.pastas__delete:hover {
+  color: var(--danger);
+}
+
+.pastas__empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-5) var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+.pastas__empty p,
+.pastas__count {
+  margin: 0;
+}
+
+.pastas__count {
+  padding: var(--space-2) var(--space-2) 0;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+.pastas__own {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.pastas__hint {
+  flex: 1 1 10rem;
+  min-width: 0;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  text-align: right;
+}
+
+.pastas__edit {
+  display: grid;
+  flex: 1 1 100%;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pastas__label {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+.pastas__text {
+  min-height: 84px;
+  max-height: 30vh;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--post-font);
+  resize: vertical;
+}
+
+.pastas__chars {
+  justify-self: end;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.pastas__problem {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-xs);
+}
+
+.pastas__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pastas,
+  .pastas--sheet {
+    animation: none;
+  }
+}
+
+/* a thread in columns (columns-model.js, columns.js) */
+/* The posts fill the pane's height in columns and the post list scrolls
+   sideways, like a newspaper. The pane body does not scroll: the thread's
+   bar stays above the columns (never tucked: that would give the columns
+   more height and move every post). A narrow pane has one column as wide
+   as itself, so the list pages sideways inside its own box. */
+.pane .centre__body--columns,
+.centre__body--columns {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.browse.browse--columns {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.browse--columns > * {
+  flex: none;
+}
+
+/* the loading and update line floats over the columns' foot: coming and
+   going with every poll, it would otherwise change their height */
+.browse--columns > [data-status] {
+  position: absolute;
+  right: var(--space-2);
+  bottom: var(--space-2);
+  z-index: 5;
+  margin: 0;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  box-shadow: var(--shadow-1, none);
+  pointer-events: none;
+  max-width: calc(100% - 2 * var(--space-2));
+}
+
+.browse--columns > .browse__tools--thread,
+.browse--columns > .browse__tools--thread.is-tucked {
+  transform: none;
+  opacity: 1;
+}
+
+/* Its height is set in px (columns.js fitColumns: what the body has left
+   below the bar), never left to flex or grid: a multi-column box laid out
+   at no height at all (a sizing pass) makes columns without end. */
+.thread.thread--columns {
+  flex: none;
+  height: var(--col-h, 24rem);
+  min-height: 10rem;
+  display: block;
+  column-width: 28rem;
+  column-gap: var(--space-5);
+  column-rule: 1px solid var(--border);
+  column-fill: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  border-radius: var(--radius-sm, 4px);
+}
+
+.thread--columns:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* a post stays in one column when it fits; a taller one goes on in the next */
+.thread--columns > * {
+  break-inside: avoid;
+  margin: 0 0 var(--space-2);
+}
+
+/* Posts out of sight skip their layout and keep the size they last had:
+   without it a reply added at the end lays out every column again, 40 to
+   55 ms in a 350-post thread, on every poll that brings one. A fresh box
+   lays them all out for its first frames (columns.js layOutOnce), so that
+   size is the real one and placing it never measures an estimate. */
+.thread--columns > .post {
+  max-width: none;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 28rem auto 240px;
+}
+
+.thread--columns.columns--fresh > .post {
+  content-visibility: visible;
+}
+
+.thread--columns > .unread-line {
+  break-after: avoid;
+}
+
+/* pictures and players fit a column's height (--col-h: columns.js) */
+.thread--columns :is(.post__media, .post__file img, video, iframe) {
+  max-height: calc(var(--col-h, 70vh) - 6rem);
+  object-fit: contain;
+}
+
+.btn.btn--layout {
+  padding: 0 var(--space-2);
+  min-width: var(--control-h);
 }

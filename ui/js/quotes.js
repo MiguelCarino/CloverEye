@@ -10,7 +10,9 @@
 // rules are in quote-model.js and archive-model.js; text only through
 // textContent (renderPost builds nodes).
 
-import { h, icon, isRestoreScroll } from './dom.js';
+import { h, icon } from './dom.js';
+// (either axis: a thread in columns is put back sideways)
+import { isRestoreAnyAxis } from './columns.js';
 import * as Q from './quote-model.js';
 import { deadlinkRef } from './archive-model.js';
 
@@ -461,7 +463,7 @@ export function installQuotePreview(doc = document) {
   doc.addEventListener(
     'scroll',
     (e) => {
-      if (!target || isRestoreScroll(e)) return;
+      if (!target || isRestoreAnyAxis(e)) return;
       if (box.hidden && !byMouse) return;
       const el = live();
       if (el && at) {

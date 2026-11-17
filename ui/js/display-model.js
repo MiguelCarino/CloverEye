@@ -8,6 +8,9 @@ import { ago } from './browse-model.js';
  *  age ("3 min ago", the full time on hover), or as the site wrote it. */
 export const TIME_MODES = Object.freeze(['local', 'relative', 'board']);
 
+/** A thread's layouts (columns-model.js LAYOUTS). */
+export const THREAD_LAYOUTS = Object.freeze(['list', 'columns']);
+
 export function displayDefaults() {
   return {
     time: 'local',
@@ -23,6 +26,9 @@ export function displayDefaults() {
     galleryPreload: true,
     /** Every name and tripcode reads "Anonymous" (IDs and flags stay). */
     anonymize: false,
+    /** How threads lay out their posts unless a tab chose (columns-model.js):
+     *  'list' (read down) or 'columns' (read sideways, like a newspaper). */
+    threadLayout: 'list',
   };
 }
 
@@ -40,6 +46,7 @@ export function normalizeDisplay(raw) {
     autoExpand: bool(raw.autoExpand, d.autoExpand),
     galleryPreload: bool(raw.galleryPreload, d.galleryPreload),
     anonymize: bool(raw.anonymize, d.anonymize),
+    threadLayout: THREAD_LAYOUTS.includes(raw.threadLayout) ? raw.threadLayout : d.threadLayout,
   };
 }
 

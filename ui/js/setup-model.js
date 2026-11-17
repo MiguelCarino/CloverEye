@@ -11,6 +11,7 @@ import { displayDefaults, normalizeDisplay } from './display-model.js';
 import { normalizeStatsSettings } from './stats-model.js';
 import { aiDefaults, normalizeAi, AI_KIND_LABELS } from './ai-model.js';
 import { normalizeTags } from './tag-model.js';
+import { pastaDefaults, normalizePastas } from './pasta-model.js';
 
 /** 2: Your stats (opt-in, local only). 3: Assistant (opt-in, a model on
  *  this computer). */
@@ -186,6 +187,9 @@ export function defaults() {
      *  about what is loaded. Off unless turned on; `kind` and `port` name
      *  the server, `reach` how much one question reads. */
     ai: aiDefaults(),
+    /** Pre-written posts (pasta-model.js): the pinned ones' ids, in order,
+     *  and the person's own posts ({ id, title, text, at }, newest first). */
+    pastas: pastaDefaults(),
   };
 }
 
@@ -307,6 +311,7 @@ export function normalizeSettings(raw) {
   out.display = normalizeDisplay(raw.display);
   out.stats = normalizeStatsSettings(raw.stats);
   out.ai = normalizeAi(raw.ai);
+  out.pastas = normalizePastas(raw.pastas);
   out.lastRead = normalizeLastRead(raw.lastRead);
   if (Array.isArray(raw.yous)) {
     out.yous = raw.yous
@@ -413,6 +418,14 @@ export function onlyWatchedDiffer(a, b) {
   if (!isObj(a) || !isObj(b)) return false;
   const rest = (s) => sortedJson({ ...s, watched: null, lastRead: null });
   return rest(a) === rest(b);
+}
+
+/** onlyWatchedDiffer, the pre-written posts (settings.pastas) left out
+ *  too: no pane draws them (only the popup, which keeps its own copy), so
+ *  a pin or an own post must not cost an open thread its in-place growth. */
+export function onlyWatchedOrPastasDiffer(a, b) {
+  if (!isObj(a) || !isObj(b)) return false;
+  return onlyWatchedDiffer({ ...a, pastas: null }, { ...b, pastas: null });
 }
 
 const keyOf = (board, no) => `${board}/${no}`;
