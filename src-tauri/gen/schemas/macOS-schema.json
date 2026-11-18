@@ -345,10 +345,58 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the ai_chat command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ai-chat",
+          "markdownDescription": "Enables the ai_chat command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ai_detect command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ai-detect",
+          "markdownDescription": "Enables the ai_detect command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ai_loaded command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ai-loaded",
+          "markdownDescription": "Enables the ai_loaded command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ai_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ai-stop",
+          "markdownDescription": "Enables the ai_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ai_unload command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ai-unload",
+          "markdownDescription": "Enables the ai_unload command without any pre-configured scope."
+        },
+        {
           "description": "Enables the check_ffmpeg command without any pre-configured scope.",
           "type": "string",
           "const": "allow-check-ffmpeg",
           "markdownDescription": "Enables the check_ffmpeg command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the diagnostics_note command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-diagnostics-note",
+          "markdownDescription": "Enables the diagnostics_note command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the diagnostics_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-diagnostics-save",
+          "markdownDescription": "Enables the diagnostics_save command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the diagnostics_text command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-diagnostics-text",
+          "markdownDescription": "Enables the diagnostics_text command without any pre-configured scope."
         },
         {
           "description": "Enables the download_file command without any pre-configured scope.",
@@ -385,6 +433,48 @@
           "type": "string",
           "const": "allow-get-settings",
           "markdownDescription": "Enables the get_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the library_browse command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-library-browse",
+          "markdownDescription": "Enables the library_browse command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the library_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-library-delete",
+          "markdownDescription": "Enables the library_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the library_fetch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-library-fetch",
+          "markdownDescription": "Enables the library_fetch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the library_import command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-library-import",
+          "markdownDescription": "Enables the library_import command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the library_import_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-library-import-dir",
+          "markdownDescription": "Enables the library_import_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the library_load command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-library-load",
+          "markdownDescription": "Enables the library_load command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the library_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-library-save",
+          "markdownDescription": "Enables the library_save command without any pre-configured scope."
         },
         {
           "description": "Enables the offline_delete command without any pre-configured scope.",
@@ -477,10 +567,58 @@
           "markdownDescription": "Enables the stats_write command without any pre-configured scope."
         },
         {
+          "description": "Denies the ai_chat command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ai-chat",
+          "markdownDescription": "Denies the ai_chat command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ai_detect command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ai-detect",
+          "markdownDescription": "Denies the ai_detect command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ai_loaded command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ai-loaded",
+          "markdownDescription": "Denies the ai_loaded command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ai_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ai-stop",
+          "markdownDescription": "Denies the ai_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ai_unload command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ai-unload",
+          "markdownDescription": "Denies the ai_unload command without any pre-configured scope."
+        },
+        {
           "description": "Denies the check_ffmpeg command without any pre-configured scope.",
           "type": "string",
           "const": "deny-check-ffmpeg",
           "markdownDescription": "Denies the check_ffmpeg command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the diagnostics_note command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-diagnostics-note",
+          "markdownDescription": "Denies the diagnostics_note command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the diagnostics_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-diagnostics-save",
+          "markdownDescription": "Denies the diagnostics_save command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the diagnostics_text command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-diagnostics-text",
+          "markdownDescription": "Denies the diagnostics_text command without any pre-configured scope."
         },
         {
           "description": "Denies the download_file command without any pre-configured scope.",
@@ -517,6 +655,48 @@
           "type": "string",
           "const": "deny-get-settings",
           "markdownDescription": "Denies the get_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the library_browse command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-library-browse",
+          "markdownDescription": "Denies the library_browse command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the library_delete command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-library-delete",
+          "markdownDescription": "Denies the library_delete command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the library_fetch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-library-fetch",
+          "markdownDescription": "Denies the library_fetch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the library_import command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-library-import",
+          "markdownDescription": "Denies the library_import command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the library_import_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-library-import-dir",
+          "markdownDescription": "Denies the library_import_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the library_load command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-library-load",
+          "markdownDescription": "Denies the library_load command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the library_save command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-library-save",
+          "markdownDescription": "Denies the library_save command without any pre-configured scope."
         },
         {
           "description": "Denies the offline_delete command without any pre-configured scope.",

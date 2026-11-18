@@ -3,3 +3,5 @@ node_modules/
 results/
 *.log
 shots/
+.DS_Store
+out/
