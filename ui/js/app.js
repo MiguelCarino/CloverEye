@@ -12,6 +12,8 @@ import { installQuotePreview } from './quotes.js';
 import { decodePanes } from './tabs-model.js';
 import { tr } from './i18n.js';
 import { titleWithCount } from './unread-model.js';
+import { log } from './log.js';
+import { errorKind, changedKeys, keysFields, createErrorGate } from './log-model.js';
 
 const bridge = createBridge({
   tauri: window.__TAURI__ ?? null,
@@ -22,8 +24,16 @@ const bridge = createBridge({
 
 // Errors the page did not handle go in the diagnostics report (Settings ›
 // Diagnostics), with where they happened; never post text or settings.
-window.addEventListener('error', (e) => bridge.noteError([e.message, 'at', [String(e.filename || '').split('/').pop(), e.lineno].join(':')].join(' ')));
-window.addEventListener('unhandledrejection', (e) => bridge.noteError(['unhandled:', e.reason?.message ?? e.reason].join(' ')));
+// The same error once a minute, 20 a minute at most (an error in a frame
+// loop would fill the log); a rejection's reason can be any text (an app
+// error naming a folder), so only its kind goes.
+const errorGate = createErrorGate();
+const noteError = (line) => {
+  const l = errorGate(line);
+  if (l) bridge.noteError(l);
+};
+window.addEventListener('error', (e) => noteError([e.message, 'at', [String(e.filename || '').split('/').pop(), e.lineno].join(':')].join(' ')));
+window.addEventListener('unhandledrejection', (e) => noteError(['unhandled:', errorKind(e.reason)].join(' ')));
 
 const titleEl = document.getElementById('titlebarTitle');
 // The title is often a thread's name: only the app's own titles ("Settings",
@@ -73,12 +83,20 @@ window.__ceClosing = () => {
   const quick = matchMedia('(prefers-reduced-motion: reduce)').matches;
   document.documentElement.classList.add('is-closing');
   let stored;
+  const t0 = performance.now();
   try {
-    stored = Promise.resolve(shell?.flush?.()).catch(() => {});
-  } catch {
+    stored = Promise.resolve(shell?.flush?.()).catch((e) => log.warn('app', 'window.flush.failed', { kind: errorKind(e) }));
+  } catch (e) {
+    log.warn('app', 'window.flush.failed', { kind: errorKind(e) });
     stored = Promise.resolve();
   }
-  Promise.all([Promise.race([stored, sleep(FLUSH_WAIT_MS)]), sleep(quick ? 80 : 230)]).finally(() => bridge.window?.close?.());
+  let flushed = false;
+  stored.then(() => (flushed = true));
+  Promise.all([Promise.race([stored, sleep(FLUSH_WAIT_MS)]), sleep(quick ? 80 : 230)]).finally(() => {
+    log.info('app', 'window.closing', { flushed, ms: Math.round(performance.now() - t0) });
+    log.flush();
+    bridge.window?.close?.();
+  });
 };
 // A page going away some other way (a reload, a browser tab): the same,
 // as far as it gets.
@@ -108,6 +126,10 @@ let queued = null;
 const ownSaves = []; // stableJson of this window's writes not echoed yet
 const OWN_SAVES_KEPT = 8;
 
+// The settings as last sent to the app: what the next save changed (names
+// only, at debug).
+let lastStored = null;
+
 async function drainSaves() {
   try {
     while (queued) {
@@ -115,9 +137,14 @@ async function drainSaves() {
       queued = null;
       ownSaves.push(sig);
       if (ownSaves.length > OWN_SAVES_KEPT) ownSaves.shift();
+      const end = log.time('settings', 'settings.saved');
+      const keys = log.enabled('debug') && lastStored ? keysFields(changedKeys(lastStored, s)) : null;
       try {
         await bridge.setSettings(s);
+        lastStored = s;
+        end({ ...keys, bytes: sig.length, waiting: ownSaves.length });
       } catch (e) {
+        log.error('settings', 'settings.save.failed', { kind: errorKind(e), bytes: sig.length });
         // never written, so it never comes back: not waited for
         const at = ownSaves.lastIndexOf(sig);
         if (at >= 0) ownSaves.splice(at, 1);
@@ -144,7 +171,10 @@ function releaseHeld() {
   heldTimer = 0;
   const raw = heldForeign;
   heldForeign = null;
-  if (raw) applyIncoming(raw);
+  if (raw) {
+    log.debug('settings', 'settings.held.applied', {});
+    applyIncoming(raw);
+  }
 }
 
 /** Settings another window saved: this one follows (and, with no shell
@@ -152,7 +182,11 @@ function releaseHeld() {
 function applyIncoming(raw) {
   const next = normalizeSettings(raw);
   const sig = stableJson(next);
-  if (sig === currentSig) return;
+  if (sig === currentSig) {
+    log.debug('settings', 'settings.foreign.same', { bytes: sig.length });
+    return;
+  }
+  if (log.enabled('debug')) log.debug('settings', 'settings.foreign', { ...keysFields(changedKeys(current, next)), bytes: sig.length, shell: Boolean(shell) });
   current = next;
   currentSig = sig;
   if (!shell) return;
@@ -165,6 +199,7 @@ function settingsChanged(raw) {
   // still on the way): nothing to take, and what was held is older
   const own = ownSaves.indexOf(stableJson(raw));
   if (own >= 0) {
+    log.debug('settings', 'settings.echo', { skipped: own, waiting: ownSaves.length - own - 1 });
     ownSaves.splice(0, own + 1);
     if (!ownSaves.length) {
       clearTimeout(heldTimer);
@@ -175,6 +210,7 @@ function settingsChanged(raw) {
   }
   // The browser bridge never sends a window its own writes: nothing to wait for.
   if (bridge.kind === 'tauri' && ownSaves.length) {
+    log.debug('settings', 'settings.foreign.held', { waiting: ownSaves.length, replaced: Boolean(heldForeign) });
     heldForeign = raw;
     clearTimeout(heldTimer);
     heldTimer = setTimeout(releaseHeld, HELD_MAX_MS);
@@ -242,6 +278,8 @@ function runSetup(settings, rerun) {
   closeShell();
   if (location.hash === '#setup') history.replaceState(null, '', location.pathname + location.search);
   const start = settings;
+  const end = log.time('app', 'setup.finished', 'info');
+  log.info('app', 'setup.started', { rerun: Boolean(rerun), setupVersion: Number(settings?.setupVersion) || 0 });
   startSetup({
     bridge,
     settings,
@@ -254,6 +292,7 @@ function runSetup(settings, rerun) {
     onFinish: (final, { boards }) => {
       if (boards) boardsCache = boards;
       const s = setupOnto(start, final, current);
+      end({ changed: changedKeys(start, s).length, boards: Boolean(boards) });
       showShell(s);
       if (stableJson(s) !== stableJson(start)) storeSettings(s, currentSig);
     },
@@ -263,24 +302,52 @@ function runSetup(settings, rerun) {
 async function boot() {
   document.documentElement.dataset.host = bridge.kind;
   wireWindowControls();
+  const t0 = performance.now();
   let stored = null;
   try {
     stored = await bridge.getSettings();
-  } catch {
+  } catch (e) {
+    log.warn('settings', 'settings.read.failed', { kind: errorKind(e) });
     stored = null;
   }
   const settings = stored ? normalizeSettings(stored) : defaults();
+  // (getSettings set Detailed logs from the file: debug lines work from here)
+  log.info('settings', 'settings.loaded', {
+    first: !stored,
+    bytes: stored ? stableJson(stored).length : 0,
+    keys: stored && typeof stored === 'object' ? Object.keys(stored).length : 0,
+    schema: Number(settings.schema) || 0,
+    setupVersion: Number(settings.setupVersion) || 0,
+    ms: Math.round(performance.now() - t0),
+  });
+  lastStored = settings;
   // the language's table loads before anything is drawn
   await applyLook(settings);
   // Settings saved in another window: this one follows.
   bridge.onSettingsChanged?.(settingsChanged);
+  const started = (mode) =>
+    log.info('app', 'app.started', {
+      host: bridge.kind,
+      window: extraPanes ? 'extra' : 'main',
+      panes: extraPanes?.length || 0,
+      mode,
+      lang: String(settings.lang || 'auto'),
+      theme: String(settings.theme || ''),
+      width: innerWidth,
+      height: innerHeight,
+      reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+      detailed: log.isDetailed(),
+      ms: Math.round(performance.now() - bootStarted),
+    });
   if (extraPanes) {
     showShell(settings);
+    started('shell');
     return;
   }
   const rerun = location.hash === '#setup' && !needsSetup(settings);
   if (needsSetup(settings) || rerun) runSetup(settings, rerun);
   else showShell(settings);
+  started(needsSetup(settings) || rerun ? 'setup' : 'shell');
 }
 
 // #setup while the app is already open (a link, or typed in a browser).
@@ -307,4 +374,6 @@ function endSplash(started) {
 installHoverPreview();
 installQuotePreview();
 const bootStarted = performance.now();
-boot().finally(() => endSplash(bootStarted));
+boot()
+  .catch((e) => log.error('app', 'boot.failed', { kind: errorKind(e) }))
+  .finally(() => endSplash(bootStarted));

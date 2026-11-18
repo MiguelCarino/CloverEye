@@ -12,6 +12,8 @@
 // What comes from the site (posts, names, titles, file names) is never
 // translated: such parts carry translate="no" and are skipped with
 // everything inside them.
+import { log } from './log.js';
+import { errorKind } from './log-model.js';
 
 export const LANGS = [
   { code: 'en', name: 'English' },
@@ -171,8 +173,9 @@ export async function setLanguage(setting, { load = (code) => fetch(`i18n/${code
   if (code !== 'en') {
     try {
       table = await load(code);
-    } catch (_) {
+    } catch (e) {
       table = {};
+      log.warn('ui', 'lang.table.failed', { lang: code, kind: errorKind(e) });
     }
   }
   lang = code;

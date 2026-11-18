@@ -289,13 +289,20 @@ fn read_index(root: &Path) -> Result<Option<Vec<Value>>, String> {
     let bytes = match read_capped(&root.join(INDEX), MAX_INDEX) {
         Ok(Some(b)) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Ok(None) | Err(_) => return Err(INDEX_UNREADABLE.to_string()),
+        Ok(None) => {
+            log_warn!("offline", "saved threads' index.json is too large to read; left as it is", max = MAX_INDEX);
+            return Err(INDEX_UNREADABLE.to_string());
+        }
+        Err(e) => {
+            log_warn!("offline", "saved threads' index.json can't be read; left as it is", error = e.kind());
+            return Err(INDEX_UNREADABLE.to_string());
+        }
     };
-    serde_json::from_slice::<Value>(&bytes)
-        .ok()
-        .and_then(|v| v.get("threads").and_then(Value::as_array).cloned())
-        .map(Some)
-        .ok_or_else(|| INDEX_UNREADABLE.to_string())
+    let threads = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| v.get("threads").and_then(Value::as_array).cloned());
+    if threads.is_none() {
+        log_warn!("offline", "saved threads' index.json is not an index; left as it is", bytes = bytes.len());
+    }
+    threads.map(Some).ok_or_else(|| INDEX_UNREADABLE.to_string())
 }
 
 /// index.json's threads, only to show them: none when it is missing or
@@ -414,6 +421,7 @@ fn check_thread(board: &str, no: u64) -> Result<(), String> {
 pub async fn offline_list(app: tauri::AppHandle, dir: Option<String>) -> Result<Value, String> {
     let root = root_of(&app, dir.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || {
+        let t0 = std::time::Instant::now();
         let index = index_entries(&root);
         let mut out = Vec::new();
         let Ok(entries) = std::fs::read_dir(&root) else { return Ok(json!([])) };
@@ -449,6 +457,8 @@ pub async fn offline_list(app: tauri::AppHandle, dir: Option<String>) -> Result<
             }));
         }
         out.sort_by_key(|v| std::cmp::Reverse(v.get("savedAt").and_then(Value::as_u64).unwrap_or(0)));
+        let total: u64 = out.iter().filter_map(|v| v.get("bytes").and_then(Value::as_u64)).sum();
+        log_debug!("offline", "saved threads listed", threads = out.len(), indexed = index.len(), bytes = total, ms = crate::diag::ms(t0));
         Ok(Value::Array(out))
     })
     .await
@@ -462,11 +472,17 @@ pub async fn offline_read(app: tauri::AppHandle, dir: Option<String>, board: Str
     check_thread(&board, no)?;
     let root = root_of(&app, dir.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || {
+        let t0 = std::time::Instant::now();
         let folder = find_thread_dir(&root, &board, no).ok_or("not-saved")?;
         let Some(bytes) = read_capped(&folder.join(THREAD), MAX_THREAD_JSON).map_err(|_| "not-saved".to_string())? else {
+            log_warn!("offline", "saved thread too large to read", board = board, thread = no, max = MAX_THREAD_JSON);
             return Err("The saved thread is larger than CloverEye reads (32 MB).".to_string());
         };
-        let thread: Value = serde_json::from_slice(&bytes).map_err(|e| format!("The saved thread is damaged: {e}"))?;
+        let thread: Value = serde_json::from_slice(&bytes).map_err(|e| {
+            log_warn!("offline", "saved thread is damaged", board = board, thread = no, bytes = bytes.len(), error = e);
+            format!("The saved thread is damaged: {e}")
+        })?;
+        log_debug!("offline", "saved thread read", board = board, thread = no, bytes = bytes.len(), posts = thread.get("posts").and_then(Value::as_array).map_or(0, Vec::len), ms = crate::diag::ms(t0));
         let meta = index_entries(&root).into_iter().find(|v| same_thread(v, &board, no));
         Ok(json!({
             "thread": thread,
@@ -497,8 +513,11 @@ pub async fn offline_write_thread(app: tauri::AppHandle, dir: Option<String>, bo
     }
     let title: String = title.chars().filter(|c| !c.is_control()).take(200).collect();
     let root = root_of(&app, dir.as_deref())?;
+    // the folder is the person's choice: never in the log
+    let hide = [root.display().to_string()];
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let (b, size, t0) = (board.clone(), bytes.len(), Instant::now());
+    let out = tauri::async_runtime::spawn_blocking(move || {
         let state = handle.state::<OfflineState>();
         let _lock = state.index.lock().unwrap();
         ensure_dir(&root)?;
@@ -525,7 +544,13 @@ pub async fn offline_write_thread(app: tauri::AppHandle, dir: Option<String>, bo
         Ok(folder.display().to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+    .and_then(|r| r);
+    match &out {
+        Ok(_) => log_info!("offline", "thread saved", board = b, thread = no, posts = count, bytes = size, ms = t0.elapsed().as_millis()),
+        Err(e) => log_warn!("offline", "thread not saved", board = b, thread = no, error = crate::diag::redact(e, &hide)),
+    }
+    out
 }
 
 /// Waits for the download gate: one download at a time, each starting at
@@ -535,6 +560,7 @@ where
     T: Send + 'static,
 {
     let state = app.state::<OfflineState>();
+    let t0 = Instant::now();
     let mut last = state.gate.lock().await;
     if let Some(t) = *last {
         let since = t.elapsed();
@@ -542,6 +568,7 @@ where
             tokio::time::sleep(GAP - since).await;
         }
     }
+    log_debug!("files", "download gate passed", waited_ms = t0.elapsed().as_millis());
     let out = tauri::async_runtime::spawn_blocking(job).await.map_err(|e| e.to_string());
     *last = Some(Instant::now());
     out?
@@ -554,15 +581,25 @@ pub(crate) fn download(url: &str) -> Result<Vec<u8>, String> {
         .user_agent(&clovereye_fetch::user_agent())
         .redirects(0)
         .build();
-    let res = agent.get(url).call().map_err(|e| match e {
-        ureq::Error::Status(404, _) => "not-found".to_string(),
-        other => other.to_string(),
+    let t0 = Instant::now();
+    let res = agent.get(url).call().map_err(|e| {
+        let status = match &e {
+            ureq::Error::Status(code, _) => code.to_string(),
+            ureq::Error::Transport(t) => format!("{}", t.kind()),
+        };
+        log_debug!("files", "image host request failed", status = status, ms = t0.elapsed().as_millis());
+        match e {
+            ureq::Error::Status(404, _) => "not-found".to_string(),
+            other => other.to_string(),
+        }
     })?;
     let mut body = Vec::new();
     res.into_reader().take(MAX_FILE + 1).read_to_end(&mut body).map_err(|e| e.to_string())?;
     if body.len() as u64 > MAX_FILE {
+        log_warn!("files", "file from the image host is larger than CloverEye saves", max = MAX_FILE);
         return Err("The file is larger than CloverEye saves.".into());
     }
+    log_debug!("files", "image host request", status = 200, bytes = body.len(), ms = t0.elapsed().as_millis());
     Ok(body)
 }
 
@@ -591,18 +628,26 @@ pub async fn offline_fetch_file(
     if let Ok(m) = std::fs::symlink_metadata(&path) {
         let done = m.is_file() && m.len() > 0 && (kind == "thumb" || size.map_or(true, |s| s == 0 || s == m.len()));
         if done {
+            log_debug!("offline", "file already saved; skipped", board = board, thread = no, kind = kind);
             return Ok(json!({ "status": "skipped", "bytes": m.len() }));
         }
         if !m.is_file() {
             return Err(format!("{} is not a file.", path.display()));
         }
     }
-    gated(&app, move || {
+    let (b, k, t0) = (board.clone(), kind.clone(), Instant::now());
+    let hide = [root.display().to_string()];
+    let out = gated(&app, move || {
         let body = download(&url)?;
         write_atomic(&path, &body)?;
         Ok(json!({ "status": "saved", "bytes": body.len() }))
     })
-    .await
+    .await;
+    match &out {
+        Ok(v) => log_debug!("offline", "file saved for offline", board = b, thread = no, kind = k, bytes = v["bytes"], ms = t0.elapsed().as_millis()),
+        Err(e) => log_warn!("offline", "file not saved for offline", board = b, thread = no, kind = k, error = crate::diag::redact(e, &hide)),
+    }
+    out
 }
 
 /// Deletes a saved thread: its folder and its index entry.
@@ -610,8 +655,10 @@ pub async fn offline_fetch_file(
 pub async fn offline_delete(app: tauri::AppHandle, dir: Option<String>, board: String, no: u64) -> Result<(), String> {
     check_thread(&board, no)?;
     let root = root_of(&app, dir.as_deref())?;
+    let hide = [root.display().to_string()];
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let (b, t0) = (board.clone(), Instant::now());
+    let out = tauri::async_runtime::spawn_blocking(move || {
         let state = handle.state::<OfflineState>();
         let _lock = state.index.lock().unwrap();
         if let Some(folder) = find_thread_dir(&root, &board, no) {
@@ -630,7 +677,13 @@ pub async fn offline_delete(app: tauri::AppHandle, dir: Option<String>, board: S
         Ok(())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+    .and_then(|r| r);
+    match &out {
+        Ok(()) => log_info!("offline", "saved thread deleted", board = b, thread = no, ms = t0.elapsed().as_millis()),
+        Err(e) => log_warn!("offline", "saved thread not deleted", board = b, thread = no, error = crate::diag::redact(e, &hide)),
+    }
+    out
 }
 
 /// "Download all files": one file from the image host into the download
@@ -653,15 +706,24 @@ pub async fn download_file(app: tauri::AppHandle, url: String, name: String, dir
     let same = folder.join(&name);
     if let (Some(s), Ok(m)) = (size.filter(|s| *s > 0), std::fs::symlink_metadata(&same)) {
         if m.is_file() && m.len() == s {
+            log_debug!("files", "download all: already there; skipped", ext = ext, bytes = s);
             return Ok(json!({ "status": "skipped", "path": same.display().to_string() }));
         }
     }
-    gated(&app, move || {
+    let hide = [folder.display().to_string(), name.clone()];
+    let (ext, t0) = (ext.to_string(), Instant::now());
+    let out = gated(&app, move || {
         let body = download(&url)?;
         let path = write_new(&folder, &name, &body)?;
+        log_debug!("files", "download all: file saved", bytes = body.len());
         Ok(json!({ "status": "saved", "path": path.display().to_string() }))
     })
-    .await
+    .await;
+    match &out {
+        Ok(_) => log_debug!("files", "download all: done", ext = ext, ms = t0.elapsed().as_millis()),
+        Err(e) => log_warn!("files", "download all: file not saved", ext = ext, error = crate::diag::redact(e, &hide)),
+    }
+    out
 }
 
 // ------------------------------------------------------- the cesaved: scheme

@@ -6,6 +6,8 @@ import { step, saveName, pictureShown, currentView, preloadable } from './galler
 import { preloadIndices } from './display-model.js';
 import { autoplay, h, icon, toast } from './dom.js';
 import { formatBytes } from './render.js';
+import { log } from './log.js';
+import { errorKind } from './log-model.js';
 
 const WHEEL_GAP_MS = 180;
 
@@ -206,12 +208,15 @@ export function openGallery({ items, start = 0, title = '', onSave, preload = tr
     saving = true;
     saveState('saving', 'Saving…');
     flyToSave();
+    const t0 = performance.now();
     try {
       const where = await onSave({ ...it, name: saveName(it) });
       saveState('saved', 'Saved');
       markSaved(at);
+      log.info('gallery', 'gallery.saved', { no: Number(it.no) || 0, video: Boolean(it.video), ms: Math.round(performance.now() - t0) });
       toast(`Saved: ${where}`);
     } catch (e) {
+      log.warn('gallery', 'gallery.save.failed', { no: Number(it.no) || 0, kind: errorKind(e), ms: Math.round(performance.now() - t0) });
       saveState('failed', 'Not saved');
       toast(`Couldn’t save: ${e?.message || e}`);
     } finally {

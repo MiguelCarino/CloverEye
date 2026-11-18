@@ -303,3 +303,119 @@ test('merge across windows: add, pin, edit, then another window saves: the pin s
   const plain = P.pastaOp('put', 'own-x', { id: 'own-x', text: 'x', at: 1 }, { pinned: false });
   assert.equal(P.isPinned(plain[1](base()), 'own-x'), false);
 });
+
+// ------------------------------------------------- the grid panel, Save as pasta
+
+test('tag filter: TAGS in chip order, sections by tag, Yours is own only', () => {
+  assert.deepEqual([...P.TAGS], ['all', 'bump', 'reaction', 'classic', 'greentext', 'tech', 'own']);
+  const s = P.addOwn(base(), { id: 'own-t-0001', title: 'Mine', text: 'my bump', at: 1 });
+  const all = P.sections('', s);
+  const bump = P.sections('', s, P.MAX_SHOWN, 'bump');
+  assert.ok(bump.total > 0 && bump.total < all.total);
+  assert.ok([...bump.pinned, ...bump.own, ...bump.builtIn].every((p) => p.tags.includes('bump')));
+  const own = P.sections('', s, P.MAX_SHOWN, 'own');
+  assert.deepEqual([...own.pinned, ...own.own, ...own.builtIn].map((p) => p.id), ['own-t-0001']);
+  assert.equal(P.sections('', s, P.MAX_SHOWN, 'nonsense').total, all.total, 'an unknown tag filters nothing');
+  assert.equal(P.sections('', s, P.MAX_SHOWN, 'all').total, all.total);
+  // the search and the tag together
+  assert.ok(P.sections('gentoo', s, P.MAX_SHOWN, 'tech').total >= 1);
+  assert.equal(P.sections('gentoo', s, P.MAX_SHOWN, 'bump').total, 0);
+  assert.equal(P.hasTag({ own: true, tags: ['own'] }, 'own'), true);
+  assert.equal(P.hasTag({ own: false, tags: ['bump'] }, 'own'), false);
+});
+
+test('previewLines: the first lines, blanks left out, greentext marked, long lines cut', () => {
+  const text = '>be me\n\n>>12345\nplain line\n>>>/g/ board\nfourth\nfifth\nsixth';
+  const lines = P.previewLines(text);
+  assert.equal(lines.length, 5);
+  assert.deepEqual(
+    lines.map((l) => [l.text, l.green]),
+    [
+      ['>be me', true],
+      ['>>12345', false],
+      ['plain line', false],
+      ['>>>/g/ board', true],
+      ['fourth', false],
+    ],
+  );
+  const long = P.previewLines('x'.repeat(500), 5, 40);
+  assert.equal(long[0].text.length, 40);
+  assert.ok(long[0].text.endsWith('…'));
+  assert.deepEqual(P.previewLines(''), []);
+});
+
+test('titleFromText: the first line, trimmed, spaces run together, quote-link lines skipped, cut', () => {
+  assert.equal(P.titleFromText('  Hello   there  \nsecond'), 'Hello there');
+  assert.equal(P.titleFromText('\n\n>>123 >>456\n>be me\n>post'), '>be me');
+  assert.equal(P.titleFromText('>>123'), '>>123', 'only quote links: that line all the same');
+  assert.equal(P.titleFromText('y'.repeat(100)).length, 60);
+  assert.equal(P.titleFromText('y'.repeat(100), 20).length, 20);
+  assert.equal(P.titleFromText(''), '');
+});
+
+test('postPastaText / pastaFromText: a post’s plain text as an own pasta', () => {
+  // commentText's output: quotes and greentext as typed, the HTML gone
+  const plain = '>>500010\r\n>be me   \n>write a pasta\nkek\n\n\n';
+  assert.equal(P.postPastaText(plain), '>>500010\n>be me\n>write a pasta\nkek');
+  assert.equal(P.postPastaText('z'.repeat(P.MAX_TEXT + 50)).length, P.MAX_TEXT);
+  assert.deepEqual(P.pastaFromText(plain), { title: '>be me', text: '>>500010\n>be me\n>write a pasta\nkek' });
+  assert.equal(P.pastaFromText('   \n '), null, 'a picture alone: nothing to save');
+  // saved as the panel saves one: it shows under Your own
+  const got = P.pastaFromText(plain);
+  const op = P.pastaOp('put', 'own-p-0001', { id: 'own-p-0001', ...got, at: 5 });
+  const s = op[1](base());
+  assert.deepEqual(P.sections('', s, P.MAX_SHOWN, 'own').own.map((p) => [p.title, p.text]), [[got.title, got.text]]);
+  // full: the caps say so
+  let full = base();
+  for (let i = 0; i < P.MAX_OWN; i++) full = P.addOwn(full, { id: `own-f-${String(i).padStart(4, '0')}`, text: `p${i}`, at: i });
+  assert.equal(P.ownProblem(full, got), 'full');
+});
+
+test('gridStep: arrows move in two dimensions across the sections', () => {
+  // three columns; sections of 2 (pinned), 4 (own), 7 (built in)
+  //   pinned: 0 1
+  //   own:    2 3 4 / 5
+  //   built:  6 7 8 / 9 10 11 / 12
+  const sizes = [2, 4, 7];
+  const go = (i, key, cols = 3) => P.gridStep(sizes, i, key, cols);
+  assert.equal(go(0, 'ArrowRight'), 1);
+  assert.equal(go(1, 'ArrowRight'), 2, 'right runs on into the next section');
+  assert.equal(go(2, 'ArrowLeft'), 1);
+  assert.equal(go(0, 'ArrowLeft'), 0);
+  assert.equal(go(12, 'ArrowRight'), 12);
+  assert.equal(go(0, 'ArrowUp'), -1, 'up from the top row: back to the search');
+  assert.equal(go(1, 'ArrowDown'), 3, 'down into the next section at the same column');
+  assert.equal(go(2, 'ArrowDown'), 5);
+  assert.equal(go(3, 'ArrowDown'), 5, 'a shorter row below: its last card');
+  assert.equal(go(5, 'ArrowDown'), 6);
+  assert.equal(go(7, 'ArrowDown'), 10, 'down by the column count');
+  assert.equal(go(10, 'ArrowDown'), 12, 'the last row is short: its last card');
+  assert.equal(go(12, 'ArrowDown'), 12, 'the bottom stays');
+  assert.equal(go(10, 'ArrowUp'), 7);
+  assert.equal(go(6, 'ArrowUp'), 5, 'up into the section above: its last row, the same column');
+  assert.equal(go(8, 'ArrowUp'), 5, 'that row is short: its last card');
+  assert.equal(go(2, 'ArrowUp'), 0);
+  assert.equal(go(3, 'ArrowUp'), 1);
+  assert.equal(go(4, 'ArrowUp'), 1, 'pinned has two: its last');
+  assert.equal(go(5, 'Home'), 0);
+  assert.equal(go(5, 'End'), 12);
+  assert.equal(go(5, 'Enter'), 5);
+  // empty sections are skipped
+  assert.equal(P.gridStep([2, 0, 3], 1, 'ArrowDown', 2), 3);
+  assert.equal(P.gridStep([2, 0, 3], 2, 'ArrowUp', 2), 0);
+  assert.equal(P.gridStep([0, 0, 3], 0, 'ArrowUp', 2), -1);
+  // one column: up and down step one card
+  assert.equal(P.gridStep([0, 0, 4], 1, 'ArrowDown', 1), 2);
+  assert.equal(P.gridStep([0, 0, 4], 1, 'ArrowUp', 1), 0);
+  // nothing there; junk
+  assert.equal(P.gridStep([], 0, 'ArrowDown', 3), -1);
+  assert.equal(P.gridStep([0, 0, 4], 99, 'ArrowLeft', 0), 2, 'clamped, at least one column');
+});
+
+test('columnCount: a computed grid-template-columns', () => {
+  assert.equal(P.columnCount('210px 210px 210px'), 3);
+  assert.equal(P.columnCount('  340px '), 1);
+  assert.equal(P.columnCount('none'), 1);
+  assert.equal(P.columnCount(''), 1);
+  assert.equal(P.columnCount(undefined), 1);
+});

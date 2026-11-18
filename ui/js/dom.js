@@ -1,4 +1,6 @@
 // Tiny DOM helpers. Text always goes in through textContent.
+import { log } from './log.js';
+import { errorKind } from './log-model.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -89,6 +91,8 @@ const ICONS = {
   bell: ['M6 16V11a6 6 0 1 1 12 0v5l2 2H4z', 'M10 20a2 2 0 0 0 4 0'],
   folder: ['M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z'],
   copy: ['M9 9h11v11H9z', 'M5 15H4V4h11v1'],
+  // the copy sheets with a plus on the front one: keep as a pasta
+  'copy-plus': ['M9 9h11v11H9z', 'M5 15H4V4h11v1', 'M14.5 12v5', 'M12 14.5h5'],
   trash: ['M4 7h16', 'M10 11v6', 'M14 11v6', 'M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12', 'M9 7V4h6v3'],
   download: ['M12 4v11', 'M7 10l5 5l5-5', 'M5 20h14'],
   upload: ['M12 20V9', 'M7 14l5-5l5 5', 'M5 4h14'],
@@ -247,16 +251,18 @@ export async function copyText(text) {
       const blob = Promise.resolve(text).then((s) => new Blob([s], { type: 'text/plain' }));
       await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
       return true;
-    } catch {
+    } catch (e) {
       // the ways below
+      log.debug('ui', 'copy.fallback', { step: 'item', kind: errorKind(e) });
     }
   }
   text = await text;
   try {
     await navigator.clipboard.writeText(text);
     return true;
-  } catch {
+  } catch (e) {
     // Fallback for webviews without the async clipboard.
+    log.debug('ui', 'copy.fallback', { step: 'text', kind: errorKind(e) });
     const ta = h('textarea', { 'aria-hidden': 'true', readonly: true });
     ta.value = text;
     ta.style.setProperty('position', 'fixed');
@@ -266,8 +272,9 @@ export async function copyText(text) {
     let ok = false;
     try {
       ok = document.execCommand('copy');
-    } catch {
+    } catch (e) {
       ok = false;
+      log.warn('ui', 'copy.failed', { kind: errorKind(e) });
     }
     ta.remove();
     return ok;

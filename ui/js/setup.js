@@ -13,6 +13,8 @@ import { embedTitle } from './embeds.js';
 import { ago } from './browse-model.js';
 import { displayDefaults, postTime, posterName, fileView, autoExpands } from './display-model.js';
 import { assistantControls, idleDetect, runDetect, unloadModel } from './ai-setup-view.js';
+import { log } from './log.js';
+import { errorKind } from './log-model.js';
 
 export const RULES_URL = 'https://www.4chan.org/rules';
 
@@ -542,6 +544,7 @@ function openDialog(id, opener) {
 export function startSetup({ bridge, settings, rerun = false, boards = null, onFinish, onBoards = () => {}, setTitle = () => {} }) {
   wireDialogs();
   const steps = M.stepsToShow(settings, { rerun });
+  log.info('app', 'setup.steps', { steps: steps.map((x) => x.id).join(','), rerun: Boolean(rerun) });
   if (steps.length === 0) {
     onFinish(settings, { boards });
     return null;
@@ -641,6 +644,7 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
   function go(i, dir) {
     if (i < 0 || i >= st.steps.length) return;
     st.dir = dir || (i < st.index ? 'back' : 'forward');
+    log.debug('app', 'setup.step', { step: st.steps[i].id, from: step().id, way: st.dir });
     st.index = i;
     st.maxVisited = Math.max(st.maxVisited, i);
     st.errors = {};
@@ -666,6 +670,7 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
     const v = M.validateStep(step().id, st.draft);
     if (!v.ok) {
       st.errors = v.errors;
+      log.info('app', 'setup.step.invalid', { step: step().id, fields: Object.keys(v.errors || {}).join(',') });
       render('none');
       host
         .querySelector('[aria-invalid="true"], .field__error')
@@ -688,6 +693,7 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
     // Prunes NSFW favourites even without a board list (remembered codes).
     const draft = M.pruneFavourites(st.draft, st.boards.status === 'ok' ? st.boards.list : null);
     const final = M.completeSetup(draft, { skipped });
+    log.info('app', 'setup.done', { skipped: Boolean(skipped), step: step().id, visited: st.maxVisited + 1, steps: st.steps.length, favourites: final.favourites?.length || 0, assistant: Boolean(final.ai?.enabled) });
     // Stored by onFinish (app.js), through the settings' write queue and
     // laid over what other windows saved while setup was open.
     close();
@@ -718,10 +724,12 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
   async function loadBoards() {
     st.boards = { status: 'loading', list: null, error: '' };
     if (step().id === 'boards') render('keep');
+    const end = log.time('app', 'setup.boards', 'info');
     try {
       const res = await bridge.fetchBoards();
       const list = Array.isArray(res?.boards) ? res.boards : [];
       if (!list.length) throw new Error('The board list came back empty.');
+      end({ boards: list.length, late: gone() });
       if (gone()) {
         onBoards(list); // keep the late list for the shell
         return;
@@ -729,6 +737,7 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
       st.boards = { status: 'ok', list, error: '' };
       st.draft = M.pruneFavourites(st.draft, list);
     } catch (e) {
+      end({ kind: errorKind(e), late: gone() }, 'warn');
       if (gone()) return;
       st.boards = { status: 'error', list: null, error: String(e?.message || e) };
     }
@@ -742,10 +751,13 @@ export function startSetup({ bridge, settings, rerun = false, boards = null, onF
     st.ffmpeg = { status: 'checking', check: st.ffmpeg.check };
     if (step().id === 'video') render('keep');
     let check;
+    const end = log.time('app', 'setup.ffmpeg', 'info');
     try {
       check = await bridge.checkFfmpeg();
+      end({ found: Boolean(check?.found) });
     } catch (e) {
       check = { found: false, error: String(e?.message || e) };
+      end({ kind: errorKind(e) }, 'warn');
     }
     if (gone()) return;
     st.ffmpeg = { status: 'done', check };

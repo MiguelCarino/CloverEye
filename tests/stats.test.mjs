@@ -2,13 +2,14 @@
 // app's revision check), the mock's moving catalog and ?mock-stats, and the
 // controller (ui/js/stats.js) with a fake bridge and clock.
 
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { createBridge, mockOptionsFromSearch, liveCatalog, mockMaxNo, seedBoardStats } from '../ui/js/bridge.js';
 import { createStats, ACTIVE_GAP_MS } from '../ui/js/stats.js';
 import * as S from '../ui/js/stats-model.js';
+import { log } from '../ui/js/log.js';
 import { catalogThreads } from '../ui/js/browse-model.js';
 
 const catalog = JSON.parse(readFileSync(new URL('../ui/data/catalog.sample.json', import.meta.url), 'utf8'));
@@ -241,4 +242,44 @@ test('controller: your counts, stored with a revision check that survives anothe
   assert.deepEqual(w.files.mine.days, {});
   assert.deepEqual(again.mine().days, {});
   again.close();
+});
+
+test('controller: a store that keeps failing warns once, retries quietly, and says when it works again', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] });
+  try {
+    let broken = true;
+    const files = {};
+    const bridge = {
+      statsRead: async (kind) => (files[kind] ? structuredClone(files[kind]) : null),
+      async statsWrite(kind, data, rev) {
+        if (broken) throw new Error('No space left on device (os error 28)');
+        files[kind] = { ...structuredClone(data), rev: rev + 1 };
+        return rev + 1;
+      },
+      fetchCatalog: async () => ({ data: catalog }),
+      fetchBusy: async () => 0,
+    };
+    const stats = createStats({ bridge, getSettings: () => ({ stats: { track: true, mine: true } }), isMain: false, tracked: () => [], doc: null });
+    stats.recordCatalog('g', catalog);
+    stats.count('posts', 1, 'g');
+    const before = log.recent().length;
+    const idle = async (secs) => {
+      for (let i = 0; i < secs; i++) {
+        mock.timers.tick(1000);
+        for (let k = 0; k < 5; k++) await Promise.resolve();
+      }
+    };
+    await idle(600); // ten idle minutes of retries
+    const lines = () => log.recent().slice(before).filter((l) => l.area === 'stats' && l.level !== 'debug');
+    const failed = lines().filter((l) => l.msg === 'stats.store.failed');
+    assert.ok(failed.length >= 1 && failed.length <= 2, JSON.stringify(failed));
+    assert.deepEqual([...new Set(failed.map((l) => l.fields.what))].length, failed.length, 'one warning per store');
+    broken = false;
+    stats.count('posts', 1, 'g');
+    await idle(120);
+    assert.ok(lines().some((l) => l.msg === 'stats.store.recovered' && l.level === 'info'), JSON.stringify(lines()));
+    stats.close();
+  } finally {
+    mock.timers.reset();
+  }
 });

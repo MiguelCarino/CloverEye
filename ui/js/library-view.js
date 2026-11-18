@@ -8,6 +8,8 @@ import { aiReady } from './ai-model.js';
 import { h, icon, clear, toast } from './dom.js';
 import { confirmDialog } from './offline.js';
 import { formatBytes } from './render.js';
+import { log } from './log.js';
+import { errorKind } from './log-model.js';
 
 const PAGE = 240;
 
@@ -701,7 +703,12 @@ export function createLibraryView(o) {
 
   function lookalikes(all) {
     // found again only when the library changed, not on every draw
-    if (lookCache.v !== lib.version() || lookCache.items !== all) lookCache = { v: lib.version(), items: all, groups: L.lookalikeGroups(all) };
+    if (lookCache.v !== lib.version() || lookCache.items !== all) {
+      // found again only when the library changed: timed, at debug
+      const t0 = performance.now();
+      lookCache = { v: lib.version(), items: all, groups: L.lookalikeGroups(all) };
+      log.debug('library', 'library.lookalikes', { items: all.length, groups: lookCache.groups.length, files: lookCache.groups.reduce((n, g) => n + g.length, 0), ms: Math.round(performance.now() - t0) });
+    }
     const { groups } = lookCache;
     const missing = all.filter((e) => !e.dhash && (e.kind === 'image' || e.kind === 'gif')).length;
     return h(
@@ -748,6 +755,7 @@ export function createLibraryView(o) {
       opener,
     });
     if (!ok) return;
+    log.info('library', 'library.dedupe', { group: group.length, deleting: rest.length });
     lib.update(keep.id, {
       tags: [...new Set([...keep.tags, ...rest.flatMap((e) => e.tags)])],
       collections: [...new Set([...keep.collections, ...rest.flatMap((e) => e.collections)])],
@@ -757,6 +765,7 @@ export function createLibraryView(o) {
       const n = await lib.removeMany(rest.map((e) => e.id));
       if (n < rest.length) toast(rest.length - n === 1 ? 'Couldn’t delete 1 of them.' : `Couldn’t delete ${rest.length - n} of them.`);
     } catch (err) {
+      log.warn('library', 'library.dedupe.failed', { kind: errorKind(err) });
       toast(`Couldn’t delete it: ${err?.message || err}`);
     }
   }
@@ -806,6 +815,7 @@ export function createLibraryView(o) {
     } catch (e) {
       busy = '';
       draw();
+      log.warn('library', 'library.folder.failed', { kind: errorKind(e), rescan: again });
       toast(`Couldn’t import the folder: ${e?.message || e}`);
       return;
     }
@@ -940,6 +950,8 @@ export function createLibraryView(o) {
     let done = 0;
     let failed = 0;
     let why = '';
+    const t0 = performance.now();
+    log.info('library', 'library.ai.started', { files: list.length, server: String(a?.kind || ''), model: String(a?.vision || '') });
     for (const [i, e] of list.entries()) {
       busy = `The AI is tagging ${i + 1} of ${list.length}…`;
       draw();
@@ -958,6 +970,7 @@ export function createLibraryView(o) {
     }
     busy = '';
     draw();
+    log.info('library', 'library.ai.finished', { files: list.length, tagged: done, failed, failKind: failed ? errorKind(why) : '', ms: Math.round(performance.now() - t0) });
     const text = done === 1 ? 'Tagged 1 picture.' : `Tagged ${done} pictures.`;
     toast(failed ? `${text} ${failed} failed: ${why}` : text);
   }

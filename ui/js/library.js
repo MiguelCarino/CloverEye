@@ -19,6 +19,8 @@
 
 import * as L from './library-model.js';
 import { commentText, postFileName } from './render.js';
+import { log } from './log.js';
+import { errorKind } from './log-model.js';
 
 const CHANGED_ELSEWHERE = /changed in another window/i;
 
@@ -51,6 +53,8 @@ export function createLibrary({ bridge, getSettings, onChange }) {
     onChange?.();
   };
   const dir = () => getSettings().files?.libraryDir || '';
+  /** A copy the library meant to delete and could not (left on disk). */
+  const dropFailed = (e) => log.warn('library', 'library.copy.left', { kind: errorKind(e) });
   const available = () => typeof bridge?.libraryLoad === 'function';
 
   function reindex() {
@@ -88,7 +92,8 @@ export function createLibrary({ bridge, getSettings, onChange }) {
       const m = L.mergeIndex(base, index, theirs);
       index = m.index;
       // copies this window made of files the other window kept as well
-      for (const e of m.dropped) bridge.libraryDelete(d, e.rel).catch(() => {});
+      for (const e of m.dropped) bridge.libraryDelete(d, e.rel).catch(dropFailed);
+      if (m.dropped.length) log.debug('library', 'library.merge.dropped', { files: m.dropped.length });
     } else {
       index = theirs;
       dirty = false;
@@ -119,9 +124,11 @@ export function createLibrary({ bridge, getSettings, onChange }) {
         changed();
       }
       let r;
+      const t0 = performance.now();
       try {
         r = await bridge.libraryLoad(want);
       } catch (e) {
+        log.warn('library', 'library.load.failed', { kind: errorKind(e), custom: Boolean(want), ms: Math.round(performance.now() - t0) });
         if (loading === p) loading = null; // the next call reads again
         if (loadedDir !== want) {
           // never kept as an empty library: nothing is written until it reads
@@ -135,8 +142,12 @@ export function createLibrary({ bridge, getSettings, onChange }) {
         changed();
         return;
       }
+      const again = loadedDir === want;
       adopt(want, L.normalizeIndex(r?.index));
       state = { status: 'ready', root: r?.root || '', error: '' };
+      const fields = { items: index.items.length, collections: index.collections.length, folders: Object.keys(index.folders || {}).length, rev: index.rev, merged: again, unsaved: dirty, custom: Boolean(want), ms: Math.round(performance.now() - t0) };
+      if (again) log.debug('library', 'library.loaded', fields);
+      else log.info('library', 'library.loaded', fields);
       if (dirty) save();
       changed();
       fingerprints();
@@ -153,8 +164,10 @@ export function createLibrary({ bridge, getSettings, onChange }) {
       const out = { ...index, rev: index.rev + 1 };
       const snap = L.snapshotOf(out);
       writingRev = out.rev;
+      const end = log.time('library', 'library.saved');
       try {
         await bridge.librarySave(d, out);
+        end({ items: out.items.length, rev: out.rev, tries });
         if (d === loadedDir) {
           index.rev = out.rev;
           base = snap;
@@ -169,16 +182,19 @@ export function createLibrary({ bridge, getSettings, onChange }) {
         dirty = true;
         const message = String(e?.message || e);
         if (!CHANGED_ELSEWHERE.test(message)) {
+          log.warn('library', 'library.save.failed', { kind: errorKind(e), rev: out.rev });
           state = { ...state, error: `Couldn’t save the library’s list: ${message}` };
           changed();
           return;
         }
+        log.debug('library', 'library.save.conflict', { rev: out.rev, tries });
         try {
           const r = await bridge.libraryLoad(d);
           if (d !== loadedDir) return;
           adopt(d, L.normalizeIndex(r?.index));
           changed();
         } catch (e2) {
+          log.warn('library', 'library.save.failed', { kind: errorKind(e2), rev: out.rev, reread: true });
           state = { ...state, error: `Couldn’t save the library’s list: ${e2?.message || e2}` };
           changed();
           return;
@@ -207,6 +223,7 @@ export function createLibrary({ bridge, getSettings, onChange }) {
     if (ev.root && state.root && ev.root !== state.root) return;
     const rev = Number(ev.rev);
     if (Number.isFinite(rev) && rev > 0 && (rev === writingRev || rev <= index.rev)) return;
+    log.debug('library', 'library.changed.elsewhere', { rev: Number.isFinite(rev) ? rev : -1, had: index.rev });
     load(true);
   }
 
@@ -239,11 +256,13 @@ export function createLibrary({ bridge, getSettings, onChange }) {
     const run = job(async () => {
       const d = loadedDir;
       const name = postFileName(post);
+      const t0 = performance.now();
       const r = await bridge.libraryFetch(d, url, board, name);
+      log.debug('library', 'library.fetched', { board, thread, no: post.no, bytes: Number(r?.bytes) || 0, ms: Math.round(performance.now() - t0) });
       const entry = L.entryFromPost({ board, thread, post, subject: commentText(subject || ''), text: commentText(post.com || '').slice(0, 500), rel: r.rel, size: r.bytes });
       if (!entry || ids.has(entry.id)) {
         // kept meanwhile (an import): this copy goes
-        await bridge.libraryDelete(d, r.rel).catch(() => {});
+        await bridge.libraryDelete(d, r.rel).catch(dropFailed);
         if (!entry) throw new Error('This file can’t go in the library.');
         return { status: 'have', entry: find(entry.id) };
       }
@@ -271,6 +290,8 @@ export function createLibrary({ bridge, getSettings, onChange }) {
     need();
     return job(async () => {
       const d = loadedDir;
+      const t0 = performance.now();
+      let bytesIn = 0;
       const out = { added: 0, have: 0, failed: [] };
       const list = [...files].filter((f) => /\.(jpe?g|png|gif|webp|webm|mp4)$/i.test(f.name));
       const skipped = files.length - list.length;
@@ -279,6 +300,7 @@ export function createLibrary({ bridge, getSettings, onChange }) {
         onProgress(i, list.length);
         try {
           const bytes = new Uint8Array(await f.arrayBuffer());
+          bytesIn += bytes.length;
           const id = L.md5(bytes);
           if (ids.has(id)) {
             out.have += 1;
@@ -288,7 +310,7 @@ export function createLibrary({ bridge, getSettings, onChange }) {
           const look = await looks(new Blob([bytes], { type: f.type || '' }), f.name);
           // kept meanwhile (a save from a thread): this copy goes
           if (ids.has(id)) {
-            await bridge.libraryDelete(d, r.rel).catch(() => {});
+            await bridge.libraryDelete(d, r.rel).catch(dropFailed);
             out.have += 1;
             continue;
           }
@@ -308,6 +330,7 @@ export function createLibrary({ bridge, getSettings, onChange }) {
       if (out.added) save();
       out.skipped = skipped;
       changed();
+      log.info('library', 'library.imported', { files: files.length, added: out.added, have: out.have, skipped, failed: out.failed.length, failKinds: [...new Set(out.failed.map((x) => errorKind(x.message)))].join(','), bytes: bytesIn, ms: Math.round(performance.now() - t0) });
       return out;
     });
   }
@@ -330,19 +353,26 @@ export function createLibrary({ bridge, getSettings, onChange }) {
     return job(async () => {
       const d = loadedDir;
       onProgress(0, 0);
+      const t0 = performance.now();
+      let bytesIn = 0;
+      let lookMs = 0;
       const r = await bridge.libraryImportDir(d, src, deep, skip);
+      const copyMs = Math.round(performance.now() - t0);
       Object.assign(folderRecord(src), { deep, at: Date.now() });
       const out = { added: 0, have: 0, failed: [], more: Boolean(r?.more), skipped: 0 };
       const list = r?.items || [];
-      const dropCopy = (it) => bridge.libraryDelete(d, it.rel).catch(() => {});
+      const dropCopy = (it) => bridge.libraryDelete(d, it.rel).catch(dropFailed);
       for (let i = 0; i < list.length; i++) {
         const it = list[i];
         onProgress(i, list.length);
         try {
           const blob = await blobOf({ rel: it.rel });
           const bytes = new Uint8Array(await blob.arrayBuffer());
+          bytesIn += bytes.length;
           const id = L.md5(bytes);
+          const l0 = performance.now();
           const look = ids.has(id) ? null : await looks(blob, it.name);
+          lookMs += performance.now() - l0;
           if (ids.has(id)) {
             // a copy of one kept: taken back out, and not copied again
             out.have += 1;
@@ -369,6 +399,7 @@ export function createLibrary({ bridge, getSettings, onChange }) {
       onProgress(list.length, list.length);
       save();
       changed();
+      log.info('library', 'library.folder.imported', { deep: Boolean(deep), rescan: skip.length > 0, copied: list.length, added: out.added, have: out.have, failed: out.failed.length, more: out.more, bytes: bytesIn, copy_ms: copyMs, look_ms: Math.round(lookMs), ms: Math.round(performance.now() - t0) });
       return out;
     });
   }
@@ -399,10 +430,12 @@ export function createLibrary({ bridge, getSettings, onChange }) {
           await bridge.libraryDelete(d, e.rel);
           index.items = index.items.filter((x) => x.id !== id);
           removed += 1;
-        } catch {
+        } catch (err) {
           /* left in the list: it can be tried again */
+          log.warn('library', 'library.delete.failed', { kind: errorKind(err), from: 'folder' });
         }
       }
+      log.info('library', 'library.folder.removed', { removed, items: index.items.length });
       if (index.folders) delete index.folders[folder];
       reindex();
       save();
@@ -431,6 +464,7 @@ export function createLibrary({ bridge, getSettings, onChange }) {
     if (!e) return;
     await bridge.libraryDelete(loadedDir, e.rel);
     index.items = index.items.filter((x) => x.id !== id);
+    log.debug('library', 'library.deleted', { items: index.items.length, imported: Boolean(e.folder) });
     // taken out by hand: a rescan of its folder leaves it out
     const f = e.folder && index.folders?.[e.folder];
     if (f && e.from) L.addFolderPath(f, 'removed', e.from);
@@ -479,7 +513,9 @@ export function createLibrary({ bridge, getSettings, onChange }) {
       const out = { w: bmp.width, h: bmp.height, dhash: L.dhash(L.greyOf(g.getImageData(0, 0, 72, 64).data, 72, 64)) };
       bmp.close?.();
       return out;
-    } catch {
+    } catch (e) {
+      // not a picture the browser can read: no fingerprint (said at debug)
+      log.debug('library', 'library.look.failed', { kind: errorKind(e) });
       return { w: 0, h: 0, dhash: '' };
     }
   }
@@ -506,6 +542,8 @@ export function createLibrary({ bridge, getSettings, onChange }) {
         do {
           hashAgain = false;
           let done = 0;
+          let failed = 0;
+          const t0 = performance.now();
           const todo = index.items.filter((e) => !e.dhash && e.kind !== 'video' && e.kind !== 'pdf').map((e) => e.id);
           for (const id of todo) {
             if (loadingDir !== loadedDir) return; // another folder is waiting
@@ -521,8 +559,11 @@ export function createLibrary({ bridge, getSettings, onChange }) {
               }
             } catch {
               /* the file is missing or not a picture: no fingerprint */
+              failed += 1;
             }
           }
+          // the look-alike fingerprints made this pass, and how long they took
+          if (todo.length) log.debug('library', 'library.fingerprints', { todo: todo.length, done, failed, ms: Math.round(performance.now() - t0) });
           if (done) {
             save();
             changed();
@@ -559,7 +600,9 @@ export function createLibrary({ bridge, getSettings, onChange }) {
   async function aiTags(id, ai) {
     const e = find(id);
     if (!e || e.kind === 'video' || e.kind === 'pdf') return [];
+    const t0 = performance.now();
     const jpeg = await smallJpeg(e);
+    const jpegMs = Math.round(performance.now() - t0);
     const text = await new Promise((resolve, reject) => {
       let out = '';
       const onEvent = (ev) => {
@@ -571,6 +614,8 @@ export function createLibrary({ bridge, getSettings, onChange }) {
     });
     const now = find(id);
     const tags = L.parseAiTags(text).filter((t) => !now?.tags.includes(t));
+    // how many tags came, never which
+    log.debug('library', 'library.ai.tagged', { server: String(ai.kind || ''), model: String(ai.vision || ''), jpegBytes: Math.round((jpeg.length * 3) / 4), suggested: tags.length, answerChars: text.length, jpeg_ms: jpegMs, ms: Math.round(performance.now() - t0) });
     update(id, { ai: tags });
     return tags;
   }
@@ -602,10 +647,12 @@ export function createLibrary({ bridge, getSettings, onChange }) {
           try {
             await remove(id, { quiet: true });
             n += 1;
-          } catch {
+          } catch (e) {
             /* left in place */
+            log.warn('library', 'library.delete.failed', { kind: errorKind(e), from: 'many' });
           }
         }
+        log.info('library', 'library.removed', { asked: idList.length, removed: n, items: index.items.length });
         reindex();
         save();
         changed();

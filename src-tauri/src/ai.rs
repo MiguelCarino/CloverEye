@@ -39,19 +39,39 @@ fn base(port: u16) -> String {
 
 /// The models a server on `port` offers, or None when nothing answers
 /// there the way a model server does.
+#[cfg(test)]
 fn models_at(kind: &str, port: u16) -> Option<Vec<String>> {
+    probe(kind, port).ok().map(|list| list.into_iter().map(|(name, _)| name).collect())
+}
+
+/// Why a probe found no model server, in a few words (for the log).
+fn why_not(e: ureq::Error) -> String {
+    match e {
+        ureq::Error::Status(code, _) => format!("answered HTTP {code}, not as a model server"),
+        ureq::Error::Transport(t) => match t.kind() {
+            ureq::ErrorKind::ConnectionFailed => "nothing listening".to_string(),
+            ureq::ErrorKind::Io => "no answer in time".to_string(),
+            k => format!("{k}"),
+        },
+    }
+}
+
+/// The models a server on `port` offers, each with its size in bytes when
+/// the server says (Ollama does), or why there is no model server there.
+fn probe(kind: &str, port: u16) -> Result<Vec<(String, Option<u64>)>, String> {
     let a = agent(Duration::from_millis(1500));
+    let not_a_list = "answered, but not with a model list";
     if kind == "ollama" {
         if let Ok(r) = a.get(&format!("{}/api/tags", base(port))).call() {
-            let v: Value = serde_json::from_str(&r.into_string().ok()?).ok()?;
-            let list = v.get("models")?.as_array()?;
-            return Some(list.iter().filter_map(|m| m.get("name").and_then(Value::as_str).map(str::to_string)).collect());
+            let v: Value = r.into_string().ok().and_then(|t| serde_json::from_str(&t).ok()).ok_or(not_a_list)?;
+            let list = v.get("models").and_then(Value::as_array).ok_or(not_a_list)?;
+            return Ok(list.iter().filter_map(|m| Some((m.get("name").and_then(Value::as_str)?.to_string(), m.get("size").and_then(Value::as_u64)))).collect());
         }
     }
-    let r = a.get(&format!("{}/v1/models", base(port))).call().ok()?;
-    let v: Value = serde_json::from_str(&r.into_string().ok()?).ok()?;
-    let list = v.get("data")?.as_array()?;
-    Some(list.iter().filter_map(|m| m.get("id").and_then(Value::as_str).map(str::to_string)).take(200).collect())
+    let r = a.get(&format!("{}/v1/models", base(port))).call().map_err(why_not)?;
+    let v: Value = r.into_string().ok().and_then(|t| serde_json::from_str(&t).ok()).ok_or(not_a_list)?;
+    let list = v.get("data").and_then(Value::as_array).ok_or(not_a_list)?;
+    Ok(list.iter().filter_map(|m| m.get("id").and_then(Value::as_str).map(|id| (id.to_string(), None))).take(200).collect())
 }
 
 /// Memory and graphics memory, in GB, for setup's recommendation.
@@ -68,6 +88,17 @@ pub struct Specs {
 fn gb(bytes: u64) -> f64 {
     (bytes as f64 / 1_073_741_824.0 * 10.0).round() / 10.0
 }
+
+/// Where the memory size comes from, for the log.
+const RAM_SOURCE: &str = if cfg!(target_os = "linux") {
+    "/proc/meminfo"
+} else if cfg!(target_os = "macos") {
+    "sysctl hw.memsize"
+} else if cfg!(windows) {
+    "GlobalMemoryStatusEx"
+} else {
+    "none"
+};
 
 #[cfg(target_os = "linux")]
 fn ram_bytes() -> u64 {
@@ -138,9 +169,12 @@ fn nvidia_smi_present() -> bool {
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| names.iter().any(|n| d.join(n).is_file())))
 }
 
-/// The largest NVIDIA GPU's memory (nvidia-smi), or an AMD GPU's (sysfs).
-fn gpu() -> (u64, String) {
+/// The largest NVIDIA GPU's memory (nvidia-smi), or an AMD GPU's (sysfs),
+/// and where it was read.
+fn gpu() -> (u64, String, &'static str) {
     let mut best = (0u64, String::new());
+    let mut source = "none";
+    let t0 = std::time::Instant::now();
     let mut cmd = std::process::Command::new("nvidia-smi");
     cmd.args(["--query-gpu=name,memory.total", "--format=csv,noheader,nounits"]).stdin(std::process::Stdio::null());
     #[cfg(windows)]
@@ -151,25 +185,28 @@ fn gpu() -> (u64, String) {
     }
     // A hung driver can leave nvidia-smi waiting for ever: give it 5 s.
     let answer = crate::diag::output_within(&mut cmd, NVIDIA_SMI_LIMIT);
-    if answer.is_none() && nvidia_smi_present() {
-        crate::diag::quiet("assistant: nvidia-smi did not answer within 5 s; graphics memory reads 0", false);
+    let present = answer.is_some() || nvidia_smi_present();
+    if answer.is_none() && present {
+        log_warn!("ai", "nvidia-smi did not answer in time; graphics memory reads 0", limit_s = NVIDIA_SMI_LIMIT.as_secs());
     }
     if let Some(o) = answer {
         if !o.status.success() {
             // e.g. "Failed to initialize NVML: Driver/library version mismatch"
             // after a driver update without a restart: say why it reads 0
             let why = String::from_utf8_lossy(if o.stdout.is_empty() { &o.stderr } else { &o.stdout }).lines().next().unwrap_or_default().chars().take(160).collect::<String>();
-            crate::diag::quiet(&format!("assistant: nvidia-smi could not read the graphics card: {why}"), false);
+            log_warn!("ai", "nvidia-smi could not read the graphics card", error = why, code = o.status.code().unwrap_or(-1));
         }
         for line in String::from_utf8_lossy(&o.stdout).lines() {
             if let Some((name, mib)) = line.rsplit_once(',') {
                 let bytes = mib.trim().parse::<u64>().unwrap_or(0) * 1_048_576;
                 if bytes > best.0 {
                     best = (bytes, name.trim().to_string());
+                    source = "nvidia-smi";
                 }
             }
         }
     }
+    log_debug!("ai", "nvidia-smi", on_path = present, answered = source == "nvidia-smi", ms = crate::diag::ms(t0));
     #[cfg(target_os = "linux")]
     if let Ok(dir) = std::fs::read_dir("/sys/class/drm") {
         for e in dir.flatten() {
@@ -177,18 +214,33 @@ fn gpu() -> (u64, String) {
             if let Some(bytes) = std::fs::read_to_string(&p).ok().and_then(|t| t.trim().parse::<u64>().ok()) {
                 if bytes > best.0 {
                     best = (bytes, "AMD GPU".into());
+                    source = "sysfs mem_info_vram_total";
                 }
             }
         }
     }
-    best
+    (best.0, best.1, source)
 }
 
 pub fn specs() -> Specs {
+    let t0 = std::time::Instant::now();
     let ram = ram_bytes();
     let unified = cfg!(all(target_os = "macos", target_arch = "aarch64"));
-    let (vram, name) = if unified { (0, "Apple silicon".to_string()) } else { gpu() };
+    let (vram, name, source) = if unified { (0, "Apple silicon".to_string(), "unified memory") } else { gpu() };
+    log_debug!("ai", "computer specs read", ram_gb = gb(ram), ram_from = RAM_SOURCE, vram_gb = gb(vram), vram_from = source, gpu = name, ms = crate::diag::ms(t0));
     Specs { ram_gb: gb(ram), vram_gb: gb(vram), gpu: name, unified }
+}
+
+/// "llama3.1:8b (4.7 GB), qwen2.5:7b" for the log: names and sizes only.
+fn model_list(list: &[(String, Option<u64>)]) -> String {
+    let mut out: Vec<String> = list.iter().take(40).map(|(n, size)| match size {
+        Some(b) if *b > 0 => format!("{n} ({} GB)", gb(*b)),
+        _ => n.clone(),
+    }).collect();
+    if list.len() > 40 {
+        out.push(format!("+{} more", list.len() - 40));
+    }
+    out.join(", ")
 }
 
 /// The model servers running on this computer and their models, plus the
@@ -200,14 +252,37 @@ pub async fn ai_detect(port: Option<u16>) -> Result<Value, String> {
         if let Some(p) = port.filter(|p| *p > 0 && !KNOWN.iter().any(|(_, k)| k == p)) {
             probes.push(("custom", p));
         }
+        let t0 = std::time::Instant::now();
         let found: Vec<Value> = std::thread::scope(|s| {
-            let jobs: Vec<_> = probes.iter().map(|(kind, port)| s.spawn(move || models_at(kind, *port).map(|m| json!({ "kind": kind, "port": port, "models": m })))).collect();
+            let jobs: Vec<_> = probes
+                .iter()
+                .map(|(kind, port)| {
+                    s.spawn(move || {
+                        let t = std::time::Instant::now();
+                        let got = probe(kind, *port);
+                        match &got {
+                            Ok(list) => log_debug!("ai", "probe: model server found", kind = kind, port = port, models = list.len(), list = model_list(list), ms = crate::diag::ms(t)),
+                            Err(why) => log_debug!("ai", "probe: no model server", kind = kind, port = port, why = why, ms = crate::diag::ms(t)),
+                        }
+                        got.ok().map(|list| json!({ "kind": kind, "port": port, "models": list.into_iter().map(|(n, _)| n).collect::<Vec<_>>() }))
+                    })
+                })
+                .collect();
             jobs.into_iter().filter_map(|j| j.join().ok().flatten()).collect()
         });
         let sp = specs();
         // for the diagnostics report: what was found, never what is asked
         let list: Vec<String> = found.iter().map(|s| format!("{}:{} ({} models)", s["kind"].as_str().unwrap_or("?"), s["port"], s["models"].as_array().map_or(0, Vec::len))).collect();
-        crate::diag::quiet(&format!("assistant: found {}; memory {} GB, graphics {} GB {}", if list.is_empty() { "no model server".to_string() } else { list.join(", ") }, sp.ram_gb, sp.vram_gb, sp.gpu), false);
+        log_info!(
+            "ai",
+            "model servers detected",
+            probed = probes.iter().map(|(k, p)| format!("{k}:{p}")).collect::<Vec<_>>().join(","),
+            found = if list.is_empty() { "none".to_string() } else { list.join(", ") },
+            ram_gb = sp.ram_gb,
+            vram_gb = sp.vram_gb,
+            gpu = sp.gpu,
+            ms = crate::diag::ms(t0)
+        );
         json!({ "servers": found, "specs": sp })
     })
     .await
@@ -252,15 +327,142 @@ fn status_error(code: u16, body: &str) -> String {
     format!("{code} {said}")
 }
 
+/// What one answer took, for the log: timings, sizes and the server's own
+/// counts when it gives them. Never the text.
+#[derive(Debug, Default)]
+pub(crate) struct StreamStats {
+    /// When the server's answer started (its headers), from the request.
+    pub headers_ms: Option<u128>,
+    /// When the first piece of text came, from the request.
+    pub first_ms: Option<u128>,
+    pub chunks: u64,
+    pub chars_out: usize,
+    pub stop: Option<String>,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    /// The server's own time for the answer's tokens and for the prompt.
+    pub eval_ms: Option<f64>,
+    pub prompt_ms: Option<f64>,
+    /// Ollama: how long loading the model took for this question.
+    pub load_ms: Option<f64>,
+    pub status: Option<u16>,
+    pub cancelled: bool,
+}
+
+/// The server's counts and stop reason from one line of its stream, when
+/// the line has them (Ollama's last line; an OpenAI-style finish_reason,
+/// usage, or llama.cpp's timings).
+fn read_meta(kind: &str, line: &str, st: &mut StreamStats) {
+    let line = line.trim();
+    let data = if kind == "ollama" { line } else { line.strip_prefix("data:").map(str::trim).unwrap_or("") };
+    if data.is_empty() || data == "[DONE]" {
+        return;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(data) else { return };
+    let ns_ms = |k: &str| v.get(k).and_then(Value::as_f64).map(|ns| ns / 1e6);
+    if kind == "ollama" {
+        if v.get("done").and_then(Value::as_bool) == Some(true) {
+            st.stop = v.get("done_reason").and_then(Value::as_str).map(str::to_string).or(Some("done".into()));
+            st.tokens_in = v.get("prompt_eval_count").and_then(Value::as_u64).or(st.tokens_in);
+            st.tokens_out = v.get("eval_count").and_then(Value::as_u64).or(st.tokens_out);
+            st.eval_ms = ns_ms("eval_duration").or(st.eval_ms);
+            st.prompt_ms = ns_ms("prompt_eval_duration").or(st.prompt_ms);
+            st.load_ms = ns_ms("load_duration").or(st.load_ms);
+        }
+        return;
+    }
+    if let Some(r) = v.pointer("/choices/0/finish_reason").and_then(Value::as_str) {
+        st.stop = Some(r.to_string());
+    }
+    if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
+        st.tokens_in = u.get("prompt_tokens").and_then(Value::as_u64).or(st.tokens_in);
+        st.tokens_out = u.get("completion_tokens").and_then(Value::as_u64).or(st.tokens_out);
+    }
+    if let Some(t) = v.get("timings").filter(|t| t.is_object()) {
+        st.tokens_in = t.get("prompt_n").and_then(Value::as_u64).or(st.tokens_in);
+        st.tokens_out = t.get("predicted_n").and_then(Value::as_u64).or(st.tokens_out);
+        st.eval_ms = t.get("predicted_ms").and_then(Value::as_f64).or(st.eval_ms);
+        st.prompt_ms = t.get("prompt_ms").and_then(Value::as_f64).or(st.prompt_ms);
+    }
+}
+
+/// Tokens a second for the answer: the server's counts when it gave them,
+/// else the pieces streamed after the first (about one token each).
+fn rate(st: &StreamStats, total_ms: u128) -> Option<(f64, &'static str)> {
+    if let (Some(n), Some(ms)) = (st.tokens_out, st.eval_ms.filter(|m| *m > 0.0)) {
+        return Some(((n as f64 / (ms / 1000.0) * 10.0).round() / 10.0, "server"));
+    }
+    let first = st.first_ms?;
+    let span = total_ms.saturating_sub(first);
+    (st.chunks > 1 && span > 0).then(|| (((st.chunks - 1) as f64 / (span as f64 / 1000.0) * 10.0).round() / 10.0, "pieces"))
+}
+
+/// An error for the log: the server's own words when they read like a
+/// system message, but never a line of its stream (that could hold the
+/// answer) and never a body that may echo the question (FastAPI's 422
+/// `{"detail":[{"input": ...}]}`, a quoted piece of the content, a raw
+/// page): those keep only the status and their length.
+fn loggable(e: &str) -> String {
+    if e.starts_with("unexpected answer") {
+        return "unexpected answer (not the server's stream format)".to_string();
+    }
+    let (status, rest) = match e.split_once(' ') {
+        Some((c, r)) if c.len() == 3 && c.bytes().all(|b| b.is_ascii_digit()) => (Some(c), r),
+        _ => (None, e),
+    };
+    if system_like(rest) {
+        return e.to_string();
+    }
+    let n = rest.chars().count();
+    match status {
+        Some(c) => format!("{c} (message not shown, {n} chars)"),
+        None => format!("(message not shown, {n} chars)"),
+    }
+}
+
+/// Short, one line, no JSON, markup or address, and anything in quotes is
+/// one word (a model name, not a sentence of the question).
+fn system_like(m: &str) -> bool {
+    if m.is_empty() || m.chars().count() > 160 || m.contains("://") {
+        return false;
+    }
+    if m.chars().any(|c| c.is_control() || matches!(c, '{' | '}' | '[' | ']' | '<' | '>' | '`')) {
+        return false;
+    }
+    for q in ['"', '\''] {
+        // quoted parts are the odd pieces once split on the quote
+        let parts: Vec<&str> = m.split(q).collect();
+        if parts.len() % 2 == 0 {
+            return false; // an unclosed quote
+        }
+        if parts.iter().skip(1).step_by(2).any(|p| p.len() > 64 || p.contains(char::is_whitespace)) {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(test)]
 fn stream(kind: &str, port: u16, body: &Value, stop: &AtomicBool, send: &dyn Fn(Value)) -> Result<(), String> {
+    stream_with(kind, port, body, stop, send, &mut StreamStats::default())
+}
+
+fn stream_with(kind: &str, port: u16, body: &Value, stop: &AtomicBool, send: &dyn Fn(Value), st: &mut StreamStats) -> Result<(), String> {
     let path = if kind == "ollama" { "/api/chat" } else { "/v1/chat/completions" };
+    let t0 = std::time::Instant::now();
     // a model that is still loading can take minutes before its first word
     let res = agent(Duration::from_secs(300)).post(&format!("{}{path}", base(port))).set("Content-Type", "application/json").send_string(&body.to_string());
     let res = match res {
         Ok(r) => r,
-        Err(ureq::Error::Status(code, r)) => return Err(status_error(code, &r.into_string().unwrap_or_default())),
+        Err(ureq::Error::Status(code, r)) => {
+            st.status = Some(code);
+            return Err(status_error(code, &r.into_string().unwrap_or_default()));
+        }
         Err(ureq::Error::Transport(t)) => return Err(format!("connection refused or failed: {t}")),
     };
+    st.status = Some(res.status());
+    st.headers_ms = Some(t0.elapsed().as_millis());
+    log_debug!("ai", "the server took the question; waiting for the first piece", status = res.status(), ms = t0.elapsed().as_millis());
     // Lines are read on their own thread, so Stop answers at once even while
     // the server is still reading the question; the connection closes when
     // that thread's next line finds nobody listening.
@@ -275,6 +477,7 @@ fn stream(kind: &str, port: u16, body: &Value, stop: &AtomicBool, send: &dyn Fn(
     });
     loop {
         if stop.load(Ordering::SeqCst) {
+            st.cancelled = true;
             return Ok(());
         }
         let line = match rx.recv_timeout(Duration::from_millis(200)) {
@@ -283,14 +486,63 @@ fn stream(kind: &str, port: u16, body: &Value, stop: &AtomicBool, send: &dyn Fn(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
         let (text, done) = chunk(kind, &line)?;
+        read_meta(kind, &line, st);
         if !text.is_empty() {
+            if st.first_ms.is_none() {
+                st.first_ms = Some(t0.elapsed().as_millis());
+                log_debug!("ai", "first piece of the answer", ms = t0.elapsed().as_millis());
+            }
+            st.chunks += 1;
+            st.chars_out += text.chars().count();
             send(json!({ "type": "text", "text": text }));
         }
         if done {
+            // the usage or timings can come on a line after the last piece
+            // (OpenAI-style servers; blank lines between), for a moment only
+            if kind != "ollama" {
+                let until = std::time::Instant::now() + Duration::from_millis(100);
+                for _ in 0..6 {
+                    let left = until.saturating_duration_since(std::time::Instant::now());
+                    let Ok(Ok(next)) = rx.recv_timeout(left) else { break };
+                    if next.contains("[DONE]") {
+                        break;
+                    }
+                    read_meta(kind, &next, st);
+                }
+            }
             break;
         }
     }
     Ok(())
+}
+
+/// The question's shape for the log: how many messages, characters by role
+/// and pictures. Never the text.
+fn question_shape(messages: &Value) -> (usize, usize, usize, usize) {
+    let (mut system, mut user, mut images) = (0, 0, 0);
+    let list = messages.as_array().map(Vec::as_slice).unwrap_or_default();
+    for m in list {
+        let chars = match m.get("content") {
+            Some(Value::String(t)) => t.chars().count(),
+            Some(Value::Array(parts)) => parts
+                .iter()
+                .map(|p| {
+                    if p.get("type").and_then(Value::as_str) == Some("image_url") {
+                        images += 1;
+                    }
+                    p.get("text").and_then(Value::as_str).map_or(0, |t| t.chars().count())
+                })
+                .sum(),
+            _ => 0,
+        };
+        images += m.get("images").and_then(Value::as_array).map_or(0, Vec::len);
+        if m.get("role").and_then(Value::as_str) == Some("system") {
+            system += chars;
+        } else {
+            user += chars;
+        }
+    }
+    (list.len(), system, user, images)
 }
 
 /// Asks the model and streams its answer to `on_event`: { type: "text",
@@ -318,32 +570,109 @@ pub async fn ai_chat(
     if !messages.is_array() || messages.to_string().len() > MAX_REQUEST_BYTES {
         return Err("The question is too large.".into());
     }
+    let ctx = num_ctx.unwrap_or(8192).clamp(2048, 65536);
     let body = if kind == "ollama" {
-        json!({ "model": model, "messages": messages, "stream": true, "options": { "num_ctx": num_ctx.unwrap_or(8192).clamp(2048, 65536), "num_predict": MAX_ANSWER_TOKENS } })
+        json!({ "model": model, "messages": messages, "stream": true, "options": { "num_ctx": ctx, "num_predict": MAX_ANSWER_TOKENS } })
     } else {
         json!({ "model": model, "messages": messages, "stream": true, "max_tokens": MAX_ANSWER_TOKENS })
     };
+    let (count, system_chars, user_chars, images) = question_shape(&messages);
+    let request_bytes = body.to_string().len();
+    log_debug!(
+        "ai",
+        "question sent",
+        kind = kind,
+        port = port,
+        model = model,
+        messages = count,
+        system_chars = system_chars,
+        prompt_chars = user_chars,
+        images = images,
+        request_bytes = request_bytes,
+        num_ctx = if kind == "ollama" { ctx.to_string() } else { "server's".to_string() },
+        max_tokens = MAX_ANSWER_TOKENS,
+        win = label
+    );
+    let t0 = std::time::Instant::now();
     // a Stop that came before this request started already counts
     let stop = state.stops.lock().unwrap().entry(id.clone()).or_insert_with(|| Arc::new(AtomicBool::new(false))).clone();
     if stop.load(Ordering::SeqCst) {
         state.stops.lock().unwrap().remove(&id);
+        log_info!("ai", "question stopped before it was sent", kind = kind, model = model);
         let _ = on_event.send(json!({ "type": "done" }));
         return Ok(());
     }
     let ch = on_event.clone();
     let k = kind.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    let (result, st) = tauri::async_runtime::spawn_blocking(move || {
         let send = |v: Value| {
             let _ = ch.send(v);
         };
-        stream(&k, port, &body, &stop, &send)
+        let mut st = StreamStats::default();
+        let r = stream_with(&k, port, &body, &stop, &send, &mut st);
+        (r, st)
     })
     .await
     .map_err(|e| e.to_string())
-    .and_then(|r| r);
+    .map(|(r, st)| (r, Some(st)))
+    .unwrap_or_else(|e| (Err(e), None));
     state.stops.lock().unwrap().remove(&id);
-    if let Err(e) = &result {
-        crate::diag::quiet(&format!("assistant: {kind} on port {port} with {model}: {e}"), false);
+    let st = st.unwrap_or_default();
+    let total = t0.elapsed().as_millis();
+    let opt = |v: Option<u64>| v.map_or_else(|| "?".to_string(), |n| n.to_string());
+    let (tps, rate_from) = rate(&st, total).map_or(("?".to_string(), "none"), |(r, from)| (r.to_string(), from));
+    let outcome = match &result {
+        Ok(()) if st.cancelled => "stopped by the person",
+        Ok(()) => "answered",
+        Err(_) => "failed",
+    };
+    let fields = (
+        st.first_ms.map_or_else(|| "none".to_string(), |m| m.to_string()),
+        st.load_ms.map_or_else(|| "?".to_string(), |m| format!("{m:.0}")),
+        st.stop.clone().unwrap_or_else(|| if st.cancelled { "cancelled".into() } else { "?".into() }),
+    );
+    if let Some(load) = st.load_ms.filter(|m| *m >= 500.0) {
+        log_info!("ai", "the server loaded the model for this question", kind = kind, model = model, load_ms = format!("{load:.0}"));
+    }
+    log_debug!(
+        "ai",
+        "server timings",
+        headers_ms = st.headers_ms.map_or_else(|| "?".to_string(), |m| m.to_string()),
+        prompt_eval_ms = st.prompt_ms.map_or_else(|| "?".to_string(), |m| format!("{m:.0}")),
+        eval_ms = st.eval_ms.map_or_else(|| "?".to_string(), |m| format!("{m:.0}")),
+        pieces = st.chunks
+    );
+    match &result {
+        Ok(()) => log_info!(
+            "ai",
+            outcome,
+            kind = kind,
+            port = port,
+            model = model,
+            prompt_chars = system_chars + user_chars,
+            num_ctx = if kind == "ollama" { ctx.to_string() } else { "server's".to_string() },
+            first_token_ms = fields.0,
+            total_ms = total,
+            tokens_in = opt(st.tokens_in),
+            tokens_out = opt(st.tokens_out),
+            tok_per_s = tps,
+            rate_from = rate_from,
+            stop = fields.2,
+            answer_chars = st.chars_out,
+            load_ms = fields.1
+        ),
+        Err(e) => log_warn!(
+            "ai",
+            "question failed",
+            kind = kind,
+            port = port,
+            model = model,
+            status = st.status.map_or_else(|| "none".to_string(), |s| s.to_string()),
+            error = loggable(e),
+            first_token_ms = fields.0,
+            total_ms = total,
+            answer_chars = st.chars_out
+        ),
     }
     let _ = on_event.send(match &result {
         Ok(()) => json!({ "type": "done" }),
@@ -364,12 +693,23 @@ fn loaded_models(kind: &str, port: u16) -> Result<Option<Vec<Value>>, String> {
     if kind != "ollama" {
         return Ok(None);
     }
+    let t0 = std::time::Instant::now();
     let r = agent(Duration::from_secs(3)).get(&format!("{}/api/ps", base(port))).call().map_err(|e| match e {
         ureq::Error::Status(code, r) => status_error(code, &r.into_string().unwrap_or_default()),
         ureq::Error::Transport(t) => format!("connection refused or failed: {t}"),
     })?;
     let v: Value = serde_json::from_str(&r.into_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let list = v.get("models").and_then(Value::as_array).cloned().unwrap_or_default();
+    if crate::diag::detailed() {
+        let named: Vec<String> = list
+            .iter()
+            .filter_map(|m| {
+                let name = m.get("name").or_else(|| m.get("model")).and_then(Value::as_str)?;
+                Some(format!("{name} ({} GB, {} GB on the graphics card)", gb(m.get("size").and_then(Value::as_u64).unwrap_or(0)), gb(m.get("size_vram").and_then(Value::as_u64).unwrap_or(0))))
+            })
+            .collect();
+        log_debug!("ai", "models in memory", kind = kind, port = port, loaded = if named.is_empty() { "none".to_string() } else { named.join(", ") }, ms = crate::diag::ms(t0));
+    }
     Ok(Some(
         list.iter()
             .filter_map(|m| {
@@ -392,7 +732,7 @@ pub async fn ai_loaded(kind: String, port: u16) -> Result<Value, String> {
         return Err("Choose a model server and a model in Settings → Assistant.".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        Ok(match loaded_models(&kind, port)? {
+        Ok(match loaded_models(&kind, port).inspect_err(|e| log_warn!("ai", "could not ask what is in memory", kind = kind, port = port, error = loggable(e)))? {
             Some(models) => json!({ "supported": true, "models": models }),
             None => json!({ "supported": false, "models": [] }),
         })
@@ -412,11 +752,12 @@ fn unload(kind: &str, port: u16, model: &str) -> Result<Value, String> {
         return Ok(json!({ "supported": true, "unloaded": false }));
     };
     let body = json!({ "model": name, "keep_alive": 0, "stream": false });
+    let t0 = std::time::Instant::now();
     agent(Duration::from_secs(30)).post(&format!("{}/api/generate", base(port))).set("Content-Type", "application/json").send_string(&body.to_string()).map_err(|e| match e {
         ureq::Error::Status(code, r) => status_error(code, &r.into_string().unwrap_or_default()),
         ureq::Error::Transport(t) => format!("connection refused or failed: {t}"),
     })?;
-    crate::diag::quiet(&format!("assistant: unloaded {name} from {kind} on port {port}"), false);
+    log_info!("ai", "model unloaded", kind = kind, port = port, model = name, ms = crate::diag::ms(t0));
     Ok(json!({ "supported": true, "unloaded": true, "name": name }))
 }
 
@@ -425,7 +766,17 @@ pub async fn ai_unload(kind: String, port: u16, model: String) -> Result<Value, 
     if !KINDS.contains(&kind.as_str()) || port == 0 || model.trim().is_empty() || model.len() > 200 {
         return Err("Choose a model server and a model in Settings → Assistant.".into());
     }
-    tauri::async_runtime::spawn_blocking(move || unload(&kind, port, &model)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let r = unload(&kind, port, &model);
+        match &r {
+            Ok(v) if v["unloaded"] == false => log_info!("ai", "unload: model was not in memory", kind = kind, port = port, model = model, supported = v["supported"]),
+            Ok(_) => {}
+            Err(e) => log_warn!("ai", "unload failed", kind = kind, port = port, model = model, error = loggable(e)),
+        }
+        r
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Stops an answer under way.
@@ -434,6 +785,7 @@ pub fn ai_stop(state: tauri::State<'_, AiState>, id: String) {
     if id.len() > 64 {
         return;
     }
+    log_debug!("ai", "stop asked");
     let mut stops = state.stops.lock().unwrap();
     if stops.len() < 256 || stops.contains_key(&id) {
         stops.entry(id).or_insert_with(|| Arc::new(AtomicBool::new(false))).store(true, Ordering::SeqCst);
@@ -624,6 +976,88 @@ mod tests {
         let port = l.local_addr().unwrap().port();
         drop(l);
         assert!(models_at("lmstudio", port).is_none());
+    }
+
+    #[test]
+    fn the_servers_counts_and_stop_reason_are_read_never_the_text() {
+        let mut st = StreamStats::default();
+        read_meta("ollama", r#"{"message":{"content":"hi"},"done":false}"#, &mut st);
+        assert!(st.stop.is_none() && st.tokens_out.is_none());
+        read_meta("ollama", r#"{"message":{"content":""},"done":true,"done_reason":"length","prompt_eval_count":812,"eval_count":256,"eval_duration":4000000000,"prompt_eval_duration":900000000,"load_duration":2500000000}"#, &mut st);
+        assert_eq!((st.stop.as_deref(), st.tokens_in, st.tokens_out), (Some("length"), Some(812), Some(256)));
+        assert_eq!((st.eval_ms, st.load_ms), (Some(4000.0), Some(2500.0)));
+        assert_eq!(rate(&st, 9000), Some((64.0, "server")));
+
+        let mut st = StreamStats::default();
+        read_meta("lmstudio", r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#, &mut st);
+        read_meta("lmstudio", r#"data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20}}"#, &mut st);
+        assert_eq!((st.stop.as_deref(), st.tokens_in, st.tokens_out), (Some("stop"), Some(100), Some(20)));
+        let mut st = StreamStats::default();
+        read_meta("llamacpp", r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"timings":{"prompt_n":50,"predicted_n":30,"predicted_ms":1500.0,"prompt_ms":200.0}}"#, &mut st);
+        assert_eq!((st.tokens_out, st.eval_ms), (Some(30), Some(1500.0)));
+        assert_eq!(rate(&st, 0), Some((20.0, "server")));
+        read_meta("llamacpp", "data: [DONE]", &mut st);
+        read_meta("jan", ": keep-alive", &mut st);
+        // without counts: the pieces after the first
+        let st = StreamStats { first_ms: Some(1000), chunks: 11, ..StreamStats::default() };
+        assert_eq!(rate(&st, 3000), Some((5.0, "pieces")));
+        assert_eq!(rate(&StreamStats::default(), 3000), None);
+    }
+
+    #[test]
+    fn the_question_is_measured_not_kept() {
+        let m = json!([
+            { "role": "system", "content": "You read posts." },
+            { "role": "user", "content": "What is >>123 about?", "images": ["AAAA"] },
+            { "role": "user", "content": [{ "type": "text", "text": "And this?" }, { "type": "image_url", "image_url": { "url": "data:x" } }] }
+        ]);
+        assert_eq!(question_shape(&m), (3, 15, 29, 2));
+        assert_eq!(question_shape(&json!("nope")), (0, 0, 0, 0));
+        assert_eq!(loggable("unexpected answer: the model said secret things"), "unexpected answer (not the server's stream format)");
+        assert_eq!(loggable("404 model 'x' not found"), "404 model 'x' not found");
+    }
+
+    #[test]
+    fn errors_that_may_echo_the_question_are_not_logged() {
+        assert_eq!(loggable(&status_error(404, r#"{"error":"model \"q\" not found, try pulling it first"}"#)), "404 model \"q\" not found, try pulling it first");
+        assert_eq!(loggable("400 the request exceeds the available context size, try increasing it"), "400 the request exceeds the available context size, try increasing it");
+        assert_eq!(loggable("Connection refused (os error 111)"), "Connection refused (os error 111)");
+        // FastAPI's 422 echoes the message content
+        let e = status_error(422, r#"{"detail":[{"type":"string_type","loc":["body","messages",0],"msg":"bad","input":"Summarise this thread: anon says my landlord in Leeds"}]}"#);
+        let l = loggable(&e);
+        assert!(l.starts_with("422 (message not shown, ") && !l.contains("landlord"), "{l}");
+        // a server message quoting the content
+        let l = loggable("400 Invalid content: 'Summarise this thread: anon says'");
+        assert!(l.starts_with("400 (message not shown") && !l.contains("anon"), "{l}");
+        // a raw body that is not JSON with an error
+        let l = loggable(&status_error(500, "<html>Summarise this thread</html>"));
+        assert!(!l.contains("Summarise"), "{l}");
+        assert!(!loggable("{\"error\":\"my question\"}").contains("question"));
+    }
+
+    #[test]
+    fn a_stream_records_its_timings_and_counts() {
+        let port = serve("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"See \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\">>123\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n");
+        let mut st = StreamStats::default();
+        stream_with("llamacpp", port, &json!({}), &AtomicBool::new(false), &|_| {}, &mut st).unwrap();
+        assert_eq!((st.chunks, st.chars_out, st.status), (2, 9, Some(200)));
+        assert!(st.first_ms.is_some() && st.headers_ms.is_some());
+        assert_eq!((st.stop.as_deref(), st.tokens_in, st.tokens_out), (Some("stop"), Some(9), Some(2)));
+        assert!(!st.cancelled);
+    }
+
+    #[test]
+    fn a_probe_says_why_there_is_no_server() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        assert_eq!(probe("lmstudio", port).unwrap_err(), "nothing listening");
+        let port = serve("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nno");
+        assert_eq!(probe("jan", port).unwrap_err(), "answered HTTP 404, not as a model server");
+        let port = serve("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"models\":[{\"name\":\"llama3.1:8b\",\"size\":4920000000}]}");
+        let list = probe("ollama", port).unwrap();
+        assert_eq!(list, vec![("llama3.1:8b".to_string(), Some(4_920_000_000))]);
+        assert_eq!(model_list(&list), "llama3.1:8b (4.6 GB)");
     }
 
     #[test]

@@ -42,7 +42,9 @@ import { tagChips, editTag, tagPage } from './tag-view.js';
 import * as T from './tabs-model.js';
 import * as P from './pasta-model.js';
 import * as K from './keys-model.js';
-import { openPastas, pastasOpen } from './pasta-view.js';
+import { openPastas, pastasOpen, savePastaFrom } from './pasta-view.js';
+import { log } from './log.js';
+import { errorKind, viewFields, changedKeys, keysFields, createTally, onlyDiagnosticsDiffer } from './log-model.js';
 
 /** A catalog is fetched again on its own after this long (manual Refresh
  *  any time; the queue still keeps ≤ 1 request/s). */
@@ -157,6 +159,15 @@ export function openShell({
   const ac = new AbortController();
   let closed = false;
   let watchTimer = null;
+  // What was drawn, added up and logged at most once a minute (debug):
+  // full redraws, panes, panes grown in place, the sidebar, status patches.
+  const draws = createTally();
+  function noteDraw(kind) {
+    draws.add(kind);
+    if (!log.enabled('debug')) return;
+    const t = draws.take();
+    if (t) log.debug('ui', 'redraw.summary', { ...t, panes_open: st.panes.length });
+  }
   let saveTimer = null;
   // The changes a grouped save still holds (save() with `op`), by what they
   // change: settings from another window take them on (applySettings).
@@ -251,9 +262,11 @@ export function openShell({
     const subject = st.threads[tkey(board, thread)]?.posts?.[0]?.sub || '';
     try {
       const r = await library.addFromPost({ board, thread, post, subject });
+      log.info('library', 'library.post.saved', { board, thread, no: post.no, result: r.status });
       toast(r.status === 'have' ? 'Already in the library.' : `In the library: ${r.entry.rel}`);
       return r;
     } catch (e) {
+      log.warn('library', 'library.post.failed', { board, thread, no: post.no, kind: errorKind(e) });
       toast(`Couldn’t save the file: ${e?.message || e}`);
       return null;
     }
@@ -277,8 +290,9 @@ export function openShell({
     tagHistoryTimer = 0;
     try {
       localStorage.setItem(TAG_STATS_KEY, JSON.stringify(tagHistory));
-    } catch {
+    } catch (e) {
       /* no storage: the counts last until the app closes */
+      log.warn('filters', 'tag.history.unsaved', { kind: errorKind(e) });
     }
   }
   function noteTagFinds(board, threads) {
@@ -386,8 +400,19 @@ export function openShell({
     if (here && !boards && st.boardList !== 'loading') await loadBoardList().catch(() => {});
     const flagList = here ? F.flagChoices(boards, [here], document.documentElement.lang || 'en') : [];
     const r = await editTag({ tag, board, opener, terms, flagList });
-    if (!r) return;
+    if (!r) {
+      log.debug('filters', 'tag.edit.cancelled', { isNew: !tag });
+      return;
+    }
     const list = settings.tags || [];
+    // what the tag does and where, never its name or terms
+    log.info('filters', r.deleted ? 'tag.deleted' : tag ? 'tag.edited' : 'tag.added', {
+      mode: String(r.mode || tag?.mode || ''),
+      boardOnly: Boolean(r.board || tag?.board),
+      library: Boolean(r.library),
+      fromSearch: Boolean(terms),
+      count: r.deleted ? list.length - 1 : tag ? list.length : list.length + 1,
+    });
     const next = r.deleted ? list.filter((t) => t.id !== tag.id) : tag ? list.map((t) => (t.id === tag.id ? { ...r, id: tag.id } : t)) : [...list, r];
     save({ ...settings, tags: TG.normalizeTags(next) }, { now: true });
     if (!r.deleted && !tag) {
@@ -426,6 +451,7 @@ export function openShell({
       },
       onEdit: (opener) => editTagFlow(t, t.board, opener),
       onRefresh: () => {
+        log.info('tabs', 'refresh', { view: 'tag', boards: boardsHere.length, pane: here(), via: 'button' });
         for (const b of boardsHere) loadCatalog(b, true);
         // at once: "Still loading", then what came (even the same threads)
         renderPaneOf(pane);
@@ -615,10 +641,12 @@ export function openShell({
     if (!bridge || st.boardList === 'loading') return;
     st.boardList = 'loading';
     render();
+    const end = log.time('catalog', 'boards.loaded', 'info');
     try {
       const res = await bridge.fetchBoards();
       const list = Array.isArray(res?.boards) ? res.boards : [];
       if (!list.length) throw new Error('The board list came back empty.');
+      end({ boards: list.length, freshness: String(res?.freshness || '') });
       boards = list;
       settings = M.rememberNsfwBoards(settings, list);
       // older board-flag filters, made to mean what they meant (filter-model);
@@ -632,6 +660,7 @@ export function openShell({
     } catch (e) {
       st.boardList = 'error';
       st.boardError = String(e?.message || e);
+      end({ kind: errorKind(e) }, 'warn');
     }
     const waiting = boardWaiters;
     boardWaiters = [];
@@ -684,17 +713,27 @@ export function openShell({
       else patchCatalog(board);
     }
     let quiet = false;
+    const t0 = performance.now();
     try {
       const res = await bridge.fetchCatalog(board);
       const threads = B.catalogThreads(res?.data);
+      const ms = Math.round(performance.now() - t0);
       // the same threads keep the list the marks and tags were worked out for
       quiet = Boolean(prev?.threads) && prev.status === 'ok' && R.samePosts(prev.threads, threads);
       st.cats[board] = { status: 'ok', threads: quiet ? prev.threads : threads, at: Date.now(), freshness: res?.freshness, error: null };
       // a catalog loaded anyway is a board activity sample: no extra request
       stats.recordCatalog(board, res?.data);
       if (!quiet) noteTagFinds(board, st.cats[board].threads);
+      // the first copy, or Refresh: a line; the copies after it, at debug
+      const fields = { board, threads: threads.length, quiet, force: Boolean(force), freshness: String(res?.freshness || ''), ms };
+      if (!prev?.threads || force) log.info('catalog', 'catalog.loaded', fields);
+      else log.debug('catalog', 'catalog.loaded', fields);
     } catch (e) {
       st.cats[board] = { ...prev, status: 'error', error: e };
+      const fields = { board, kind: errorKind(e), retry_ms: waitingMs(e), ms: Math.round(performance.now() - t0) };
+      // a catalog that keeps failing is said once
+      if (prev?.status === 'error') log.debug('catalog', 'catalog.failed', fields);
+      else log.warn('catalog', 'catalog.failed', fields);
     }
     if (closed) return;
     retryCatalogLater(board);
@@ -766,6 +805,7 @@ export function openShell({
   /** The catalog panes of a board after a fetch that changed nothing else:
    *  the status line and the Refresh button, in place. */
   function patchCatalog(board) {
+    noteDraw('patch');
     const entry = st.cats[board];
     st.panes.forEach((p, i) => {
       if (p.view?.kind !== 'board' || p.view.board !== board) return;
@@ -780,6 +820,7 @@ export function openShell({
   /** The thread panes of "board/no" after a fetch that changed no post:
    *  the status line, the Update button and the "new" marks, in place. */
   function patchThread(key) {
+    noteDraw('patch');
     const entry = st.threads[key];
     st.panes.forEach((p, i) => {
       const v = p.view;
@@ -828,10 +869,12 @@ export function openShell({
     // new); watch: the watched record changed (the rail shows it)
     let quiet = false;
     let watch = false;
+    const t0 = performance.now();
     try {
       const res = await bridge.fetchThread(board, no);
       const posts = Array.isArray(res?.data?.posts) ? res.data.posts : [];
       if (!posts.length) throw new Error('The thread came back empty.');
+      const ms = Math.round(performance.now() - t0);
       // "too soon to ask again" gives the last copy: it is as old as that copy
       const at = res?.freshness === 'throttled' && prev?.at ? prev.at : Date.now();
       quiet = R.quietUpdate(prev, posts);
@@ -851,6 +894,13 @@ export function openShell({
         countRepliesToYou(board, posts);
       }
       const op = posts[0];
+      // the first copy is a line; the polls after it are at debug, and only
+      // a change of state (archived, closed) is a line again
+      const fields = { board, thread: no, posts: posts.length, new: quiet ? 0 : st.threads[key].fresh?.size || 0, quiet, freshness: String(res?.freshness || ''), open: isOpen(board, no), ms };
+      if (!prev?.posts) log.info('thread', 'thread.loaded', fields);
+      else log.debug('thread', 'thread.loaded', fields);
+      const was = prev?.posts?.[0];
+      if (was && !(was.archived || was.closed) && (op.archived || op.closed)) log.info('thread', 'thread.archived', { board, thread: no, archived: Boolean(op.archived), closed: Boolean(op.closed) });
       if (M.isWatched(settings, board, no)) {
         const patch = { archived: Boolean(op.archived || op.closed), title: B.threadTitle(op, 120) };
         const next = M.updateWatched(settings, board, no, patch);
@@ -864,6 +914,10 @@ export function openShell({
       // the queue holding requests back: the next try once it lets one go
       const wait = waitingMs(e);
       st.threads[key] = { ...prev, status: 'error', error: e, gone, retryAt: wait ? Date.now() + wait : 0 };
+      const fields = { board, thread: no, kind: errorKind(e), retry_ms: wait, watched: M.isWatched(settings, board, no), ms: Math.round(performance.now() - t0) };
+      if (gone) log.info('thread', 'thread.gone', fields);
+      else if (prev?.status === 'error') log.debug('thread', 'thread.failed', fields);
+      else log.warn('thread', 'thread.failed', fields);
       if (gone && M.isWatched(settings, board, no)) save(M.updateWatched(settings, board, no, { dead: true }), { op: [`dead:${key}`, (s) => M.updateWatched(s, board, no, { dead: true })] });
     }
     if (closed) return;
@@ -923,15 +977,18 @@ export function openShell({
     st.cross.delete(key); // re-added last: the newest
     st.cross.set(key, { ...prev, status: 'loading' });
     while (st.cross.size > CROSS_KEEP) st.cross.delete(st.cross.keys().next().value);
+    const end = log.time('thread', 'quote.thread');
     const job = (async () => {
       try {
         const res = await bridge.fetchThread(board, no);
         const posts = Array.isArray(res?.data?.posts) ? res.data.posts : [];
         if (!posts.length) throw new Error('The thread came back empty.');
         st.cross.set(key, { status: 'ok', posts: new Map(posts.map((p) => [p.no, p])), at: Date.now() });
+        end({ board, thread: no, posts: posts.length, force: Boolean(force) });
       } catch (e) {
         const gone = String(e?.message || e) === 'not-found';
         st.cross.set(key, gone ? { status: 'gone', at: Date.now() } : { ...prev, status: 'error', at: Date.now() });
+        end({ board, thread: no, kind: errorKind(e) });
       } finally {
         st.crossWait.delete(key);
       }
@@ -943,14 +1000,22 @@ export function openShell({
   /** An archive's address, in the system browser (https only). */
   function openArchive(url) {
     if (!/^https:\/\//.test(String(url)) || !bridge?.openExternal) return;
-    Promise.resolve(bridge.openExternal(url)).catch((e) => toast(`Couldn’t open the archive: ${e?.message || e}`));
+    log.debug('links', 'archive.open', {});
+    Promise.resolve(bridge.openExternal(url)).catch((e) => {
+      log.warn('links', 'archive.open.failed', { kind: errorKind(e) });
+      toast(`Couldn’t open the archive: ${e?.message || e}`);
+    });
   }
 
   /** A link from a post, in the system browser (link-model.js made it
    *  http or https; the app checks again). */
   function openLink(url) {
     if (!/^https?:\/\//i.test(String(url)) || !bridge?.openLink) return;
-    Promise.resolve(bridge.openLink(url)).catch((e) => toast(`Couldn’t open the link: ${e?.message || e}`));
+    log.debug('links', 'link.open', { https: /^https:/i.test(String(url)) });
+    Promise.resolve(bridge.openLink(url)).catch((e) => {
+      log.warn('links', 'link.open.failed', { kind: errorKind(e) });
+      toast(`Couldn’t open the link: ${e?.message || e}`);
+    });
   }
 
   // One player for the window, outside the panes, so redraws never reload it.
@@ -1000,11 +1065,13 @@ export function openShell({
     const at = st.panes.indexOf(from);
     if (at < 0 || from.motion?.kind === 'closing') return; // its pane went meanwhile
     if (!known && boards) {
+      log.info('links', 'board.link.unknown', {});
       toast(`There is no board /${board}/.`);
       return;
     }
     // an NSFW board while they are hidden: never opened from a link
     if (known && !M.visibleBoards([known], settings).length) {
+      log.info('links', 'board.link.hidden', { board });
       toast(`/${board}/ is an NSFW board: Settings → Content can show NSFW boards.`);
       return;
     }
@@ -1071,6 +1138,7 @@ export function openShell({
       // the queue said when it will ask again (bridge.js waitingMs): then,
       // not at the usual interval (no sooner: it would make no request)
       if (entry.status === 'error' && entry.retryAt) delay = Math.max(SOON_MIN_MS, entry.retryAt - Date.now() + WAITING_MARGIN_MS);
+      log.debug('thread', 'poll.scheduled', { board, thread: Number(no), delay_ms: Math.round(delay), why: entry.status === 'error' && entry.retryAt ? 'backoff' : tries > 0 ? 'soon' : 'interval', soon_left: st.soon.get(key) || 0 });
       st.timers.set(
         key,
         setTimeout(() => {
@@ -1090,13 +1158,19 @@ export function openShell({
   async function watchTick() {
     if (closed || st.watchBusy) return;
     st.watchBusy = true;
+    const end = log.time('watch', 'watch.tick');
+    let asked = 0;
     try {
       for (const w of [...(settings.watched || [])]) {
         if (closed) return;
         if (w.dead || w.archived || isOpen(w.board, w.no)) continue;
         if (!M.isWatched(settings, w.board, w.no)) continue;
+        asked += 1;
         await loadThread(w.board, w.no);
       }
+      end({ watched: settings.watched?.length || 0, asked, next_s: Math.round(intervalMs() / 1000) });
+    } catch (e) {
+      log.warn('watch', 'watch.tick.failed', { kind: errorKind(e), asked });
     } finally {
       st.watchBusy = false;
       if (!closed) watchTimer = setTimeout(watchTick, intervalMs());
@@ -1193,6 +1267,7 @@ export function openShell({
     // Stats → You: a thread opened (not the one already shown, not back
     // and forward, not the panes a window starts with)
     if (changed && record && view?.kind === 'thread') stats.count('threads', 1, view.board);
+    if (changed) log.info('tabs', record ? 'view.opened' : `view.${motion}`, { ...viewFields(view), from: pane.view?.kind || 'none', pane: i });
     pane.view = view;
     showPaneView(i, wasRail, boardsBefore);
   }
@@ -1254,11 +1329,13 @@ export function openShell({
     if (jump) tab.jump = jump;
     const r = T.addTab({ tabs: pane.tabs, active: pane.active }, tab, { background });
     if (!r) {
+      log.info('tabs', 'tab.limit', { tabs: pane.tabs.length });
       toast(`At most ${T.MAX_TABS} tabs in a pane.`);
       return false;
     }
     if (view.kind === 'thread') stats.count('threads', 1, view.board);
     const at = st.panes.indexOf(pane);
+    log.info('tabs', 'tab.opened', { ...viewFields(view), pane: at, tabs: r.tabs.length, background: Boolean(background), jump: Boolean(jump), searched: Boolean(query) });
     if (background) {
       pane.tabs = r.tabs;
       pane.active = r.active;
@@ -1285,6 +1362,7 @@ export function openShell({
   function primeTitle(v) {
     if (v?.kind !== 'thread' || st.threads[tkey(v.board, v.no)]?.posts) return;
     if (st.cats[v.board]?.threads?.some((t) => t.no === v.no)) return;
+    log.debug('tabs', 'tab.title.fetch', { board: v.board, thread: v.no });
     loadThread(v.board, v.no);
   }
 
@@ -1311,6 +1389,7 @@ export function openShell({
     }
     const boardsBefore = activeBoardsKey();
     const wasRail = st.rail;
+    log.info('tabs', 'tab.switched', { ...viewFields(pane.tabs[index].view), pane: i, index, tabs: pane.tabs.length });
     pane.active = index;
     pane.motion = null;
     takeJump(pane);
@@ -1325,6 +1404,7 @@ export function openShell({
     if (!pane || !pane.tabs[index] || pane.motion?.kind === 'closing') return;
     if (pane.tabs.length <= 1) {
       if (livePanes().length <= 1) return;
+      log.info('tabs', 'tab.closed', { ...viewFields(pane.tabs[0].view), pane: i, tabs: 0, closed: st.closedTabs.length + 1 });
       // the pane went with it: Ctrl+Shift+T makes it again, where it was
       st.closedTabs = T.pushClosed(st.closedTabs, { tab: pane.tabs[0], paneId: pane.id, index: 0, paneAt: i });
       closePane(i);
@@ -1337,6 +1417,7 @@ export function openShell({
     if (!r) return;
     stopAsk(r.closed.ask, bridge);
     st.closedTabs = T.pushClosed(st.closedTabs, { tab: r.closed, paneId: pane.id, index });
+    log.info('tabs', 'tab.closed', { ...viewFields(r.closed.view), pane: i, tabs: r.tabs.length, active: wasActive, closed: st.closedTabs.length });
     pane.tabs = r.tabs;
     pane.active = r.active;
     if (!wasActive) {
@@ -1367,6 +1448,7 @@ export function openShell({
       st.panes.splice(at, 0, pane);
       st.focus = at;
       st.rail = false;
+      log.info('tabs', 'tab.reopened', { ...viewFields(tab.view), pane: at, newPane: true, closed: st.closedTabs.length });
       takeJump(pane);
       startLine(tab.view);
       render();
@@ -1381,10 +1463,12 @@ export function openShell({
     const pane = st.panes[i];
     const r = T.addTab({ tabs: pane.tabs, active: pane.active }, tab, { background: false, at });
     if (!r) {
+      log.info('tabs', 'tab.limit', { tabs: pane.tabs.length, reopen: true });
       toast(`At most ${T.MAX_TABS} tabs in a pane.`);
       return;
     }
     st.closedTabs = p.stack;
+    log.info('tabs', 'tab.reopened', { ...viewFields(tab.view), pane: i, newPane: false, tabs: r.tabs.length, closed: st.closedTabs.length });
     const boardsBefore = activeBoardsKey();
     const wasRail = st.rail;
     pane.tabs = r.tabs;
@@ -1616,10 +1700,12 @@ export function openShell({
   function openBeside(view, after = st.focus) {
     if (view?.kind === 'thread') stats.count('threads', 1, view.board);
     if (st.panes.length >= MAX_PANES) {
+      log.info('tabs', 'pane.overflow', { ...viewFields(view), panes: st.panes.length });
       newWindow([view]);
       return;
     }
     const at = Math.min(after + 1, st.panes.length);
+    log.info('tabs', 'pane.opened', { ...viewFields(view), pane: at, panes: st.panes.length + 1 });
     const pane = newPane(view);
     setMotion(pane, 'enter');
     st.panes.splice(at, 0, pane);
@@ -1635,6 +1721,7 @@ export function openShell({
     const pane = st.panes[i];
     // the last pane that stays never goes (one fading out does not count)
     if (!pane || pane.motion?.kind === 'closing' || livePanes().length <= 1) return;
+    log.info('tabs', 'pane.closed', { ...viewFields(pane.view), pane: i, tabs: pane.tabs.length, panes: livePanes().length - 1 });
     for (const t of pane.tabs) stopAsk(t.ask, bridge); // an answer under way ends with its pane
     if (reducedMotion()) return removePane(pane);
     setMotion(pane, 'closing');
@@ -1667,9 +1754,12 @@ export function openShell({
    *  stays here; All boards when nothing is left). */
   async function newWindow(entries) {
     if (!bridge?.openWindow) return;
+    const end = log.time('app', 'window.opened', 'info');
     try {
       await bridge.openWindow(T.encodePanes(entries));
+      end({ panes: entries.length, tabs: entries.reduce((n, x) => n + (Array.isArray(x?.tabs) ? x.tabs.length : 1), 0) });
     } catch (e) {
+      end({ kind: errorKind(e) }, 'warn');
       toast(`Couldn’t open a window: ${e?.message || e}`);
     }
   }
@@ -1677,6 +1767,7 @@ export function openShell({
   function popOut(i) {
     // the pane with all its tabs
     const p = st.panes[i];
+    log.info('tabs', 'pane.popout', { ...viewFields(p.view), pane: i, tabs: p.tabs.length });
     newWindow([{ tabs: p.tabs.map((t) => t.view), active: p.active }]);
     if (livePanes().length > 1) closePane(i);
   }
@@ -1700,6 +1791,7 @@ export function openShell({
     },
     onPosted: (p) => posted(p),
     onPastas: (anchor, where) => openPastasFor(anchor, where),
+    onSavePasta: (text, anchor) => savePasta(text, anchor),
   });
 
   // ------------------------------------------------- pre-written posts (pastas)
@@ -1740,6 +1832,22 @@ export function openShell({
     if (anchor.hasAttribute?.('aria-expanded')) anchor.setAttribute('aria-expanded', 'true');
   }
 
+  /** Save as pasta (the reply form's button, a post's menu): `text` kept
+   *  as an own pasta after a title prompt, saved like a change made in the
+   *  panel (an op, so it merges with another window's). */
+  function savePasta(text, opener) {
+    if (closed) return;
+    savePastaFrom({
+      text,
+      opener,
+      getSettings: () => settings,
+      onSettings: (_next, op) => {
+        save(op[1](settings), { op });
+        pastaPopup?.update(settings);
+      },
+    });
+  }
+
   /** The R key on the focused pane: a thread's reply form, or a board's new
    *  thread form, as its Reply / New thread button opens it (an open form
    *  takes the focus in its comment). A thread that takes no replies says
@@ -1747,11 +1855,13 @@ export function openShell({
   function replyKey(i) {
     const v = st.panes[i]?.view;
     if (v?.kind === 'board') {
+      log.info('post', 'key.reply', { ...viewFields(v), pane: i });
       composer.open({ board: v.board, thread: 0 });
       return true;
     }
     if (v?.kind !== 'thread') return false;
     const why = K.replyBlock(st.threads[tkey(v.board, v.no)]);
+    log.info('post', 'key.reply', { ...viewFields(v), pane: i, blocked: why || '' });
     if (why) toast(K.REPLY_BLOCKED[why]);
     else composer.open({ board: v.board, thread: v.no });
     return true;
@@ -1765,6 +1875,7 @@ export function openShell({
     const btn = name ? root.querySelector(`.workspace__grid [data-pane="${i}"] [data-key="${CSS.escape(`${prefixOf(i)}${name}`)}"]`) : null;
     // a thread that is gone is not fetched again: nothing to show
     const gone = v?.kind === 'thread' && st.threads[tkey(v.board, v.no)]?.gone;
+    log.info('tabs', 'refresh', { ...viewFields(v), pane: i, via: 'key', gone: Boolean(gone) });
     if (btn && !gone) cloverBusy(btn, () => refreshPane(i));
     else refreshPane(i);
   }
@@ -1777,6 +1888,7 @@ export function openShell({
       const posts = st.threads[tkey(board, thread)]?.posts;
       const next = M.toggleWatch(settings, { board, no: thread, title: posts?.length ? B.threadTitle(posts[0], 120) : '', seen: no });
       if (next !== settings) {
+        log.info('watch', 'watch.added', { board, thread, auto: true, watched: next.watched?.length || 0 });
         save(next, { now: true });
         // its Watch button and the sidebar's Watched list say so at once
         // (the reply form's save drew them before the thread was watched)
@@ -1790,6 +1902,7 @@ export function openShell({
       // queue allows instead (scheduleOpen). One under way finishes first.
       const key = tkey(board, thread);
       st.soon.set(key, SOON_TRIES);
+      log.debug('thread', 'poll.soon', { board, thread, tries: SOON_TRIES });
       if (st.threads[key]?.status !== 'loading') {
         clearTimeout(st.timers.get(key));
         st.timers.delete(key);
@@ -1889,10 +2002,12 @@ export function openShell({
 
   async function openSitePage(board, thread = null, quote = null) {
     if (!bridge?.openPost) return;
+    log.info('post', 'site.page', { board, thread: thread || 0, quote: Boolean(quote) });
     try {
       const r = await bridge.openPost(board, thread, quote);
       if (r?.mock) toast('In the desktop app this opens the site’s own page in a window.');
     } catch (e) {
+      log.warn('post', 'site.page.failed', { board, kind: errorKind(e) });
       toast(`Couldn’t open the site’s page: ${e?.message || e}`);
     }
   }
@@ -1914,6 +2029,8 @@ export function openShell({
     // its work-mode line there (keyed by the URL renderPost got) shows too
     const urls = saved ? savedFiles(v.board, v.no) : bridge;
     const items = galleryItems(shownPosts, v.board, urls, settings.display, { isShown: (p) => fileShown(urls.mediaUrl(v.board, p)) });
+    log.info('gallery', 'gallery.opened', { ...viewFields(v), items: items.length, posts: entry.posts.length, hidden: entry.posts.length - shownPosts.length });
+    const opened = performance.now();
     openGallery({
       items,
       title: B.threadTitle(entry.posts[0], 80),
@@ -1928,6 +2045,7 @@ export function openShell({
           : (it) => bridge.saveMedia(it.full, it.name, settings.files?.downloadDir || ''),
       preload: settings.display?.galleryPreload !== false,
       onClose: (no) => {
+        log.info('gallery', 'gallery.closed', { board: v.board, thread: v.no, open_s: Math.round((performance.now() - opened) / 1000) });
         const el = root.querySelector(`[data-pane="${paneIndex}"] [data-no="${no}"]`);
         if (el) revealPost(el, { align: 'center' });
       },
@@ -1945,10 +2063,13 @@ export function openShell({
     if (!bridge?.offlineList || closed) return;
     const before = st.saved;
     st.saved = { ...st.saved, status: 'loading' };
+    const end = log.time('offline', 'saved.listed');
     try {
       st.saved = { status: 'ok', list: O.savedEntries(await bridge.offlineList(savedDir())), error: '' };
+      end({ threads: st.saved.list.length, custom: Boolean(savedDir()) });
     } catch (e) {
       st.saved = { ...st.saved, status: 'error', error: String(e?.message || e) };
+      log.warn('offline', 'saved.list.failed', { kind: errorKind(e), custom: Boolean(savedDir()) });
     }
     // The sidebar's list and the saved threads; when the list changed,
     // saved copies (their title) and threads (whether they are saved).
@@ -1962,13 +2083,16 @@ export function openShell({
     if (!bridge?.offlineRead || st.offline[key]?.status === 'loading') return;
     st.offline[key] = { ...st.offline[key], status: 'loading' };
     renderPanes(R.showsSaved(board, no));
+    const t0 = performance.now();
     try {
       const r = await bridge.offlineRead(savedDir(), board, no);
       const posts = Array.isArray(r?.thread?.posts) ? r.thread.posts : [];
       if (!posts.length) throw new Error('The saved thread has no posts.');
       st.offline[key] = { status: 'ok', posts, have: { files: r.files || [], thumbs: r.thumbs || [] }, folder: r.folder || '', savedAt: r.savedAt || 0, error: null };
+      log.info('offline', 'saved.opened', { board, thread: no, posts: posts.length, files: (r.files || []).length, thumbs: (r.thumbs || []).length, ms: Math.round(performance.now() - t0) });
     } catch (e) {
       const gone = String(e?.message || e) === 'not-saved';
+      log.warn('offline', 'saved.open.failed', { board, thread: no, kind: errorKind(e) });
       st.offline[key] = { status: 'error', gone, error: gone ? new Error('This thread is not in the saved threads folder.') : e };
     }
     // (an Ask pane reading it follows: flushDraw)
@@ -1996,9 +2120,13 @@ export function openShell({
     const job = { kind, done: 0, total: 0, cancelled: false };
     st.jobs.set(key, job);
     renderPanes(R.showsThread(board, no));
+    const area = kind === 'offline' ? 'offline' : 'files';
+    const t0 = performance.now();
+    log.info(area, 'job.started', { job: kind, board, thread: no, library: kind === 'all' && toLibrary() });
     try {
       const { jobs, worker } = await prepare();
       if (!jobs.length) {
+        log.info(area, 'job.finished', { job: kind, board, thread: no, files: 0, ms: Math.round(performance.now() - t0) });
         toast('This thread has no files.');
         return;
       }
@@ -2012,8 +2140,10 @@ export function openShell({
         },
       });
       if (kind === 'offline') stats.count('saved', 1);
+      log.info(area, 'job.finished', { job: kind, board, thread: no, files: jobs.length, saved: r.saved, skipped: r.skipped, failed: r.failed, cancelled: r.cancelled, stopped: Boolean(r.stopped), ms: Math.round(performance.now() - t0) });
       toast(O.doneText(kind, r));
     } catch (e) {
+      log.warn(area, 'job.failed', { job: kind, board, thread: no, kind: errorKind(e), done: job.done, ms: Math.round(performance.now() - t0) });
       toast(kind === 'all' ? `Couldn’t download the files: ${e?.message || e}` : `Couldn’t save the thread: ${e?.message || e}`);
     } finally {
       st.jobs.delete(key);
@@ -2068,6 +2198,7 @@ export function openShell({
   function cancelJob(board, no) {
     const job = st.jobs.get(tkey(board, no));
     if (!job) return;
+    log.info(job.kind === 'offline' ? 'offline' : 'files', 'job.cancel', { job: job.kind, board, thread: no, done: job.done, total: job.total });
     job.cancelled = true;
     renderPanes(R.showsThread(board, no));
   }
@@ -2088,8 +2219,10 @@ export function openShell({
     if (!ok || closed) return;
     try {
       await bridge.offlineDelete(savedDir(), e.board, e.no);
+      log.info('offline', 'saved.deleted', { board: e.board, thread: e.no });
       toast('Saved thread deleted');
     } catch (err) {
+      log.warn('offline', 'saved.delete.failed', { board: e.board, thread: e.no, kind: errorKind(err) });
       toast(`Couldn’t delete the saved thread: ${err?.message || err}`);
     }
     forgetOffline(key);
@@ -2177,9 +2310,11 @@ export function openShell({
     const had = settings.favourites.includes(code);
     const next = M.toggleFavourite(settings, code);
     if (next === settings) {
+      log.info('ui', 'favourite.full', { favourites: settings.favourites.length });
       toast(`At most ${M.MAX_FAVOURITES} favourites.`);
       return;
     }
+    log.info('ui', had ? 'favourite.removed' : 'favourite.added', { board: code, favourites: next.favourites.length });
     save(next, { now: true });
     toast(had ? `/${code}/ removed from favourites` : `/${code}/ added to favourites`);
     render();
@@ -2231,6 +2366,17 @@ export function openShell({
       you: F.repliesToYou(list, youSetOf(board)),
     };
     markCache.set(list, c);
+    // worked out once per list and settings (never per draw): the counts
+    if (log.enabled('debug')) {
+      let hidden = 0;
+      let byTag = 0;
+      for (const [no, m] of marks) {
+        if (!F.isHiddenMark(m)) continue;
+        hidden += 1;
+        if (by.get(no)?.kind === 'tag') byTag += 1;
+      }
+      log.debug('filters', 'filters.applied', { board, posts: list.length, marked: marks.size, hidden, byTag, filters: settings.filters?.length || 0, tagCount: settings.tags?.length || 0, you: c.you.size });
+    }
     return c;
   }
 
@@ -2258,6 +2404,7 @@ export function openShell({
     });
     if (!ok) return;
     const next = tagOne ? { ...settings, tags: (settings.tags || []).filter((t) => t.id !== src.id) } : F.removeFilter(settings, src.id);
+    log.info('filters', tagOne ? 'tag.deleted' : 'filter.deleted', { from: 'post', left: tagOne ? next.tags.length : next.filters?.length || 0 });
     save(next, { now: true });
     toast(tagOne ? 'Tag deleted.' : 'Filter deleted.');
     render();
@@ -2344,10 +2491,11 @@ export function openShell({
    *  window's address) and only that pane is drawn. The post first in sight
    *  stays first in sight; switched straight back, the thread is where it
    *  was. */
-  function toggleLayout(i = st.focus) {
+  function toggleLayout(i = st.focus, via = 'key') {
     const pane = st.panes[i];
     const v = pane?.view;
     if (!v || (v.kind !== 'thread' && v.kind !== 'offline') || pane.motion?.kind === 'closing') return;
+    const end = log.time('tabs', 'layout.toggled', 'info');
     const bodyOf = () => root.querySelector(`.workspace__grid section[data-pane="${i}"] .centre__body[data-scroll-key]`);
     const before = bodyOf();
     const from = CM.layoutOf(v, settings.display);
@@ -2367,6 +2515,7 @@ export function openShell({
     } else if (!place.back) setScroll(sc, 0);
     switched.set(memoKey(from), { arrived: scrollPos(sc) });
     trackRead(body);
+    end({ ...viewFields(v), layout: next.layout || '', pane: i, via, back: Boolean(place.back) });
   }
 
   /** The unread counts drawn outside a full redraw (reading only lowers
@@ -2450,6 +2599,7 @@ export function openShell({
 
   function toggleHiddenPost(board, no, what = 'post') {
     const was = F.isHidden(settings, board, no);
+    log.info('filters', was ? 'post.unhidden' : 'post.hidden', { board, no, what });
     save(F.toggleHidden(settings, board, no), { now: true });
     st.revealed.delete(tkey(board, no));
     const still = was && filterHides(board, no);
@@ -2461,9 +2611,11 @@ export function openShell({
   function addQuickFilter(board, q) {
     const next = F.addFilter(settings, F.quickFilter(board, q));
     if (next === settings) {
+      log.info('filters', 'filter.quick.refused', { board, field: String(F.quickFilter(board, q)?.field || '') });
       toast(F.addProblemText(F.addProblem(settings, F.quickFilter(board, q))) || 'That filter is already there.');
       return;
     }
+    log.info('filters', 'filter.quick.added', { board, field: String(F.quickFilter(board, q)?.field || ''), filters: next.filters?.length || 0 });
     save(next, { now: true });
     toast(`Filter added for /${board}/. Change it in Settings → Filters.`);
     render();
@@ -2477,8 +2629,13 @@ export function openShell({
       post.tim && !post.filedeleted && library.available()
         ? [library.has(post.md5) ? { label: 'Show in the library', onSelect: () => showInLibrary(post) } : { label: 'Save the file to the library', onSelect: () => saveToLibrary(board, thread, post) }]
         : [];
+    // Save as pasta: its plain text (quotes and greentext as typed, the HTML
+    // gone); the focus is back on the menu's button when it runs
+    const plain = commentText(post.com || '');
+    const pasta = plain.trim() ? [{ label: 'Save as pasta', onSelect: () => savePasta(plain, document.activeElement) }] : [];
     return [
       ...keep,
+      ...pasta,
       { label: hidden ? 'Unhide post' : 'Hide post', onSelect: () => toggleHiddenPost(board, post.no) },
       ...F.quickFilters(post).map((q) => ({ label: q.label, onSelect: () => addQuickFilter(board, q) })),
     ];
@@ -2494,9 +2651,11 @@ export function openShell({
       seen: posts?.length ? posts[posts.length - 1].no : 0,
     });
     if (next === settings) {
+      log.info('watch', 'watch.full', { watched: settings.watched?.length || 0 });
       toast(`At most ${M.MAX_WATCHED} watched threads.`);
       return;
     }
+    log.info('watch', was ? 'watch.removed' : 'watch.added', { board, thread: no, watched: next.watched?.length || 0 });
     save(next, { now: true });
     toast(was ? 'No longer watching this thread' : 'Watching this thread');
     renderRail();
@@ -2629,12 +2788,15 @@ export function openShell({
 
   /** Frees the model's memory, says what happened, and checks again. */
   async function unloadAi(ai = settings.ai) {
+    log.info('ai', 'ai.unload', { server: String(ai?.kind || '') });
     const r = await unloadModel(bridge, ai);
     if (r.text) toast(r.text);
     runMemory(bridge, st.aiDetect, settings.ai?.kind ? settings.ai : ai, redrawSettings);
   }
 
   function showLog(opener = null) {
+    log.info('app', 'log.dialog.opened', {});
+    log.flush();
     openLogDialog({ load: () => bridge.diagnosticsText(), save: () => bridge.saveDiagnostics(settings.files?.downloadDir || ''), opener });
   }
 
@@ -2660,12 +2822,12 @@ export function openShell({
       watched: M.isWatched(settings, v.board, v.no),
       intervalSec: intervalMs() / 1000,
       isYou: (no) => isYouOn(v.board, no),
-      onRefresh: () => loadThread(v.board, v.no),
+      onRefresh: () => (log.info('tabs', 'refresh', { ...viewFields(v), pane: i, via: 'button' }), loadThread(v.board, v.no)),
       onWatch: () => toggleWatchThread(v.board, v.no),
       onReply: (quote = null, selection = '') => composer.open({ board: v.board, thread: v.no, quote: quote || 0, selection }),
       onPastas: (anchor) => openPastasFor(anchor, { board: v.board, thread: v.no }),
       layout: CM.layoutOf(v, settings.display),
-      onLayout: () => toggleLayout(st.panes.indexOf(pane)),
+      onLayout: () => toggleLayout(st.panes.indexOf(pane), 'button'),
       pending: st.pending.filter((p) => p.board === v.board && p.thread === v.no),
       landed: st.landed,
       onGallery: () => gallery(i),
@@ -2753,6 +2915,8 @@ export function openShell({
           },
           onChange: (next, { redraw = true, focus = null } = {}) => {
             const moved = (next.files?.savedDir || '') !== savedDir();
+            // the names of what changed, never the values
+            log.info('settings', 'settings.changed', keysFields(changedKeys(settings, next)));
             save(next, { now: true });
             stats.poke();
             if (moved) {
@@ -2785,7 +2949,7 @@ export function openShell({
               : where === 'tab' || where === 'tab-front'
                 ? openTab({ kind: 'thread', board: v.board, no }, i, { background: where === 'tab' })
                 : goto({ kind: 'thread', board: v.board, no }, i),
-          onRefresh: () => loadCatalog(v.board, true),
+          onRefresh: () => (log.info('tabs', 'refresh', { ...viewFields(v), pane: i, via: 'button' }), loadCatalog(v.board, true)),
           onNewThread: () => composer.open({ board: v.board, thread: 0 }),
           onPastas: (anchor) => openPastasFor(anchor, { board: v.board, thread: 0 }),
           onView: (patch) => {
@@ -2863,7 +3027,7 @@ export function openShell({
           onRefresh: () => loadOffline(v.board, v.no),
           onGallery: () => gallery(i),
           layout: CM.layoutOf(v, settings.display),
-          onLayout: () => toggleLayout(st.panes.indexOf(pane)),
+          onLayout: () => toggleLayout(st.panes.indexOf(pane), 'button'),
           marks: pm?.marks,
           hidden: pm?.why,
           hiderOf: (no) => (pm ? hiderOf(v.board, saved.posts, no) : null),
@@ -3046,8 +3210,10 @@ export function openShell({
     if (!ok || closed) return;
     try {
       await stats.deleteMine();
+      log.info('stats', 'mine.deleted', {});
       toast('Your stats were deleted');
     } catch (e) {
+      log.warn('stats', 'mine.delete.failed', { kind: errorKind(e) });
       toast(`Couldn’t delete your stats: ${e?.message || e}`);
     }
     showStats();
@@ -3629,6 +3795,7 @@ export function openShell({
     const { el } = paneEl(i, matchMedia(NARROW).matches);
     old.replaceWith(el);
     pane.stale = false;
+    noteDraw('pane');
     restore(el, saved);
     syncFocus();
     showJump();
@@ -3691,6 +3858,7 @@ export function openShell({
     // columns they push it down its column, or into the next one.
     fitColumns(scrollerOf(body));
     keepAnchor(body, a);
+    noteDraw('grow');
     drawnWith.set(pane, settings);
     trackRead(body);
     showJump();
@@ -3724,6 +3892,7 @@ export function openShell({
     const saved = capture(old);
     const next = railScrollEl();
     old.replaceWith(next);
+    noteDraw('rail');
     if (saved.railY) restoreScroll(next, saved.railY);
     restoreFocus(next, saved);
     const foot = root.querySelector(':scope > nav.rail [data-key="settings"]');
@@ -3808,6 +3977,7 @@ export function openShell({
     root.classList.remove('shell--resizing');
     renderAfterDrag = false;
     dropInvalidations();
+    noteDraw('full');
     if (settings.embeds?.mode === 'off') player.close();
     const saved = capture(root);
     clear(root);
@@ -3967,6 +4137,7 @@ export function openShell({
     const pane = st.panes[i];
     if (!pane) return;
     const state = { tabs: pane.tabs, active: pane.active };
+    if (!repeat) log.debug('tabs', 'key.tab', { action: k.kind, tabs: pane.tabs.length });
     if (k.kind === 'next' || k.kind === 'prev') activateTab(i, T.cycleIndex(state, k.kind === 'next' ? 1 : -1));
     else if (repeat) return;
     else if (k.kind === 'pick') {
@@ -4025,6 +4196,7 @@ export function openShell({
         }
         const v = focused().view;
         // A highlighted poster ID clears first; the next Esc goes back.
+        log.debug('app', 'key', { key: 'Escape', view: v?.kind || 'none' });
         if (v.kind === 'thread' && st.idHl.has(tkey(v.board, v.no)) && !typing()) {
           st.idHl.delete(tkey(v.board, v.no));
           renderPanes(showsEither(v.board, v.no));
@@ -4051,13 +4223,14 @@ export function openShell({
         const kind = focused()?.view?.kind;
         if (kind === 'thread' || kind === 'offline') {
           e.preventDefault();
-          if (!e.repeat) toggleLayout(st.focus);
+          if (!e.repeat) toggleLayout(st.focus, 'key');
         }
         return;
       }
       if ((e.key === 'u' || e.key === 'U') && !e.ctrlKey && !e.metaKey && !e.altKey && !typing()) {
         if (focused().view.kind === 'thread') {
           e.preventDefault();
+          log.debug('watch', 'key.unread', { unread: focusedUnread() });
           jumpUnread(st.focus);
         }
         return;
@@ -4152,6 +4325,19 @@ export function openShell({
   }
 
   root.hidden = false;
+  log.info('tabs', 'shell.opened', {
+    main: Boolean(isMain),
+    panes: st.panes.length,
+    tabs: st.panes.reduce((n, p) => n + p.tabs.length, 0),
+    views: [...new Set(views().map((v) => v?.kind || 'none'))].join(','),
+    watched: settings.watched?.length || 0,
+    favourites: settings.favourites?.length || 0,
+    filters: settings.filters?.length || 0,
+    tagCount: settings.tags?.length || 0,
+    pins: settings.pastas?.pinned?.length || 0,
+    ownPastas: settings.pastas?.own?.length || 0,
+    rows: settings.ui?.rows || 1,
+  });
   for (const v of views()) startLine(v);
   render();
   for (const v of views()) enter(v);
@@ -4163,6 +4349,9 @@ export function openShell({
   function flush() {
     if (closed) return Promise.resolve();
     trackAllRead();
+    // the redraws counted since the last summary, before the window goes
+    const t = log.enabled('debug') ? draws.take(true) : null;
+    if (t) log.debug('ui', 'redraw.summary', { ...t, panes_open: st.panes.length });
     if (tagHistoryTimer) writeTagHistory();
     // the library's own index (library.js)
     return Promise.all([flushSave(), library.flush()]).then(() => undefined);
@@ -4177,6 +4366,9 @@ export function openShell({
     openTab: (view, { pane = st.focus, background = true } = {}) => openTab(view, pane, { background }),
     close() {
       for (const p of st.panes) for (const t of p.tabs) stopAsk(t.ask, bridge);
+      const t = draws.take(true);
+      if (t) log.debug('ui', 'redraw.summary', { ...t, panes_open: st.panes.length });
+      log.info('tabs', 'shell.closed', { panes: st.panes.length, held: pendingOps.size });
       closed = true;
       stats.close();
       clearTimeout(statsTimer);
@@ -4211,6 +4403,17 @@ export function openShell({
       const merged = U.keepReadMarks(prev, replayed);
       const light = U.onlyReadMarksDiffer(prev, merged);
       const moved = (merged.files?.savedDir || '') !== savedDir();
+      // what another window saved, taken in: this window's held changes
+      // (replayed on top) and read marks it kept are the conflicts
+      if (log.enabled('debug')) {
+        log.debug('settings', 'settings.merged', {
+          ...(light ? { keys: 'lastRead', changed: 1 } : keysFields(changedKeys(prev, merged))),
+          replayed: pendingOps.size,
+          readKept: replayed !== merged,
+          light,
+          moved,
+        });
+      }
       // Read marks saved by another window (every bit of scrolling there):
       // only the counts change, so nothing is torn down and redrawn here,
       // and everything else keeps its identity (the filter and (You)
@@ -4229,6 +4432,8 @@ export function openShell({
       // Only the pins or own pre-written posts: the popup, if open, nothing else
       pastaPopup?.update(settings);
       if (P.onlyPastasDiffer(prev, settings)) return;
+      // the Detailed logs switch: log.js has it already, nothing to redraw
+      if (onlyDiagnosticsDiffer(prev, settings)) return;
       if (M.onlyWatchedDiffer(prev, settings)) {
         const was = new Set((prev.watched || []).map((w) => tkey(w.board, w.no)));
         const now = new Set((settings.watched || []).map((w) => tkey(w.board, w.no)));

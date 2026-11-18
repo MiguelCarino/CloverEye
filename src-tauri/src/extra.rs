@@ -128,8 +128,36 @@ pub async fn post_agent(app: tauri::AppHandle, op: String, args: Value) -> Resul
     if op != "captcha" && op != "post" {
         return Err("unknown request".into());
     }
+    let t0 = std::time::Instant::now();
     let board = board_of(&args)?;
-    let win = ensure_agent(&app, &board)?;
+    let thread = args.get("thread").and_then(Value::as_u64).unwrap_or(0);
+    if op == "post" {
+        // what is sent, by size only: never the fields' text or the file's name
+        let fields = args.get("fields").and_then(Value::as_object).map_or(0, |o| o.len());
+        let file_bytes = args.pointer("/file/b64").and_then(Value::as_str).map_or(0, |b| b.len() / 4 * 3);
+        log_info!("post", "post requested", board = board, fields = fields, file_bytes = file_bytes);
+    } else {
+        log_info!("post", "captcha requested", board = board, thread = thread);
+    }
+    let result = run_agent(&app, &op, &board, args, t0).await;
+    match &result {
+        Ok(v) => {
+            // the answer's keys only (challenge, img, ttl...), never its values
+            let keys = v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default();
+            let status = v.get("status").and_then(Value::as_u64).unwrap_or(0);
+            log_info!("post", "helper answered", op = op, board = board, keys = keys, status = status, ms = crate::diag::ms(t0));
+        }
+        Err(e) if e == "check-needed" => log_info!("post", "the site wants its check first; showing the helper window", op = op, board = board, ms = crate::diag::ms(t0)),
+        Err(e) => log_warn!("post", "helper request failed", op = op, board = board, error = e.chars().take(200).collect::<String>(), ms = crate::diag::ms(t0)),
+    }
+    result
+}
+
+/// One helper request (post_agent): waits for the helper page, hands it the
+/// request and waits for its answer.
+async fn run_agent(app: &tauri::AppHandle, op: &str, board: &str, args: Value, t0: std::time::Instant) -> Result<Value, String> {
+    let fresh = app.get_webview_window(AGENT_LABEL).is_none();
+    let win = ensure_agent(app, board)?;
     let state = app.state::<AgentState>();
     if !wait_ready(&state, Duration::from_secs(20)).await {
         let _ = win.show();
@@ -139,7 +167,7 @@ pub async fn post_agent(app: tauri::AppHandle, op: String, args: Value) -> Resul
     let id = state.counter.fetch_add(1, Ordering::SeqCst).to_string();
     let (tx, rx) = oneshot::channel();
     state.pending.lock().unwrap().insert(id.clone(), tx);
-    crate::diag::note(&format!("post helper: request {id}: {op}"));
+    log_info!("post", "helper request", id = id, op = op, new_window = fresh, ready_ms = crate::diag::ms(t0));
     let req = json!({ "id": id, "op": op, "args": args });
     if let Err(e) = win.eval(&format!("window.__ceAgent && window.__ceAgent.run({req})")) {
         state.pending.lock().unwrap().remove(&id);
@@ -156,7 +184,7 @@ pub async fn post_agent(app: tauri::AppHandle, op: String, args: Value) -> Resul
             return done.unwrap_or_else(|_| Err("The helper stopped.".into()));
         }
         if state.pending.lock().unwrap().contains_key(&id) {
-            crate::diag::note(&format!("post helper: no captcha after {SHOW_AFTER_SECS} s; showing the window"));
+            log_info!("post", "no captcha yet; showing the helper window", id = id, after_s = SHOW_AFTER_SECS);
             let _ = win.show();
             let _ = win.unminimize();
             let _ = win.set_focus();
@@ -166,6 +194,7 @@ pub async fn post_agent(app: tauri::AppHandle, op: String, args: Value) -> Resul
     match tokio::time::timeout(limit, rx).await {
         Ok(Ok(result)) => result,
         _ => {
+            log_warn!("post", "the helper did not answer in time", id = id, op = op, limit_s = limit.as_secs());
             state.pending.lock().unwrap().remove(&id);
             Err(if op == "captcha" {
                 "The captcha did not arrive in time (was the site's check left open?). Press New captcha to try again.".into()
@@ -244,12 +273,12 @@ fn watch_crashes(win: &tauri::WebviewWindow) {
                 _ => "crashed",
             };
             if reload_allowed(&mut recent.lock().unwrap(), std::time::Instant::now()) {
-                crate::diag::note(&format!("post helper: the site page {why}; reloading it"));
+                log_warn!("post", "the helper's site page died; reloading it", why = why);
                 fail_pending(&app, &format!("The site page {why} in CloverEye's helper window. It has been reloaded: press New captcha to try again."));
                 view.reload();
                 return;
             }
-            crate::diag::note(&format!("post helper: the site page {why} again; closing the helper window"));
+            log_warn!("post", "the helper's site page died again; closing the helper window", why = why);
             fail_pending(&app, &format!("The site page {why} again in CloverEye's helper window, so the window was closed. Press New captcha to open a fresh one."));
             // Not from inside WebKit's own signal: on the next turn.
             let app = app.clone();
@@ -262,8 +291,26 @@ fn watch_crashes(win: &tauri::WebviewWindow) {
     });
 }
 
-/// How each load of the captcha and its checks ended: kept for the
-/// diagnostics report, printed with debug on.
+/// Where a captcha or check load went, for the log: its host and at most
+/// its first two path segments. The rest of a challenge path carries
+/// tokens, ids and site keys ("/cdn-cgi/challenge-platform/h/b/flow/ov1/
+/// 1384893571:...:Q2Zh.../"), and so can a segment: one that is long, odd
+/// or mixes letters and digits reads "(id)".
+pub(crate) fn check_load_place(uri: &str) -> (String, String) {
+    let rest = uri.split(['?', '#']).next().unwrap_or_default();
+    let rest = rest.split_once("://").map_or(rest, |(_, r)| r);
+    let mut parts = rest.split('/');
+    let host: String = parts.next().unwrap_or_default().chars().take(64).collect();
+    let plain = |seg: &str| {
+        seg.len() <= 24 && seg.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c)) && (seg.len() <= 8 || !seg.bytes().any(|c| c.is_ascii_digit()))
+    };
+    let segs: Vec<&str> = parts.filter(|p| !p.is_empty()).take(2).map(|p| if plain(p) { p } else { "(id)" }).collect();
+    (host, format!("/{}", segs.join("/")))
+}
+
+/// How each load of the captcha and its checks ended, for the diagnostics
+/// report: failures and refusals at the default level, the rest with
+/// Detailed logs on (a captcha makes many). Never the whole address.
 #[cfg(target_os = "linux")]
 fn log_check_loads(view: &webkit2gtk::WebView) {
     use webkit2gtk::{URIRequestExt, URIResponseExt, WebResourceExt, WebViewExt};
@@ -274,9 +321,8 @@ fn log_check_loads(view: &webkit2gtk::WebView) {
         if !watched {
             return;
         }
-        // Up to the path: queries can carry tickets and tokens.
-        let short: String = uri.split(['?', '#']).next().unwrap_or_default().chars().take(160).collect();
-        let s1 = short.clone();
+        let (host, path) = check_load_place(&uri);
+        let (h1, p1) = (host.clone(), path.clone());
         // WebKit sends "finished" after "failed" too: one line per load.
         let failed = std::rc::Rc::new(std::cell::Cell::new(false));
         let f1 = failed.clone();
@@ -285,12 +331,16 @@ fn log_check_loads(view: &webkit2gtk::WebView) {
                 return;
             }
             let status = r.response().map(|x| x.status_code()).unwrap_or(0);
-            crate::diag::quiet(&format!("post helper: load {s1} status={status}"), debug_on());
+            if (200..400).contains(&status) {
+                log_debug!("post", "check load", host = h1, path = p1, status = status);
+            } else {
+                log_info!("post", "check load", host = h1, path = p1, status = status);
+            }
         });
         res.connect_failed(move |r, e| {
             failed.set(true);
             let status = r.response().map(|x| x.status_code()).unwrap_or(0);
-            crate::diag::quiet(&format!("post helper: load FAILED {short} status={status} error={e}"), debug_on());
+            log_info!("post", "check load FAILED", host = host, path = path, status = status, error = e);
         });
     });
 }
@@ -328,6 +378,31 @@ pub fn side_buttons(win: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "linux"))]
 pub fn side_buttons(_win: &tauri::WebviewWindow) {}
 
+/// Helper lines kept a minute at most.
+const HELPER_PER_MIN: u32 = 60;
+static HELPER_GATE: std::sync::Mutex<crate::diag::MinuteGate> = std::sync::Mutex::new(crate::diag::MinuteGate::new());
+
+/// A line from the helper page (post_agent.js `log(...)`), when it is one
+/// the helper sends: the start of each is fixed, and what follows is a
+/// path, a page title, a list of keys or the site's error, kept short.
+pub(crate) fn helper_line(line: &str) -> Option<String> {
+    const KNOWN: [&str; 9] = [
+        "captcha arrived (own page): ",
+        "captcha arrived (frame): ",
+        "captcha page is waiting (the site check?): ",
+        "captcha page opened: ",
+        "captcha frame loaded",
+        "captcha frame silent",
+        "captcha frame answered an error: ",
+        "post answered ",
+        "page ready: ",
+    ];
+    let line = line.trim();
+    let start = KNOWN.iter().find(|k| line.starts_with(**k))?;
+    let rest: String = line[start.len()..].chars().filter(|c| !c.is_control()).take(120).collect();
+    Some(format!("{start}{rest}"))
+}
+
 /// The one command the helper page may call (capabilities/post-agent.json):
 /// "ready" when a board page has loaded, "show" when the site wants its human
 /// check, "log" for the terminal, or the answer to a request.
@@ -338,6 +413,7 @@ pub fn post_agent_reply(webview: tauri::Webview, id: String, ok: bool, data: Val
     }
     let state = webview.app_handle().state::<AgentState>();
     if id == "ready" {
+        log_debug!("post", "helper page ready");
         state.ready.store(true, Ordering::SeqCst);
         state.ready_notify.notify_waiters();
         if let Some(w) = webview.app_handle().get_webview_window(AGENT_LABEL) {
@@ -348,6 +424,7 @@ pub fn post_agent_reply(webview: tauri::Webview, id: String, ok: bool, data: Val
     if id == "waiting" {
         // The captcha page, waiting on the site's check: it takes requests
         // (a newer captcha request) but stays in view.
+        log_debug!("post", "helper page waiting on the site's check");
         state.ready.store(true, Ordering::SeqCst);
         state.ready_notify.notify_waiters();
         return Ok(());
@@ -359,8 +436,19 @@ pub fn post_agent_reply(webview: tauri::Webview, id: String, ok: bool, data: Val
             // debug mode only: these carry page text and whole addresses, so
             // they stay out of the log file and the diagnostics report
             eprintln!("clovereye post helper: {line}");
-        } else {
-            crate::diag::note(&format!("post helper: {line}"));
+            return Ok(());
+        }
+        // The helper runs on the site's pages, so any script there can call
+        // this: only the helper's own lines are kept, at most HELPER_PER_MIN.
+        let (keep, late) = HELPER_GATE.lock().unwrap_or_else(|e| e.into_inner()).admit(crate::diag::minute_now(), HELPER_PER_MIN, "", false);
+        if let Some(n) = late {
+            log_warn!("post", "helper lines not kept (past the per-minute cap)", n = n);
+        }
+        if keep {
+            match helper_line(line) {
+                Some(l) => log_info!("post", l),
+                None => log_debug!("post", "helper sent a line it does not send", chars = line.chars().count()),
+            }
         }
         return Ok(());
     }
@@ -368,6 +456,7 @@ pub fn post_agent_reply(webview: tauri::Webview, id: String, ok: bool, data: Val
     if id == "show" {
         // The site put its human check in front of the captcha: let the
         // person see it and pass it.
+        log_info!("post", "the site showed its human check; helper window shown");
         if let Some(w) = window {
             let _ = w.show();
             let _ = w.unminimize();
@@ -407,8 +496,13 @@ pub async fn open_window(app: tauri::AppHandle, panes: String) -> Result<String,
         .traffic_light_position(tauri::LogicalPosition::new(14.0, 21.0));
     #[cfg(not(target_os = "macos"))]
     let builder = builder.decorations(false);
-    let win = builder.build().map_err(|e| e.to_string())?;
+    let win = builder.build().map_err(|e| {
+        log_error!("app", "a new window could not open", error = e);
+        e.to_string()
+    })?;
     side_buttons(&win);
+    let open = app.webview_windows().keys().filter(|l| *l == "main" || l.starts_with("w-")).count();
+    log_info!("app", "window opened", win = label, panes_chars = panes.len(), windows = open);
     Ok(label)
 }
 
@@ -516,16 +610,25 @@ pub async fn save_media(app: tauri::AppHandle, url: String, name: String, dir: O
     let name = save_name(&name, ext);
     // Through the download gate every file download in the app shares:
     // at least 1 s apart, also while Download all or Save offline runs.
-    crate::offline::gated(&app, move || {
+    let t0 = std::time::Instant::now();
+    let hide = [folder.display().to_string(), name.clone()];
+    let ext = ext.to_string();
+    let ext_in = ext.clone();
+    let out = crate::offline::gated(&app, move || {
         std::fs::create_dir_all(&folder).map_err(|e| format!("creating {}: {e}", folder.display()))?;
         let body = match crate::offline::download(&url) {
             Err(e) if e == "not-found" => return Err("The file is gone from the site.".into()),
             other => other?,
         };
         let path = crate::offline::write_new(&folder, &name, &body)?;
+        log_info!("files", "file saved", ext = ext_in, bytes = body.len(), ms = crate::diag::ms(t0));
         Ok(path.display().to_string())
     })
-    .await
+    .await;
+    if let Err(e) = &out {
+        log_warn!("files", "file not saved", ext = ext, error = crate::diag::redact(e, &hide), ms = crate::diag::ms(t0));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -534,6 +637,30 @@ mod tests {
 
     fn media_url_ok(url: &str) -> bool {
         media_ext(url).is_some()
+    }
+
+    #[test]
+    fn check_loads_keep_the_host_and_never_a_token() {
+        let (h, p) = check_load_place("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/flow/ov1/1384893571:1731830000:Q2Zh3xYk9LmPq7RtWv1Bz5Nc8Dd0Ee2Ff4Gg6Hh8Ii/8e3f2a1b9c7d4e5f/AbCdEf0123456789xyZ");
+        assert_eq!((h.as_str(), p.as_str()), ("challenges.cloudflare.com", "/cdn-cgi/challenge-platform"));
+        let (_, p) = check_load_place("https://challenges.cloudflare.com/turnstile/0x4AAAAAAAabcdefGHIJ/light?x=1");
+        assert_eq!(p, "/turnstile/(id)");
+        let (h, p) = check_load_place("https://sys.4chan.org/captcha?framed=1&board=g&ticket=abc");
+        assert_eq!((h.as_str(), p.as_str()), ("sys.4chan.org", "/captcha"));
+        let (_, p) = check_load_place("https://spur.us/d/8e3f2a1b9c7d4e5f9a/x");
+        assert_eq!(p, "/d/(id)");
+        assert_eq!(check_load_place("https://mcl.io/").1, "/");
+    }
+
+    #[test]
+    fn only_the_helpers_own_lines_reach_the_log() {
+        assert_eq!(helper_line("post answered 200").as_deref(), Some("post answered 200"));
+        assert_eq!(helper_line("captcha page opened: /captcha").as_deref(), Some("captcha page opened: /captcha"));
+        assert_eq!(helper_line("captcha frame silent: opening the captcha page itself").as_deref(), Some("captcha frame silent: opening the captcha page itself"));
+        assert_eq!(helper_line("my secret reply text"), None);
+        assert_eq!(helper_line("anything at all from a page script"), None);
+        let long = format!("page ready: {}", "x".repeat(500));
+        assert_eq!(helper_line(&long).unwrap().chars().count(), "page ready: ".len() + 120);
     }
 
     #[test]

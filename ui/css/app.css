@@ -5843,6 +5843,65 @@ dialog.log-dialog {
   flex-wrap: wrap;
 }
 
+/* level, area and search over the log's lines; they wrap on a phone */
+.log-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  align-items: end;
+}
+
+.log-filters__field {
+  display: grid;
+  gap: var(--space-1);
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.log-filters__field select.input {
+  width: auto;
+  max-width: 100%;
+}
+
+.log-filters__search {
+  flex: 1 1 200px;
+}
+
+.log-filters__label {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.log-dialog__count {
+  margin: 0;
+}
+
+/* a phone-width window: Level and Area side by side, the search under
+   them, and a shorter view, so the actions stay in the window */
+@media (max-width: 480px) {
+  .log-filters {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .log-filters__field {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .log-filters__field select.input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .log-filters__search {
+    grid-column: 1 / -1;
+  }
+
+  .log-view {
+    max-height: min(36vh, 560px);
+  }
+}
+
 /* ============================================================= library */
 /* the meme gallery (library-view.js): a grid of kept files, tags, details */
 
@@ -6968,16 +7027,17 @@ dialog.tag-dialog--hide {
 }
 
 /* ========================================================= pastas (pre-written posts) */
-/* The popup next to Reply / New thread (pasta-view.js): search, the list
-   (pinned first), your own posts; a sheet along the bottom when narrow. */
+/* The panel next to Reply / New thread (pasta-view.js): search, New pasta,
+   the tag chips, a grid of cards in sections (Pinned, Your own, Built-in),
+   the editor for your own; a sheet along the bottom when narrow. */
 
 .pastas {
   position: fixed;
   z-index: 970;
   display: flex;
   flex-direction: column;
-  width: min(380px, calc(100vw - 16px));
-  max-height: min(560px, calc(100vh - 16px));
+  width: min(720px, calc(100vw - 16px));
+  max-height: min(640px, calc(100vh - 16px));
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   background: var(--surface);
@@ -6999,7 +7059,7 @@ dialog.tag-dialog--hide {
   right: 0;
   bottom: 0;
   width: auto;
-  max-height: min(80vh, calc(100vh - var(--titlebar-h)));
+  max-height: min(85vh, calc(100vh - var(--titlebar-h)));
   border-bottom: 0;
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   animation-name: pastas-up;
@@ -7013,23 +7073,31 @@ dialog.tag-dialog--hide {
 }
 
 .pastas__head {
-  position: relative;
+  flex: none;
   display: flex;
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2);
-  border-bottom: 1px solid var(--border);
+}
+
+.pastas__find {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .pastas__glass {
   position: absolute;
-  left: calc(var(--space-2) + 10px);
+  left: 10px;
   color: var(--text-faint);
   pointer-events: none;
 }
 
 .pastas__search {
   flex: 1 1 auto;
+  min-width: 0;
   padding-left: 34px;
 }
 
@@ -7038,20 +7106,71 @@ dialog.tag-dialog--hide {
   display: none;
 }
 
+.pastas__new {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* the tag filter chips under the search: they wrap onto a second line
+   when narrow (a sideways row hid Yours from a mouse), and nothing clips
+   their focus ring */
+.pastas__chips {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 3px var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.pastas__chip {
+  flex: none;
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.pastas__chip:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.pastas__chip[aria-checked='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft, var(--surface-2));
+  /* the label in the text colour: accent on accent-soft is under 4.5:1 in dark */
+  color: var(--text);
+  font-weight: var(--fw-semibold);
+}
+
+.pastas__chip:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
 .pastas__body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0 var(--space-1) var(--space-2);
+  padding: 0 var(--space-2) var(--space-2);
 }
 
 .pastas__section {
   position: sticky;
   top: 0;
   z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   margin: 0;
-  padding: var(--space-2) var(--space-2) 4px;
+  padding: var(--space-2) 2px 6px;
   background: var(--surface);
   color: var(--text-faint);
   font-size: var(--fs-xs);
@@ -7059,35 +7178,63 @@ dialog.tag-dialog--hide {
   letter-spacing: 0.02em;
 }
 
-.pastas__rows {
+.pastas__n {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-medium);
+}
+
+/* the cards: as many columns of at least 200 px as fit */
+.pastas__grid {
   display: grid;
-  gap: 1px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
+  gap: var(--space-2);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.pastas__row {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-  border-radius: var(--radius-sm);
+.pastas--sheet .pastas__grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 148px), 1fr));
 }
 
-.pastas__row:hover,
-.pastas__row:focus-within {
+.pastas__card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   background: var(--surface-2);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease);
+}
+
+.pastas__card:hover {
+  border-color: var(--border-strong);
+}
+
+.pastas__card:focus-within {
+  border-color: var(--focus);
+}
+
+.pastas__card--pinned {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
 
 .pastas__pick {
   flex: 1 1 auto;
   display: grid;
-  gap: 1px;
+  align-content: start;
+  gap: 4px;
   min-width: 0;
-  padding: 6px var(--space-2);
+  padding: var(--space-2) var(--space-2) 4px;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
   background: none;
   color: inherit;
   font: inherit;
@@ -7100,10 +7247,22 @@ dialog.tag-dialog--hide {
   box-shadow: inset 0 0 0 2px var(--focus);
 }
 
+/* the ring goes round the whole card where :has() works */
+@supports selector(:has(*)) {
+  .pastas__pick:focus-visible {
+    box-shadow: none;
+  }
+
+  .pastas__card:has(.pastas__pick:focus-visible) {
+    border-color: var(--focus);
+    box-shadow: 0 0 0 1px var(--focus);
+  }
+}
+
 .pastas__title {
   overflow: hidden;
   font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
+  font-weight: var(--fw-semibold);
   white-space: nowrap;
   text-overflow: ellipsis;
 }
@@ -7114,11 +7273,54 @@ dialog.tag-dialog--hide {
   color: var(--text-muted);
   font-family: var(--post-font);
   font-size: var(--fs-xs);
-  line-height: 1.35;
+  line-height: 1.4;
+  white-space: pre-line;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+}
+
+.pastas__green {
+  color: var(--greentext);
+}
+
+.pastas__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px 4px var(--space-2);
+  min-width: 0;
+}
+
+.pastas__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.pastas__tag {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.pastas__tag--own {
+  color: var(--accent);
+}
+
+.pastas__tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
 }
 
 .pastas__pin[aria-pressed='true'] {
@@ -7155,18 +7357,23 @@ dialog.tag-dialog--hide {
 }
 
 .pastas__count {
-  padding: var(--space-2) var(--space-2) 0;
+  padding: var(--space-2) 2px 0;
   color: var(--text-faint);
   font-size: var(--fs-xs);
 }
 
 .pastas__own {
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2);
+  padding: 6px var(--space-2);
   border-top: 1px solid var(--border);
+}
+
+.pastas__own--editing {
+  padding: var(--space-2);
 }
 
 .pastas__hint {
@@ -7175,6 +7382,11 @@ dialog.tag-dialog--hide {
   color: var(--text-faint);
   font-size: var(--fs-xs);
   text-align: right;
+}
+
+/* no keyboard hint on a phone's sheet */
+.pastas--sheet .pastas__own:not(.pastas__own--editing) {
+  display: none;
 }
 
 .pastas__edit {
@@ -7216,10 +7428,31 @@ dialog.tag-dialog--hide {
   gap: var(--space-2);
 }
 
+/* Save as pasta: the title prompt (pasta-view.js savePastaFrom) */
+.pasta-save__text {
+  display: grid;
+  max-height: 7.5em;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-family: var(--post-font);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pastas,
   .pastas--sheet {
     animation: none;
+  }
+
+  .pastas__card {
+    transition: none;
   }
 }
 

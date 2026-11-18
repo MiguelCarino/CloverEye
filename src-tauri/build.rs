@@ -36,6 +36,8 @@ fn main() {
             "diagnostics_text",
             "diagnostics_save",
             "diagnostics_note",
+            "diagnostics_log",
+            "set_log_detail",
             "ai_detect",
             "ai_chat",
             "ai_stop",

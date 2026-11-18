@@ -20,7 +20,11 @@
 //! * **no redirects followed**: a follow-up GET would skip the queue;
 //! * a **memory-only cache** bounded by entry count and total bytes;
 //! * an honest `User-Agent: CloverEye/<version>` and nothing else that
-//!   identifies the user.
+//!   identifies the user;
+//! * **log lines** through the app's sink ([`set_log_sink`]): failures and
+//!   back-offs always, a summary at most every 10 minutes, and one line per
+//!   request only with detail on ([`set_log_detail`]). Never a body, a
+//!   query string or a cookie.
 //!
 //! The network and the clock are traits ([`Transport`], [`Clock`]) so the
 //! limits are tested with a fake clock and recorded fixtures, never live.
@@ -31,6 +35,7 @@ mod endpoint;
 mod error;
 mod httpdate;
 pub mod models;
+mod trace;
 mod transport;
 
 pub use client::{user_agent, Client, Config, Fetched, Freshness};
@@ -38,6 +43,7 @@ pub use clock::{Clock, FakeClock, SystemClock};
 pub use endpoint::{media_url, thumb_url, valid_board, Endpoint, API_BASE};
 pub use error::Error;
 pub use httpdate::{format_http_date, parse_http_date, parse_retry_after};
+pub use trace::{set_log_detail, set_log_sink, LogLevel, LogSink};
 pub use transport::{Request, Response, Transport, UreqTransport};
 
 /// The default client: real network, real clock.

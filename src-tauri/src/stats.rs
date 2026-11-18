@@ -10,6 +10,7 @@
 // here asks the site for anything.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde_json::Value;
@@ -69,13 +70,62 @@ pub fn stamp(current: Option<&Value>, expected: u64, mut data: Value, max: usize
     Ok((next, bytes))
 }
 
+/// Whether the last write of each kind ("boards", "mine") failed: a store
+/// that keeps failing (a full disk) is warned about once, not on every
+/// retry while the app sits idle.
+static FAILING: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
+
+/// What a write's outcome changed.
+#[derive(Debug, PartialEq)]
+enum Change {
+    /// It failed after working: worth a warning.
+    Failed,
+    /// It failed again: a debug line.
+    Again,
+    /// It worked after failing: worth an info line.
+    Recovered,
+    /// It worked, as before.
+    Same,
+}
+
+fn outcome(flag: &AtomicBool, ok: bool) -> Change {
+    match (flag.swap(!ok, Ordering::Relaxed), ok) {
+        (false, false) => Change::Failed,
+        (true, false) => Change::Again,
+        (true, true) => Change::Recovered,
+        (false, true) => Change::Same,
+    }
+}
+
+fn flag_for(kind: &str) -> &'static AtomicBool {
+    &FAILING[usize::from(kind == "mine")]
+}
+
+/// The log line for a failed write, once per run of failures.
+fn log_failure(kind: &str, msg: &str, error: &str) {
+    match outcome(flag_for(kind), false) {
+        Change::Failed => log_warn!("stats", msg, kind = kind, error = error),
+        _ => log_debug!("stats", msg, kind = kind, error = error, again = true),
+    }
+}
+
 /// The stored stats of `kind` ("boards" or "mine"), or null.
 #[tauri::command]
 pub async fn stats_read(app: tauri::AppHandle, state: tauri::State<'_, StatsState>, kind: String) -> Result<Option<Value>, String> {
     let (name, _) = file_for(&kind)?;
     let path = stats_path(&app, name)?;
     let _held = state.lock.lock().map_err(|e| e.to_string())?;
-    Ok(read_value(&path))
+    let t0 = std::time::Instant::now();
+    let v = read_value(&path);
+    // the warning stands with Detailed logs on too; the debug line adds to it
+    if v.is_none() && path.exists() {
+        log_warn!("stats", "stats file unreadable; starting over", kind = kind);
+    }
+    if crate::diag::detailed() {
+        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        log_debug!("stats", "stats read", kind = kind, found = v.is_some(), bytes = bytes, rev = rev_of(v.as_ref()), ms = crate::diag::ms(t0));
+    }
+    Ok(v)
 }
 
 /// Stores `data` as the stats of `kind` if the file is still at `rev`;
@@ -85,18 +135,41 @@ pub async fn stats_write(app: tauri::AppHandle, state: tauri::State<'_, StatsSta
     let (name, max) = file_for(&kind)?;
     let path = stats_path(&app, name)?;
     let _held = state.lock.lock().map_err(|e| e.to_string())?;
+    let t0 = std::time::Instant::now();
     let current = read_value(&path);
-    let (next, bytes) = stamp(current.as_ref(), rev, data, max)?;
+    let (next, bytes) = stamp(current.as_ref(), rev, data, max).inspect_err(|e| {
+        if e == "stats-conflict" {
+            log_debug!("stats", "stats write refused: another window wrote first (merging)", kind = kind, rev = rev);
+        } else {
+            log_failure(&kind, "stats not written", e);
+        }
+    })?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     }
-    crate::offline::write_atomic(&path, &bytes)?;
+    crate::offline::write_atomic(&path, &bytes).inspect_err(|e| log_failure(&kind, "stats file not written", &crate::diag::redact(e, &[])))?;
+    if outcome(flag_for(&kind), true) == Change::Recovered {
+        log_info!("stats", "stats written again after failing", kind = kind);
+    }
+    log_debug!("stats", "stats written", kind = kind, rev = next, bytes = bytes.len(), ms = crate::diag::ms(t0));
     Ok(next)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_store_that_keeps_failing_is_warned_about_once() {
+        let f = AtomicBool::new(false);
+        assert_eq!(outcome(&f, true), Change::Same);
+        assert_eq!(outcome(&f, false), Change::Failed);
+        assert_eq!(outcome(&f, false), Change::Again);
+        assert_eq!(outcome(&f, false), Change::Again);
+        assert_eq!(outcome(&f, true), Change::Recovered);
+        assert_eq!(outcome(&f, true), Change::Same);
+        assert_eq!(outcome(&f, false), Change::Failed);
+    }
     use serde_json::json;
 
     #[test]

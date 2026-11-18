@@ -177,11 +177,24 @@ export function search(query, list, pinned = []) {
   return [...pins, ...titled, ...rest];
 }
 
-/** What the popup draws: { pinned, own, builtIn, total, shown } — the
- *  matches split into its sections, `shown` of `total` at most MAX_SHOWN. */
-export function sections(query, s, max = MAX_SHOWN) {
+/** The panel's tag filter chips, in order: 'all' (no filter), the built-in
+ *  list's tags, and 'own' (the person's own posts: the Yours chip). */
+export const TAGS = Object.freeze(['all', 'bump', 'reaction', 'classic', 'greentext', 'tech', 'own']);
+
+/** Whether a post goes with the tag filter `tag` ('all' or unknown: every
+ *  post; 'own': the person's own). */
+export function hasTag(p, tag) {
+  if (!tag || tag === 'all' || !TAGS.includes(tag)) return true;
+  if (tag === 'own') return Boolean(p?.own);
+  return Array.isArray(p?.tags) && p.tags.includes(tag);
+}
+
+/** What the panel draws: { pinned, own, builtIn, total, shown } — the
+ *  matches (with the tag filter `tag`) split into its sections, `shown` of
+ *  `total` at most MAX_SHOWN. */
+export function sections(query, s, max = MAX_SHOWN, tag = 'all') {
   const pinned = pastasOf(s).pinned;
-  const found = search(query, allPastas(s), pinned);
+  const found = search(query, allPastas(s).filter((p) => hasTag(p, tag)), pinned);
   const pinSet = new Set(pinned);
   const list = found.slice(0, max);
   return {
@@ -304,4 +317,111 @@ export function preview(text, max = 140) {
     .filter(Boolean);
   const out = lines.slice(0, 2).join(' · ');
   return out.length > max ? `${out.slice(0, max - 1).trimEnd()}…` : lines.length > 2 ? `${out} …` : out;
+}
+
+/** A card's preview: its first `count` lines (blank ones left out, each
+ *  cut at `max` characters) as [{ text, green }], `green` for a greentext
+ *  line (">" but not a ">>123" quote link), as the post shows them. */
+export function previewLines(text, count = 5, max = 160) {
+  const out = [];
+  for (const raw of cleanText(text).split('\n')) {
+    if (out.length >= count) break;
+    const line = raw.trim();
+    if (!line) continue;
+    out.push({ text: line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line, green: /^>(?!>\d)/.test(line) });
+  }
+  return out;
+}
+
+// ------------------------------------------------------------- saving one
+
+/** A title for text about to be saved as an own post (the Save as pasta
+ *  prompt's first value): its first line that is not only quote links
+ *  (">>123"), spaces run together, trimmed, cut at `max` characters. */
+export function titleFromText(text, max = 60) {
+  const lines = cleanText(text)
+    .split('\n')
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const first = lines.find((l) => !/^(>>\d+\s*)+$/.test(l)) || lines[0] || '';
+  return first.length > max ? first.slice(0, max).trimEnd() : first;
+}
+
+/** A post's comment as an own post's text: `plain` is its plain text
+ *  (render.js commentText: the HTML gone, >>links and >greentext kept as
+ *  typed), cleaned as the form takes it and cut at MAX_TEXT. '' when it
+ *  has no text (a picture alone). */
+export function postPastaText(plain) {
+  return cleanText(plain).slice(0, MAX_TEXT).trimEnd();
+}
+
+/** What Save as pasta keeps from a post or a reply's comment: { title,
+ *  text } (title from its first line), or null when there is no text. */
+export function pastaFromText(plain) {
+  const text = postPastaText(plain);
+  return text.trim() ? { title: titleFromText(text), text } : null;
+}
+
+// ----------------------------------------------------------- grid keys
+
+/**
+ * Where an arrow key goes in the panel's grid of cards: `sizes` are the
+ * sections' card counts in order (Pinned, Your own, Built-in; empty ones
+ * may be 0), `index` the focused card among all of them, `cols` the grid's
+ * column count. Left/Right go to the card before/after (across sections),
+ * Up/Down one row (into the section above/below at the same column, or its
+ * last card when that row is shorter), Home/End to the first/last card.
+ * Returns the new index, -1 for Up from the first row (back to the search
+ * box), or `index` when it stays.
+ * @param {number[]} sizes
+ * @param {number} index
+ * @param {string} key   'ArrowLeft' | 'ArrowRight' | 'ArrowUp' | 'ArrowDown' | 'Home' | 'End'
+ * @param {number} cols
+ */
+export function gridStep(sizes, index, key, cols) {
+  const list = (sizes || []).map((n) => Math.max(0, Math.floor(Number(n) || 0)));
+  const total = list.reduce((a, b) => a + b, 0);
+  if (!total) return -1;
+  const c = Math.max(1, Math.floor(Number(cols) || 1));
+  const i = Math.min(total - 1, Math.max(0, Math.floor(Number(index) || 0)));
+  if (key === 'Home') return 0;
+  if (key === 'End') return total - 1;
+  if (key === 'ArrowLeft') return Math.max(0, i - 1);
+  if (key === 'ArrowRight') return Math.min(total - 1, i + 1);
+  if (key !== 'ArrowUp' && key !== 'ArrowDown') return i;
+  // the section, and the place in it
+  let sec = 0;
+  let start = 0;
+  while (sec < list.length && i >= start + list[sec]) start += list[sec++];
+  const at = i - start;
+  const col = at % c;
+  const row = Math.floor(at / c);
+  if (key === 'ArrowDown') {
+    if ((row + 1) * c < list[sec]) return start + Math.min(list[sec] - 1, at + c);
+    // the next section with cards: its first row, the same column
+    let s2 = sec + 1;
+    let st2 = start + list[sec];
+    while (s2 < list.length && !list[s2]) s2++;
+    if (s2 >= list.length) return i;
+    for (let k = sec + 1; k < s2; k++) st2 += list[k];
+    return st2 + Math.min(list[s2] - 1, col);
+  }
+  if (row > 0) return start + at - c;
+  let s2 = sec - 1;
+  while (s2 >= 0 && !list[s2]) s2--;
+  if (s2 < 0) return -1;
+  let st2 = 0;
+  for (let k = 0; k < s2; k++) st2 += list[k];
+  const lastRow = Math.floor((list[s2] - 1) / c);
+  return st2 + Math.min(list[s2] - 1, lastRow * c + col);
+}
+
+/** The column count of a CSS grid from its computed grid-template-columns
+ *  ("200px 200px 200px" → 3; 'none' or '' → 1). */
+export function columnCount(template) {
+  const parts = String(template || '')
+    .trim()
+    .split(/\s+/)
+    .filter((x) => x && x !== 'none');
+  return Math.max(1, parts.length);
 }

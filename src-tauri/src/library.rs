@@ -224,12 +224,26 @@ fn rev_of(index: &Value) -> Option<u64> {
 #[tauri::command]
 pub async fn library_load(app: tauri::AppHandle, dir: Option<String>) -> Result<Value, String> {
     let root = root_of(&app, dir.as_deref())?;
+    let custom = dir.as_deref().is_some_and(|d| !d.trim().is_empty());
     tauri::async_runtime::spawn_blocking(move || {
-        let index = read_index(&root.join(INDEX))?.unwrap_or(Value::Null);
+        let t0 = std::time::Instant::now();
+        let index = match read_index(&root.join(INDEX)) {
+            Ok(i) => i.unwrap_or(Value::Null),
+            Err(e) => {
+                log_warn!("library", "library.json unreadable; left as it is", error = e, custom_folder = custom);
+                return Err(e);
+            }
+        };
+        log_info!("library", "library loaded", items = items_in(&index), collections = index.get("collections").and_then(Value::as_array).map_or(0, Vec::len), rev = index.get("rev").and_then(Value::as_u64).unwrap_or(0), custom_folder = custom, ms = crate::diag::ms(t0));
         Ok(json!({ "root": root.display().to_string(), "index": index }))
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// How many entries an index holds (its "items"), for the log.
+fn items_in(index: &Value) -> usize {
+    index.get("items").and_then(Value::as_array).map_or(0, Vec::len)
 }
 
 /// Whether `next` may replace the file whose revision is `disk` (see
@@ -254,7 +268,10 @@ pub async fn library_save(app: tauri::AppHandle, dir: Option<String>, index: Val
     let handle = app.clone();
     let rev = rev_of(&index);
     let at = root.display().to_string();
-    tauri::async_runtime::spawn_blocking(move || {
+    let items = items_in(&index);
+    let size = bytes.len();
+    let t0 = std::time::Instant::now();
+    let saved = tauri::async_runtime::spawn_blocking(move || {
         let state = handle.state::<LibraryState>();
         let _lock = state.index.lock().unwrap();
         ensure_dir(&root)?;
@@ -270,7 +287,14 @@ pub async fn library_save(app: tauri::AppHandle, dir: Option<String>, index: Val
         crate::offline::write_atomic(&path, &bytes)
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(|e| e.to_string())
+    .and_then(|r| r);
+    match &saved {
+        Ok(()) => log_debug!("library", "library saved", items = items, bytes = size, rev = rev.unwrap_or(0), ms = crate::diag::ms(t0)),
+        Err(e) if e == CHANGED => log_debug!("library", "library save refused: changed in another window (merging)", rev = rev.unwrap_or(0)),
+        Err(e) => log_warn!("library", "library not saved", error = crate::diag::redact(e, &[at.clone()]), items = items, bytes = size),
+    }
+    saved?;
     // the other windows can read it again
     let _ = app.emit("library-changed", json!({ "root": at, "rev": rev }));
     Ok(())
@@ -289,11 +313,19 @@ pub async fn library_fetch(app: tauri::AppHandle, dir: Option<String>, url: Stri
     // whose file is a .jpg is kept as x.png.jpg, so celib: serves it as one
     let name = file_name(&crate::extra::save_name(&name, ext))?;
     let root = root_of(&app, dir.as_deref())?;
-    crate::offline::gated(&app, move || {
+    let hide = [root.display().to_string(), name.clone()];
+    let (ext, b) = (ext.to_string(), board.clone());
+    let t0 = std::time::Instant::now();
+    let out = crate::offline::gated(&app, move || {
         let body = crate::offline::download(&url)?;
         store(&root, &board, &name, &body)
     })
-    .await
+    .await;
+    match &out {
+        Ok(v) => log_debug!("library", "file kept from the site", board = b, ext = ext, bytes = v["bytes"], ms = crate::diag::ms(t0)),
+        Err(e) => log_warn!("library", "file not kept from the site", board = b, ext = ext, error = crate::diag::redact(e, &hide), ms = crate::diag::ms(t0)),
+    }
+    out
 }
 
 /// A file from the person's disk, sent as the request's raw body, its name
@@ -311,9 +343,15 @@ pub async fn library_import(app: tauri::AppHandle, request: tauri::ipc::Request<
     let name = file_name(&header("x-name").unwrap_or_default())?;
     let root = root_of(&app, header("x-dir").as_deref())?;
     let body = body.clone();
-    tauri::async_runtime::spawn_blocking(move || store(&root, IMPORTED, &name, &body))
-        .await
-        .map_err(|e| e.to_string())?
+    let hide = [root.display().to_string(), name.clone()];
+    let ext = ext_of(&name).unwrap_or_default();
+    let t0 = std::time::Instant::now();
+    let out = tauri::async_runtime::spawn_blocking(move || store(&root, IMPORTED, &name, &body)).await.map_err(|e| e.to_string()).and_then(|r| r);
+    match &out {
+        Ok(v) => log_debug!("library", "file imported", ext = ext, bytes = v["bytes"], ms = crate::diag::ms(t0)),
+        Err(e) => log_warn!("library", "file not imported", ext = ext, error = crate::diag::redact(e, &hide)),
+    }
+    out
 }
 
 /// Deletes one file of the library (the index is the UI's to update).
@@ -322,11 +360,19 @@ pub async fn library_delete(app: tauri::AppHandle, dir: Option<String>, rel: Str
     let (sub, name) = parse_rel(&rel).ok_or("Not a library file.")?;
     let root = root_of(&app, dir.as_deref())?;
     let path = root.join(&sub).join(&name);
-    match std::fs::symlink_metadata(&path) {
+    let out = match std::fs::symlink_metadata(&path) {
         Ok(m) if m.is_file() => std::fs::remove_file(&path).map_err(|e| format!("deleting {}: {e}", path.display())),
         Ok(_) => Err(format!("{} is not a file.", path.display())),
-        Err(_) => Ok(()), // already gone
+        Err(_) => {
+            log_debug!("library", "file to delete was already gone");
+            return Ok(()); // already gone
+        }
+    };
+    match &out {
+        Ok(()) => log_info!("library", "file deleted", from = if sub == IMPORTED { "imported" } else { "board" }),
+        Err(e) => log_warn!("library", "file not deleted", error = crate::diag::redact(e, &[path.display().to_string()])),
     }
+    out
 }
 
 // ------------------------------------------------- importing a folder
@@ -378,6 +424,7 @@ pub async fn library_browse(app: tauri::AppHandle, path: Option<String>) -> Resu
         None => home,
     };
     tauri::async_runtime::spawn_blocking(move || {
+        let t0 = std::time::Instant::now();
         let mut dirs = Vec::new();
         let mut count = 0usize;
         let rd = std::fs::read_dir(&dir).map_err(|e| format!("opening {}: {e}", dir.display()))?;
@@ -395,6 +442,7 @@ pub async fn library_browse(app: tauri::AppHandle, path: Option<String>) -> Resu
             }
         }
         dirs.sort_by_key(|(n, _)| n.to_lowercase());
+        log_debug!("library", "folder browsed", folders = dirs.len(), media = count, ms = crate::diag::ms(t0));
         Ok(json!({
             "path": dir.display().to_string(),
             "parent": dir.parent().map(|p| p.display().to_string()),
@@ -455,17 +503,47 @@ pub async fn library_import_dir(app: tauri::AppHandle, dir: Option<String>, src:
     if root.starts_with(&from) || from.starts_with(&root) {
         return Err("That folder is, or holds, the library itself.".into());
     }
+    let skipped = skip.len();
     tauri::async_runtime::spawn_blocking(move || {
+        let t0 = std::time::Instant::now();
         let mut files = Vec::new();
         let more = collect(&from, &from, deep, &skip, &mut files);
+        let scan_ms = crate::diag::ms(t0);
+        let found = files.len();
+        let (mut bad_name, mut unreadable, mut not_stored, mut bytes) = (0, 0, 0, 0usize);
         let mut items = Vec::new();
         for p in files {
             // the same checked name as every other way in (stem cut, extension kept)
-            let Some(name) = p.file_name().and_then(|n| n.to_str()).and_then(|n| file_name(n).ok()) else { continue };
-            let Ok(body) = std::fs::read(&p) else { continue };
-            let Ok(v) = store(&root, IMPORTED, &name, &body) else { continue };
+            let Some(name) = p.file_name().and_then(|n| n.to_str()).and_then(|n| file_name(n).ok()) else {
+                bad_name += 1;
+                continue;
+            };
+            let Ok(body) = std::fs::read(&p) else {
+                unreadable += 1;
+                continue;
+            };
+            let Ok(v) = store(&root, IMPORTED, &name, &body) else {
+                not_stored += 1;
+                continue;
+            };
+            bytes += body.len();
             items.push(json!({ "rel": v["rel"], "name": name, "from": inside(&from, &p), "bytes": body.len() }));
         }
+        log_info!(
+            "library",
+            "folder imported",
+            deep = deep,
+            found = found,
+            imported = items.len(),
+            already_seen = skipped,
+            bad_name = bad_name,
+            unreadable = unreadable,
+            not_stored = not_stored,
+            more = more,
+            bytes = bytes,
+            scan_ms = scan_ms,
+            ms = crate::diag::ms(t0)
+        );
         Ok(json!({ "items": items, "more": more }))
     })
     .await

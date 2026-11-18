@@ -190,6 +190,9 @@ export function defaults() {
     /** Pre-written posts (pasta-model.js): the pinned ones' ids, in order,
      *  and the person's own posts ({ id, title, text, at }, newest first). */
     pastas: pastaDefaults(),
+    /** Settings › Diagnostics: Detailed logs (debug lines from every
+     *  feature, ui/js/log.js and src-tauri/src/diag.rs). Off. */
+    diagnostics: { detailed: false },
   };
 }
 
@@ -312,6 +315,7 @@ export function normalizeSettings(raw) {
   out.stats = normalizeStatsSettings(raw.stats);
   out.ai = normalizeAi(raw.ai);
   out.pastas = normalizePastas(raw.pastas);
+  out.diagnostics = { detailed: isObj(raw.diagnostics) && raw.diagnostics.detailed === true };
   out.lastRead = normalizeLastRead(raw.lastRead);
   if (Array.isArray(raw.yous)) {
     out.yous = raw.yous

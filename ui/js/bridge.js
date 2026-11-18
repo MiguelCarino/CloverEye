@@ -8,6 +8,7 @@ import { mockAnswer, MOCK_GPU, MOCK_REFUSED } from './ai-prompt.js';
 import { catalogThreads, threadTitle } from './browse-model.js';
 import { addSample, emptyBoardStats, pruneBoardStats, DAY_MS } from './stats-model.js';
 import { emptyMine } from './my-stats-model.js';
+import { connectLog, detailFromSettings, formatLine } from './log.js';
 
 const STORAGE_KEY = 'clovereye.settings';
 const SAVED_KEY = 'clovereye.saved';
@@ -225,7 +226,14 @@ export function safeStorage(win) {
  * @param {Function} [env.fetchImpl]  fetch, for the mock's fixture
  * @param {object} [env.mock]  { boards: 'ok'|'fail'|'fail-once', ffmpeg: 'ok'|'missing'|'partial'|'no-vp9', delayMs, notify }
  */
-export function createBridge({ tauri = null, storage = null, fetchImpl = null, mock = {} } = {}) {
+export function createBridge(env = {}) {
+  const bridge = makeBridge(env);
+  // ui/js/log.js sends its batches through this bridge
+  connectLog(bridge);
+  return bridge;
+}
+
+function makeBridge({ tauri = null, storage = null, fetchImpl = null, mock = {} } = {}) {
   let siteRequests = 0;
   const invoke = tauri?.core?.invoke;
 
@@ -235,10 +243,13 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       kind: 'tauri',
       siteRequests: () => siteRequests,
       async getSettings() {
-        return (await invoke('get_settings')) ?? null;
+        const s = (await invoke('get_settings')) ?? null;
+        detailFromSettings(s); // Settings › Diagnostics › Detailed logs
+        return s;
       },
       async setSettings(settings) {
         await invoke('set_settings', { settings });
+        detailFromSettings(settings);
         return true;
       },
       async fetchBoards() {
@@ -336,7 +347,10 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       },
       /** Another window saved new settings. */
       onSettingsChanged(cb) {
-        tauri.event?.listen?.('settings-changed', (e) => cb(e.payload));
+        tauri.event?.listen?.('settings-changed', (e) => {
+          detailFromSettings(e.payload);
+          cb(e.payload);
+        });
       },
       /** A window wrote the library's index (library.rs): cb({ root, rev }).
        *  Returns a function that stops listening. */
@@ -392,6 +406,11 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       noteError(line) {
         invoke('diagnostics_note', { line: String(line) }).catch(() => {});
       },
+      /** A batch from ui/js/log.js ([{ level, area, msg, fields }], one
+       *  invoke); answers whether Detailed logs are on. */
+      logBatch: (lines) => invoke('diagnostics_log', { lines }),
+      /** Settings › Diagnostics › Detailed logs, for the app's own lines. */
+      setLogDetail: (on) => invoke('set_log_detail', { on: Boolean(on) }),
       /** Ask (src-tauri/src/ai.rs): model servers running on this computer
        *  and its specs; a question streamed to `onEvent` ({type: 'text',
        *  text} pieces, then 'done' or 'error'); stopping one. */
@@ -500,19 +519,31 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
     return structuredClone(catalogCache);
   };
 
+  // The log's lines stay in memory (globalThis.__ceLogs, for tests and the
+  // e2e checks) and make the preview's diagnostics report.
+  const mockLogs = [];
+  let mockDetail = false;
+  globalThis.__ceLogs = mockLogs;
+
   return {
     kind: 'mock',
     siteRequests: () => siteRequests,
     async getSettings() {
+      let s = null;
       try {
         const raw = storage ? storage.getItem(STORAGE_KEY) : null;
-        if (raw != null) return JSON.parse(raw);
+        if (raw != null) s = JSON.parse(raw);
       } catch {
         /* unreadable or blocked storage: fall back to memory */
       }
-      return memory ? JSON.parse(memory) : null;
+      s ??= memory ? JSON.parse(memory) : null;
+      detailFromSettings(s);
+      if (s) mockDetail = s.diagnostics?.detailed === true;
+      return s;
     },
     async setSettings(settings) {
+      detailFromSettings(settings);
+      mockDetail = settings?.diagnostics?.detailed === true;
       const json = JSON.stringify(settings);
       memory = json;
       try {
@@ -846,7 +877,11 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       globalThis.addEventListener?.('storage', (e) => {
         if (e.key !== STORAGE_KEY || !e.newValue) return;
         try {
-          cb(JSON.parse(e.newValue));
+          const s = JSON.parse(e.newValue);
+          detailFromSettings(s);
+          // the switch is the app's, for every window (as in Tauri)
+          mockDetail = s?.diagnostics?.detailed === true;
+          cb(s);
         } catch {
           /* not ours */
         }
@@ -878,14 +913,46 @@ export function createBridge({ tauri = null, storage = null, fetchImpl = null, m
       if (!/^https?:\/\//i.test(String(url))) throw new Error('Only http and https links open from posts.');
       globalThis.open?.(url, '_blank', 'noopener,noreferrer');
     },
+    /** The same shape as the app's report (diag.rs), with the lines the
+     *  page logged. */
     async diagnosticsText() {
-      return JSON.stringify({ app: 'CloverEye', preview: true, userAgent: globalThis.navigator?.userAgent ?? null }, null, 1);
+      const count = (k, list) => list.reduce((m, l) => ((m[l[k]] = (m[l[k]] || 0) + 1), m), {});
+      const levels = count('level', mockLogs);
+      const areas = Object.entries(count('area', mockLogs)).sort(([a], [b]) => a.localeCompare(b));
+      // English words joined, not sentences: this is the log's own
+      // language (diag.rs), not the page's, so nothing here is translated
+      const say = (...w) => w.join(' ');
+      const levelCounts = ['error', 'warn', 'info', 'debug'].map((l) => [l, levels[l] || 0].join('='));
+      const areaCounts = areas.map((a) => a.join('='));
+      return [
+        say('CloverEye', 'diagnostics'),
+        say('CloverEye:', 'preview'),
+        say('Log:', 'detailed', 'logs', mockDetail ? 'on;' : 'off;', 'lines:', ...levelCounts, ';', 'areas:', ...(areaCounts.length ? areaCounts : ['none'])),
+        '',
+        say('==', 'this', 'session', 'log'),
+        ...mockLogs.map((l) => formatLine(l, new Date(l.at))),
+        '',
+      ].join('\n');
     },
     async saveDiagnostics() {
       await sleep(delay);
       return `${MOCK_SAVED_DIR.replace(/\/Saved threads$/, '')}/clovereye-diagnostics-preview.txt`;
     },
-    noteError() {},
+    noteError(line) {
+      mockLogs.push({ level: 'error', area: 'ui', msg: String(line).slice(0, 400), at: Date.now() });
+    },
+    async logBatch(lines) {
+      for (const l of Array.isArray(lines) ? lines.slice(0, 100) : []) {
+        if (l.level === 'debug' && !mockDetail) continue;
+        mockLogs.push({ ...l, at: Date.now() });
+      }
+      if (mockLogs.length > 5000) mockLogs.splice(0, mockLogs.length - 5000);
+      return mockDetail;
+    },
+    async setLogDetail(on) {
+      mockDetail = Boolean(on);
+      return mockDetail;
+    },
     // Ask: ?mock-ai=none (no server running), below (no server, a small
     // computer), fail (the server refuses). Otherwise Ollama with two models,
     // and answers that cite the first posts they were given.

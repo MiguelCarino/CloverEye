@@ -8,6 +8,8 @@ import { h, icon, clear } from './dom.js';
 import * as A from './ai-model.js';
 import { buildMessages, scopeText } from './ai-prompt.js';
 import { currentLang } from './i18n.js';
+import { log } from './log.js';
+import { errorKind } from './log-model.js';
 
 let seq = 0;
 
@@ -150,7 +152,7 @@ export function askView(o) {
               'data-key': `${k}ask-unload`,
               title: 'Free the memory the model holds. It loads again with the next question.',
               onclick: (e) => {
-                stopAsk(ask, o.bridge);
+                stopAsk(ask, o.bridge, 'unload');
                 o.onUnload(e.currentTarget);
               },
             },
@@ -174,16 +176,17 @@ export function askView(o) {
 }
 
 /** Stops a conversation's answer under way (Stop, or its pane closing). */
-export function stopAsk(ask, bridge) {
+export function stopAsk(ask, bridge, why = 'closed') {
   for (const t of ask?.turns || []) {
     if (t.status !== 'streaming') continue;
     t.status = 'stopped';
+    log.info('ai', 'ai.stopped', { why, chars: t.answer.length, pieces: t.pieces || 0, first_ms: t.firstMs ?? -1, ms: t.t0 ? Math.round(performance.now() - t.t0) : 0 });
     bridge?.aiStop?.(t.id);
   }
 }
 
 function stopAll(o) {
-  stopAsk(o.ask, o.bridge);
+  stopAsk(o.ask, o.bridge, 'stop');
   o.redraw();
 }
 
@@ -207,10 +210,15 @@ function askQuestion(o, question) {
     error: '',
     posts: chosen.posts,
     read: { posts: chosen.posts.length, threads: chosen.threads, of: docs.length },
+    t0: performance.now(), // for the log: time to the first piece, and in all
+    firstMs: null,
+    pieces: 0,
   };
   ask.turns.push(turn);
   o.redraw();
+  const scope = effectiveScope(o);
   if (!docs.length) {
+    log.info('ai', 'ai.nothing.loaded', { scope });
     turn.status = 'error';
     turn.error = 'Nothing is loaded to search yet. Open a catalog or a thread first.';
     o.redraw();
@@ -218,17 +226,50 @@ function askQuestion(o, question) {
   }
   const messages = buildMessages({ question, posts: chosen.posts, scope: scopeLabel(o), history, lang: currentLang() });
   const numCtx = A.AI_CTX[ai.reach] || A.AI_CTX.normal;
+  // what the question reads and how big it is: counts and sizes, the
+  // model's name, never the question, the posts or the answer
+  const chars = messages.reduce((n, m) => n + (typeof m?.content === 'string' ? m.content.length : 0), 0);
+  log.info('ai', 'ai.asked', {
+    server: String(ai.kind || ''),
+    port: Number(ai.port) || 0,
+    model: String(ai.model || ''),
+    scope,
+    reach: String(ai.reach || 'normal'),
+    loaded: docs.length,
+    matched: hits.length,
+    posts: chosen.posts.length,
+    threads: chosen.threads,
+    turns: history.length,
+    messages: messages.length,
+    questionChars: question.length,
+    promptChars: chars,
+    numCtx,
+  });
   const onEvent = (ev) => {
     if (turn.status !== 'streaming') return;
     if (ev?.type === 'text') {
       turn.answer += String(ev.text || '');
+      turn.pieces += 1;
+      if (turn.firstMs === null) {
+        turn.firstMs = Math.round(performance.now() - turn.t0);
+        log.debug('ai', 'ai.first.piece', { model: String(ai.model || ''), first_ms: turn.firstMs });
+      }
       refreshAnswer(turn, o);
     } else if (ev?.type === 'done') {
       turn.status = 'done';
+      log.info('ai', 'ai.answered', {
+        model: String(ai.model || ''),
+        first_ms: turn.firstMs ?? -1,
+        ms: Math.round(performance.now() - turn.t0),
+        chars: turn.answer.length,
+        pieces: turn.pieces,
+        cited: A.cited(A.citeParts(turn.answer, turn.posts)).length,
+      });
       o.redraw();
     } else if (ev?.type === 'error') {
       turn.status = 'error';
       turn.error = A.aiErrorText(ev.message, ai);
+      log.warn('ai', 'ai.failed', { server: String(ai.kind || ''), model: String(ai.model || ''), kind: errorKind(ev.message), chars: turn.answer.length, ms: Math.round(performance.now() - turn.t0) });
       o.redraw();
     }
   };

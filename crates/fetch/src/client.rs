@@ -9,6 +9,7 @@ use crate::endpoint::Endpoint;
 use crate::error::Error;
 use crate::httpdate::parse_retry_after;
 use crate::models::{Archive, BoardsResponse, Catalog, Thread, ThreadsIndex};
+use crate::trace::{self, LogLevel};
 use crate::transport::{Request, Response, Transport};
 
 /// The honest User-Agent: the app name and version, nothing about the user.
@@ -121,6 +122,45 @@ struct State {
     /// Sum of the cached bodies' lengths.
     cache_size: usize,
     tick: u64,
+    /// Counts for the periodic summary line.
+    summary: Summary,
+}
+
+/// A short cut's debug line (message and fields) and the summary's fields
+/// when one is due.
+type ShortCut = (Option<(&'static str, Vec<(&'static str, String)>)>, Option<Vec<(&'static str, String)>>);
+
+/// How often the queue writes its summary line (at most; only when it did
+/// something since the last one).
+pub const SUMMARY_EVERY: Duration = Duration::from_secs(600);
+
+/// What the queue did since its last summary line.
+#[derive(Debug, Default)]
+struct Summary {
+    since: Option<Duration>,
+    requests: u64,
+    new: u64,
+    not_modified: u64,
+    throttled: u64,
+    not_found: u64,
+    failed: u64,
+    held: u64,
+    bytes: u64,
+    queued: Duration,
+}
+
+/// How one `get` ended, for the summary.
+enum Outcome {
+    New,
+    NotModified,
+    Throttled,
+    NotFound,
+    Failed,
+    Held,
+}
+
+fn ms(d: Duration) -> String {
+    d.as_millis().to_string()
 }
 
 /// The app's single request queue. `get` blocks the calling thread while it
@@ -212,6 +252,158 @@ impl<T: Transport, C: Clock> Client<T, C> {
         (wait > max).then_some(Error::Waiting { retry_in: wait })
     }
 
+    /// Counts one outcome; the summary's fields when one is due (at most
+    /// every SUMMARY_EVERY, and only after something happened).
+    fn tally(&self, st: &mut State, outcome: Outcome, bytes: usize, queued: Duration) -> Option<Vec<(&'static str, String)>> {
+        let now = self.clock.now();
+        let s = &mut st.summary;
+        let since = *s.since.get_or_insert(now);
+        match outcome {
+            Outcome::New => s.new += 1,
+            Outcome::NotModified => s.not_modified += 1,
+            Outcome::Throttled => s.throttled += 1,
+            Outcome::NotFound => s.not_found += 1,
+            Outcome::Failed => s.failed += 1,
+            Outcome::Held => s.held += 1,
+        }
+        if !matches!(outcome, Outcome::Throttled | Outcome::Held) {
+            s.requests += 1;
+        }
+        s.bytes += bytes as u64;
+        s.queued += queued;
+        if now.saturating_sub(since) < SUMMARY_EVERY {
+            return None;
+        }
+        Self::summary_fields(st, now)
+    }
+
+    /// The summary's fields for what was counted since the last one (none
+    /// when nothing was), and the count starts again.
+    fn summary_fields(st: &mut State, now: Duration) -> Option<Vec<(&'static str, String)>> {
+        let s = &st.summary;
+        let since = s.since?;
+        let avg_queue = if s.requests > 0 { s.queued / s.requests as u32 } else { Duration::ZERO };
+        let fields = vec![
+            ("minutes", (now.saturating_sub(since).as_secs() / 60).to_string()),
+            ("requests", s.requests.to_string()),
+            ("new", s.new.to_string()),
+            ("not_modified", s.not_modified.to_string()),
+            ("from_cache", s.throttled.to_string()),
+            ("not_found", s.not_found.to_string()),
+            ("failed", s.failed.to_string()),
+            ("held_back", s.held.to_string()),
+            ("bytes", s.bytes.to_string()),
+            ("avg_queue_ms", ms(avg_queue)),
+            ("cached", st.cache.len().to_string()),
+            ("cache_bytes", st.cache_size.to_string()),
+        ];
+        st.summary = Summary { since: Some(now), ..Summary::default() };
+        Some(fields)
+    }
+
+    /// Writes the summary line now for what the queue did since the last
+    /// one, when it did anything: before a diagnostics report is made and
+    /// at quit, so a short session's requests are in the log too.
+    pub fn flush_summary(&self) {
+        let mut st = self.lock();
+        let s = &st.summary;
+        let any = s.requests + s.throttled + s.held > 0;
+        let due = if any { Self::summary_fields(&mut st, self.clock.now()) } else { None };
+        drop(st);
+        Self::summary_line(due);
+    }
+
+    /// Writes the summary line when `tally` says one is due.
+    fn summary_line(fields: Option<Vec<(&'static str, String)>>) {
+        if let Some(f) = fields {
+            trace::emit(LogLevel::Info, "request queue summary", &f);
+        }
+    }
+
+    /// The debug line for an answer served without a request (thread floor)
+    /// or refused at once (back-off), and its count for the summary. The
+    /// lines are written by the caller after it lets go of the state lock
+    /// (`emit_short_cut`): a log write can be slow (the file starting again).
+    fn short_cut(&self, st: &mut State, ep: &Endpoint, r: &Result<Fetched, Error>) -> ShortCut {
+        let outcome = match r {
+            Ok(_) => Outcome::Throttled,
+            Err(_) => Outcome::Held,
+        };
+        let line = trace::detail().then(|| {
+            let mut f = ep.log_fields();
+            let msg = match r {
+                Ok(_) => "served the cached copy (10 s thread floor)",
+                Err(Error::TooSoon { wait }) => {
+                    f.push(("left_ms", ms(*wait)));
+                    "too soon for this thread and nothing cached"
+                }
+                Err(Error::Waiting { retry_in }) => {
+                    f.push(("retry_s", retry_in.as_secs().max(1).to_string()));
+                    f.push(("failures", st.failures.to_string()));
+                    "held back: the queue is backing off"
+                }
+                Err(e) => {
+                    f.push(("error", e.to_string()));
+                    "refused before the queue"
+                }
+            };
+            (msg, f)
+        });
+        (line, self.tally(st, outcome, 0, Duration::ZERO))
+    }
+
+    /// short_cut's lines, written with no lock held.
+    fn emit_short_cut((line, due): ShortCut) {
+        if let Some((msg, f)) = line {
+            trace::emit(LogLevel::Debug, msg, &f);
+        }
+        Self::summary_line(due);
+    }
+
+    /// The lines for one request that went out: one at debug, and a
+    /// warning for a failure (with the back-off it started).
+    #[allow(clippy::too_many_arguments)]
+    fn request_lines(ep: &Endpoint, out: &Result<Fetched, Error>, status: Option<u16>, bytes: usize, took: Duration, queued: Duration, conditional: bool, failures: u32) {
+        let base = || {
+            let mut f = ep.log_fields();
+            if let Some(s) = status {
+                f.push(("status", s.to_string()));
+            }
+            f
+        };
+        if trace::detail() {
+            let mut f = base();
+            f.push(("bytes", bytes.to_string()));
+            f.push(("ms", ms(took)));
+            f.push(("queued_ms", ms(queued)));
+            f.push(("conditional", conditional.to_string()));
+            f.push((
+                "result",
+                match out {
+                    Ok(x) if x.freshness == Freshness::NotModified => "not-modified".into(),
+                    Ok(_) => "new".into(),
+                    Err(Error::NotFound) => "not-found".into(),
+                    Err(_) => "failed".into(),
+                },
+            ));
+            trace::emit(LogLevel::Debug, "request", &f);
+        }
+        let warn = |msg: &str, extra: Vec<(&'static str, String)>| {
+            let mut f = base();
+            f.extend(extra);
+            f.push(("ms", ms(took)));
+            f.push(("failures", failures.to_string()));
+            trace::emit(LogLevel::Warn, msg, &f);
+        };
+        match out {
+            Err(Error::Transport { message, retry_in }) => warn("request failed", vec![("error", message.clone()), ("retry_s", retry_in.as_secs().to_string())]),
+            Err(Error::BackOff { retry_in, .. }) => warn("the server asked us to slow down; backing off", vec![("retry_s", retry_in.as_secs().to_string())]),
+            Err(Error::Status { retry_in, .. }) => warn("unexpected HTTP status; backing off", vec![("retry_s", retry_in.as_secs().to_string())]),
+            Err(Error::NotModifiedWithoutCache) => warn("304 without a cached copy", vec![]),
+            _ => {}
+        }
+    }
+
     /// GETs one endpoint through the queue.
     ///
     /// Two locks: `state` covers only the bookkeeping (floors, back-off,
@@ -222,18 +414,18 @@ impl<T: Transport, C: Clock> Client<T, C> {
     pub fn get(&self, ep: &Endpoint) -> Result<Fetched, Error> {
         let url = ep.url()?;
         let is_thread = ep.is_thread();
+        let entered = self.clock.now();
 
         // Per-thread floor first: inside it, the cached copy, no request
         // and no queue.
         {
             let mut st = self.lock();
-            if is_thread {
-                if let Some(r) = self.thread_floor(&mut st, &url) {
-                    return r;
-                }
-            }
-            if let Some(e) = self.too_long(&st) {
-                return Err(e);
+            let early = if is_thread { self.thread_floor(&mut st, &url) } else { None };
+            if let Some(r) = early.or_else(|| self.too_long(&st).map(Err)) {
+                let lines = self.short_cut(&mut st, ep, &r);
+                drop(st);
+                Self::emit_short_cut(lines);
+                return r;
             }
         }
 
@@ -244,20 +436,29 @@ impl<T: Transport, C: Clock> Client<T, C> {
             // Checked again: while we queued, a request for this thread may
             // have been made (served as Throttled, as when it was one lock),
             // or a failure may have started a long back-off.
-            if is_thread {
-                if let Some(r) = self.thread_floor(&mut st, &url) {
-                    return r;
-                }
-            }
-            if let Some(e) = self.too_long(&st) {
-                return Err(e);
+            let early = if is_thread { self.thread_floor(&mut st, &url) } else { None };
+            if let Some(r) = early.or_else(|| self.too_long(&st).map(Err)) {
+                let lines = self.short_cut(&mut st, ep, &r);
+                drop(st);
+                Self::emit_short_cut(lines);
+                return r;
             }
             let now = self.clock.now();
             let ready = self.ready_at(&st);
             if ready > now {
+                // A wait the back-off sets (not the usual 1 s spacing) is
+                // worth a line: the app is slowing down on purpose.
+                let backing_off = st.blocked_until > now && st.blocked_until >= ready;
+                let failures = st.failures;
                 // Only this queue sends, and we hold it, so nothing moves
                 // `ready` while we sleep without the state lock.
                 drop(st);
+                if backing_off {
+                    let mut f = ep.log_fields();
+                    f.push(("wait_ms", ms(ready - now)));
+                    f.push(("failures", failures.to_string()));
+                    trace::emit(LogLevel::Info, "waiting out a back-off before the next request", &f);
+                }
                 self.clock.sleep(ready - now);
                 continue;
             }
@@ -277,22 +478,39 @@ impl<T: Transport, C: Clock> Client<T, C> {
 
         let started = self.clock.now();
         let result = self.transport.send(&req);
+        let ended = self.clock.now();
 
         let mut st = self.lock();
-        st.last_end = Some(self.clock.now());
+        st.last_end = Some(ended);
         if is_thread {
             // The floor counts from when the request started, failed or not.
             st.thread_last.insert(url.clone(), started);
             self.prune_thread_floor(&mut st, started);
         }
-        let resp = match result {
-            Ok(r) => r,
+        let (status, bytes) = match &result {
+            Ok(r) => (Some(r.status), r.body.len()),
+            Err(_) => (None, 0),
+        };
+        let out = match result {
+            Ok(resp) => self.handle(&mut st, url, conditional, resp),
             Err(message) => {
                 let retry_in = self.register_failure(&mut st, None);
-                return Err(Error::Transport { message, retry_in });
+                Err(Error::Transport { message, retry_in })
             }
         };
-        self.handle(&mut st, url, conditional, resp)
+        let outcome = match &out {
+            Ok(f) if f.freshness == Freshness::NotModified => Outcome::NotModified,
+            Ok(_) => Outcome::New,
+            Err(Error::NotFound) => Outcome::NotFound,
+            Err(_) => Outcome::Failed,
+        };
+        let queued = started.saturating_sub(entered);
+        let failures = st.failures;
+        let due = self.tally(&mut st, outcome, bytes, queued);
+        drop(st);
+        Self::request_lines(ep, &out, status, bytes, ended.saturating_sub(started), queued, conditional, failures);
+        Self::summary_line(due);
+        out
     }
 
     fn handle(&self, st: &mut State, url: String, conditional: bool, resp: Response) -> Result<Fetched, Error> {

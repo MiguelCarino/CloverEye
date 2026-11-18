@@ -8,6 +8,8 @@ import * as L from './library-model.js';
 import { h, icon, toast } from './dom.js';
 import { confirmDialog } from './offline.js';
 import { putFile, getFile, delFile, moveFile, sweepFiles } from './reply-files.js';
+import { log } from './log.js';
+import { errorKind, fileKind, postResultKind } from './log-model.js';
 
 /**
  * @param {object} o
@@ -25,6 +27,9 @@ import { putFile, getFile, delFile, moveFile, sweepFiles } from './reply-files.j
  * @param {object} [o.library]   the library (library.js), for "From library"
  * @param {(anchor: Element, where: {board: string, thread: number}) => void} [o.onPastas]
  *   the form's "Pre-written posts" button: opens the pastas popup for this form
+ * @param {(text: string, anchor: Element) => void} [o.onSavePasta]
+ *   the form's "Save as pasta" button: keeps the comment as a pasta of the
+ *   person's own (the shell asks for its title)
  */
 const DRAFTS_KEY = 'clovereye-drafts';
 const SAVED_KEY = 'clovereye-saved-replies';
@@ -162,7 +167,7 @@ export function postSelection(post) {
   }
 }
 
-export function createComposer({ bridge, getSettings, saveSettings, getBoard, onPosted, onSitePage = null, onPending = null, paneFor = null, library = null, onPastas = null }) {
+export function createComposer({ bridge, getSettings, saveSettings, getBoard, onPosted, onSitePage = null, onPending = null, paneFor = null, library = null, onPastas = null, onSavePasta = null }) {
   const drafts = loadDrafts(); // "board/thread" → { com, sub, email, at }
   // What this window changed in `drafts` and has not stored yet (key →
   // entry; an empty entry is a delete): only these are written, so another
@@ -308,6 +313,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     if (!st) return;
     const from = el?.getBoundingClientRect();
     mode = mode === next ? 'float' : next;
+    log.info('post', 'compose.mode', { mode });
     saveMode(mode);
     paneBox = '';
     draw('keep');
@@ -393,8 +399,10 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       localStorage.setItem(DRAFTS_KEY, JSON.stringify(Object.fromEntries(merged)));
       dirty.clear();
       C.adoptDrafts(drafts, merged, keepKeys());
-    } catch (_) {
+      log.debug('post', 'drafts.stored', { written: changes.size, stored: merged.size, here: drafts.size });
+    } catch (e) {
       merged = null; // no storage: drafts last until the app closes
+      log.warn('post', 'drafts.unstored', { kind: errorKind(e), written: changes.size });
     }
     // A delete that went in takes the reply's file too; one that did not
     // (another window wrote that reply since) leaves it to that reply.
@@ -438,6 +446,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     // keystroke here must not drop the stored marker: no second post).
     if (!posting.has(k) && C.postingNow(reloadDrafts()?.get(k))) {
       if (!st.problems.some((p) => p.message === POSTING_ELSEWHERE)) {
+        log.info('post', 'posting.elsewhere', { where: 'form', board: st.board, thread: st.thread });
         st.problems = [{ field: 'submit', message: POSTING_ELSEWHERE }];
         draw('keep');
       }
@@ -467,6 +476,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   function pwd(settings) {
     if (settings.post?.pwd) return settings.post.pwd;
     const bytes = crypto.getRandomValues(new Uint8Array(12));
+    log.info('post', 'post.password.made', {});
     const made = Array.from(bytes, (b) => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[b % 62]).join('');
     saveSettings({ ...settings, post: { ...(settings.post || {}), pwd: made } });
     return made;
@@ -497,8 +507,9 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   function persistSaved() {
     try {
       localStorage.setItem(SAVED_KEY, JSON.stringify(saved));
-    } catch (_) {
+    } catch (e) {
       /* no storage: saved replies last until the app closes */
+      log.warn('post', 'later.unstored', { kind: errorKind(e), later: saved.length });
     }
   }
 
@@ -522,6 +533,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     const reply = { board: st.board, thread: st.thread, com: st.com, sub: st.sub, email: st.email, file: st.file };
     const before = (saved = loadSaved());
     if (C.hasContent(st) && C.savedFull(before, reply)) {
+      log.info('post', 'later.full', { later: before.length });
       toast('Later is full: delete a saved reply first.');
       return;
     }
@@ -530,6 +542,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       toast('Nothing to save yet: write something first.');
       return;
     }
+    log.info('post', 'later.saved', { board: st.board, thread: st.thread, later: saved.length, attached: Boolean(st.file), dropped: C.droppedIds(before, saved).length });
     persistSaved();
     for (const id of C.droppedIds(before, saved)) delFile(`s:${id}`); // a list stored over the limit
     const k = key(st.board, st.thread);
@@ -552,15 +565,18 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     saved = loadSaved(); // another window may have opened or deleted it
     let { entry, list } = C.takeSaved(saved, id);
     if (!entry) {
+      log.info('post', 'later.gone', { later: saved.length });
       drawTray();
       return;
     }
+    log.info('post', 'later.opened', { board: entry.board, thread: entry.thread, later: saved.length, attached: Boolean(entry.file) });
     const from = pill?.getBoundingClientRect();
     const k = key(entry.board, entry.thread);
     // that thread's reply is going out: its form comes back, this one stays saved
     if (posting.has(k)) return open({ board: entry.board, thread: entry.thread, from });
     // (as stored: this window's copy of the open form's reply is its own)
     if (C.postingNow(reloadDrafts()?.get(k))) {
+      log.info('post', 'posting.elsewhere', { where: 'later', board: entry.board, thread: entry.thread });
       toast(POSTING_ELSEWHERE); // its reply there would be written over
       return;
     }
@@ -632,6 +648,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     if (!d) return;
     const ok = await confirmDialog({ title: 'Delete this reply?', text: `“${C.savedLabel(d, 80)}” is deleted for good.`, confirm: 'Delete', opener });
     if (!ok) return;
+    log.info('post', 'draft.deleted', { from: 'tray', drafts: drafts.size - 1 });
     const item = tray?.querySelector(`[data-active-key="${CSS.escape(k)}"]`);
     forget(k, d.at); // the reply shown (one written since in another window stays)
     fadeOut(item);
@@ -664,6 +681,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     if (!ok) return;
     const item = tray?.querySelector(`[data-saved-id="${CSS.escape(entry.id)}"]`);
     saved = C.takeSaved(loadSaved(), entry.id).list;
+    log.info('post', 'later.deleted', { later: saved.length });
     persistSaved();
     delFile(`s:${entry.id}`);
     fadeOut(item);
@@ -840,6 +858,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     const k = key(st.board, st.thread);
     if (dirty.has(k) || !C.hasContent(st) || !C.deletedSince(stored, k, st.base)) return;
     Object.assign(st, { com: '', sub: '', file: null, caret: 0, problems: [], message: '', base: stored.get(k).at || 0 });
+    log.info('post', 'draft.emptied.elsewhere', { board: st.board, thread: st.thread });
     drafts.delete(k); // no pill of it either once the form closes
     draw('keep');
     if (st.min) drawHeadNote();
@@ -889,6 +908,8 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       const before = traySig();
       if (e.key !== DRAFTS_KEY) saved = loadSaved();
       if (e.key !== SAVED_KEY) followStored(reloadDrafts());
+      // another window's drafts or Later list, taken in (counts only)
+      if (log.enabled('debug')) log.debug('post', 'drafts.foreign', { what: e.key === SAVED_KEY ? 'later' : e.key === DRAFTS_KEY ? 'drafts' : 'cleared', drafts: drafts.size, later: saved.length, changed: traySig() !== before });
       if (traySig() === before) return;
       if (trayPress) trayStale = true;
       else drawTray();
@@ -921,8 +942,9 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   let filesChan = null;
   try {
     filesChan = new BroadcastChannel(FILES_CHANNEL);
-  } catch (_) {
+  } catch (e) {
     filesChan = null; // no way to ask the other windows: nothing is swept
+    log.debug('post', 'files.channel.none', { kind: errorKind(e) });
   }
   filesChan?.addEventListener('message', (e) => {
     if (closed) return;
@@ -946,7 +968,10 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   const sweepTimer = setTimeout(() => {
     if (closed) return;
     filesChan?.postMessage({ ask: true });
-    sweepFiles(liveFiles).catch(() => {});
+    const end = log.time('post', 'files.swept');
+    Promise.resolve(sweepFiles(liveFiles))
+      .then((gone) => end({ deleted: Array.isArray(gone) ? gone.length : 0 }))
+      .catch((e) => log.warn('post', 'files.sweep.failed', { kind: errorKind(e) }));
   }, 10_000);
 
   // ------------------------------------------------------------ motion
@@ -1040,6 +1065,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     // folding: a copy of the open form shrinks into the pill and fades,
     // while the pill fades in (scaling the pill itself up would stretch it)
     const ghost = on && el && !still() ? el.cloneNode(true) : null;
+    log.info('post', on ? 'compose.minimised' : 'compose.restored', { board: st.board, thread: st.thread });
     st.min = on;
     draw('none');
     if (ghost && from) {
@@ -1054,6 +1080,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
 
   /** The app closing: the reply is kept as it is. */
   function close() {
+    log.debug('post', 'compose.ended', { open: Boolean(st), drafts: drafts.size, later: saved.length, posting: posting.size });
     stash();
     persistDrafts(); // the last keystrokes too (a write still waiting)
     dropForm()?.remove();
@@ -1075,8 +1102,12 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       const mine = st;
       const ok = await confirmDialog({ title: 'Delete this reply?', text: `“${C.savedLabel(mine, 80)}” is deleted for good. To keep it, minimise it or save it for later.`, confirm: 'Delete', opener });
       if (!ok || st !== mine) return;
+      log.info('post', 'compose.closed', { board: mine.board, thread: mine.thread, deleted: true });
       forget(key(mine.board, mine.thread), mine.base);
-    } else stash();
+    } else {
+      log.info('post', 'compose.closed', { board: st.board, thread: st.thread, deleted: false });
+      stash();
+    }
     leave(dropForm(), null);
     drawTray();
   }
@@ -1103,6 +1134,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       if (C.postingNow(reloadDrafts()?.get(key(board, thread)))) {
         // another window is posting that thread's reply: a second form
         // could post it twice
+        log.info('post', 'posting.elsewhere', { where: 'open', board, thread });
         toast(POSTING_ELSEWHERE);
         return;
       }
@@ -1148,6 +1180,21 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     const minBox = wasMin ? el?.getBoundingClientRect() : null;
     st.min = false;
     const picked = String(selection || '').trim() ? String(selection) : '';
+    // what opened: the form, a draft kept, a reply going out; never its text
+    log.info('post', 'compose.opened', {
+      board,
+      thread,
+      newThread: !thread,
+      again: Boolean(same && !flying),
+      sending: Boolean(flying),
+      draftChars: st.com.length,
+      attached: Boolean(st.file || drafts.get(key(board, thread))?.file),
+      quote: Boolean(quote),
+      selectionChars: picked.length,
+      wasMin,
+      mode,
+      drafts: drafts.size,
+    });
     // The selection comes in as greentext under the >>N; a bare >>N only
     // when the comment does not quote that post yet. Not into a reply going
     // out: it would not be in what is sent.
@@ -1167,7 +1214,10 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     ta?.focus();
     if (ta) ta.selectionStart = ta.selectionEnd = Number.isFinite(st.caret) ? Math.min(st.caret, ta.value.length) : ta.value.length;
     if (!same) {
-      st.info = await getBoard(board).catch(() => null);
+      st.info = await getBoard(board).catch((e) => {
+        log.warn('post', 'board.info.failed', { board, kind: errorKind(e) });
+        return null;
+      });
       if (st && st.board === board) draw('keep');
       loadCaptcha();
     }
@@ -1181,11 +1231,13 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     st.captcha = { state: 'loading' };
     draw('keep');
     let data;
+    const t0 = performance.now();
     try {
       data = await bridge.captcha(mine.board, mine.thread);
     } catch (e) {
       const msg = String(e?.message || e);
       data = null;
+      log.warn('captcha', 'captcha.failed', { board: mine.board, thread: mine.thread, kind: errorKind(e), stale: stale(), ms: Math.round(performance.now() - t0) });
       if (stale()) return;
       st.captcha =
         msg === 'check-needed'
@@ -1194,8 +1246,23 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       draw('keep');
       return;
     }
-    if (stale()) return;
+    if (stale()) {
+      log.debug('captcha', 'captcha.stale', { board: mine.board, thread: mine.thread });
+      return;
+    }
     st.captcha = C.captchaState(data);
+    // what came: its state, how many tasks, how long it lasts (never the
+    // challenge or the pictures)
+    log.info('captcha', 'captcha.shown', {
+      board: mine.board,
+      thread: mine.thread,
+      state: st.captcha.state,
+      tasks: Array.isArray(st.captcha.tasks) ? st.captcha.tasks.length : 0,
+      wait_s: st.captcha.until ? Math.max(0, Math.round((st.captcha.until - Date.now()) / 1000)) : 0,
+      ttl_s: st.captcha.expires ? Math.max(0, Math.round((st.captcha.expires - Date.now()) / 1000)) : 0,
+      try: seq,
+      ms: Math.round(performance.now() - t0),
+    });
     draw('keep');
     // The slider takes the keys at once, unless something is being typed.
     if (st.captcha.state === 'ready' && !typing()) focusSlider();
@@ -1212,6 +1279,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
   /** A picker over the library: search, press a picture, it is attached. */
   async function fromLibrary(opener) {
     if (!library?.available()) return;
+    log.info('post', 'file.library.opened', {});
     await library.load();
     let q = '';
     const grid = h('ul', { class: 'library__grid library-pick__grid', 'aria-label': 'Library files' });
@@ -1240,6 +1308,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
                     await pickFile(file);
                     el?.querySelector('[data-key="compose-com"]')?.focus({ preventScroll: true });
                   } catch (err) {
+                    log.warn('post', 'file.attach.failed', { from: 'library', kind: errorKind(err) });
                     toast(`Couldn’t attach it: ${err?.message || err}`);
                   }
                 },
@@ -1293,6 +1362,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     // it is not attached to that one
     if (st !== mine || mine.busy) return;
     const name = file.name || 'pasted.png';
+    log.info('post', 'file.attached', { type: fileKind(file), bytes: bytes.length, replaced: Boolean(mine.file) });
     mine.file = { name, size: bytes.length, type: file.type || '', bytes, randomName: C.randomFileName(name) };
     putFile(fileKey(key(mine.board, mine.thread)), mine.file); // kept with the reply
     typed();
@@ -1313,6 +1383,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       cooldownUntil: cooldowns.get(st.board) || 0,
     });
     if (st.problems.length) {
+      log.info('post', 'post.blocked', { board: st.board, thread: st.thread, problems: [...new Set(st.problems.map((p) => String(p.field || 'other')))].join(','), n: st.problems.length, captchaState: st.captcha.state });
       draw('keep');
       // only the captcha left: straight to its slider, for the arrow keys
       // (expired: to New captcha; the site would refuse it)
@@ -1326,6 +1397,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     const k = key(mine.board, mine.thread);
     if (C.postingNow(reloadDrafts()?.get(k))) {
       // the same reply open in two windows, Post pressed in the other one
+      log.info('post', 'posting.elsewhere', { where: 'submit', board: mine.board, thread: mine.thread });
       st.problems = [{ field: 'submit', message: POSTING_ELSEWHERE }];
       draw('keep');
       return;
@@ -1359,14 +1431,18 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     draw('keep');
     let file = null;
     let cleaned = 0;
+    let fileBytes = 0;
     if (mine.file) {
       let bytes = mine.file.bytes;
+      const end = log.time('post', 'post.file.prepared');
       if (mine.strip) {
         const r = C.stripMetadata(bytes, mine.file.name);
         bytes = r.bytes;
         cleaned = r.removed;
       }
+      fileBytes = bytes.length;
       file = { name: C.uploadName(mine.file, mine.randomName), type: mine.file.type, b64: C.toBase64(bytes) };
+      end({ type: fileKind(mine.file), bytes: fileBytes, stripped: Boolean(mine.strip), cleaned, randomName: Boolean(mine.randomName) });
     }
     const fields = C.postFields({
       isThread,
@@ -1381,12 +1457,40 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
       pwd: pwd(s),
     });
     let result;
+    let status = 0;
+    let failKind = '';
+    // what goes out: sizes and switches, never the comment, name, options,
+    // subject, file name or the captcha's answer
+    log.info('post', 'post.sending', {
+      board: mine.board,
+      thread: mine.thread,
+      newThread: isThread,
+      chars: mine.com.length,
+      lines: mine.com ? mine.com.split('\n').length : 0,
+      subChars: mine.sub.length,
+      named: Boolean(mine.name),
+      optionsSet: Boolean(mine.email),
+      spoiler: Boolean(mine.spoiler),
+      attached: Boolean(file),
+      fileBytes,
+      captchaState: mine.captcha.state,
+      answered: Boolean(C.captchaAnswer(mine.captcha)),
+      captchaLeft_s: mine.captcha.expires ? Math.max(0, Math.round((mine.captcha.expires - Date.now()) / 1000)) : 0,
+    });
+    const t0 = performance.now();
     try {
       const res = await bridge.submitPost(mine.board, fields, file);
+      status = Number(res?.status) || 0;
       result = C.parsePostResponse(res?.text, res?.status);
     } catch (e) {
       const msg = String(e?.message || e);
+      failKind = errorKind(e);
       result = { ok: false, message: msg === 'check-needed' ? 'The site wants a quick browser check: complete it in the window that opened, then post again.' : msg };
+    }
+    {
+      const fields = { board: mine.board, thread: mine.thread, result: failKind ? `error-${failKind}` : postResultKind(result), status, ms: Math.round(performance.now() - t0) };
+      if (result.ok) log.info('post', 'post.sent', { ...fields, no: result.no, newThread: isThread, cleaned });
+      else log.warn('post', 'post.failed', fields);
     }
     if (pid) onPending(result.ok ? { type: 'posted', id: pid, no: result.no } : { type: 'failed', id: pid, message: result.message });
     mine.busy = false;
@@ -1411,6 +1515,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     }
     const wait = C.cooldownSeconds(mine.info, { isThread, hasFile: Boolean(file) });
     if (wait) cooldowns.set(mine.board, Date.now() + wait * 1000);
+    log.debug('post', 'post.cooldown', { board: mine.board, cooldown_s: wait, later: C.savedFor(saved, mine.board, mine.thread).length });
     const next = C.addYou({ ...getSettings(), post: { ...(getSettings().post || {}), name: mine.name } }, mine.board, result.no);
     saveSettings(next);
     forget(k, mine.base); // the copy sent (one written since in another window stays)
@@ -1751,6 +1856,9 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
                 n.textContent = `${st.com.length} / ${max}`;
                 n.classList.toggle('over', st.com.length > max);
               }
+              // Save as pasta: only with something to save
+              const sp = el.querySelector('[data-key="compose-save-pasta"]');
+              if (sp) sp.disabled = st.busy || !st.com.trim();
             },
             onpaste: (e) => {
               const f = [...(e.clipboardData?.files || [])][0];
@@ -1847,6 +1955,23 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
                   onclick: (e) => onPastas(e.currentTarget, { board: st.board, thread: st.thread }),
                 },
                 icon('copy'),
+              )
+            : null,
+          // the comment kept as a pasta of the person's own (a title prompt)
+          onSavePasta
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  class: 'icon-btn composer__save-pasta',
+                  'aria-label': 'Save as pasta',
+                  title: 'Save the comment as a pasta of your own',
+                  'data-key': 'compose-save-pasta',
+                  disabled: st.busy || !st.com.trim(),
+                  onclick: (e) => onSavePasta(st.com, e.currentTarget),
+                },
+                // the Pastas button's sheets with a plus: not Attach's or New's plus
+                icon('copy-plus'),
               )
             : null,
           h(
@@ -1974,6 +2099,7 @@ export function createComposer({ bridge, getSettings, saveSettings, getBoard, on
     const k = key(st.board, st.thread);
     if (!posting.has(k) && C.postingNow(reloadDrafts()?.get(k))) {
       if (!st.problems.some((p) => p.message === POSTING_ELSEWHERE)) {
+        log.info('post', 'posting.elsewhere', { where: 'form', board: st.board, thread: st.thread });
         st.problems = [{ field: 'submit', message: POSTING_ELSEWHERE }];
         draw('keep');
       }

@@ -17,6 +17,8 @@
 import * as S from './stats-model.js';
 import * as Y from './my-stats-model.js';
 import { catalogThreads, threadTitle } from './browse-model.js';
+import { log } from './log.js';
+import { errorKind } from './log-model.js';
 
 /** How often the sampler looks for a board that is due. */
 export const SAMPLER_TICK_MS = 5_000;
@@ -64,13 +66,29 @@ export function createStats({ bridge, getSettings, isMain = true, tracked, focus
   let pending = []; // samples not stored yet: { board, sample, snap }
   let boardsTimer = null;
   let boardsFlushing = false;
+  // A store that keeps failing (a full disk) is warned about once, retries
+  // go at debug, and its recovery is one info line: the log does not grow
+  // while the app sits idle.
+  const failing = { boards: false, mine: false };
+  function storeFailed(what, fields) {
+    if (failing[what]) log.debug('stats', 'stats.store.failed', { what, again: true, ...fields });
+    else log.warn('stats', 'stats.store.failed', { what, ...fields });
+    failing[what] = true;
+  }
+  function storeWorked(what) {
+    if (!failing[what]) return;
+    failing[what] = false;
+    log.info('stats', 'stats.store.recovered', { what });
+  }
 
   async function loadBoards() {
     if (!can) return;
     try {
       boards = S.pruneBoardStats(S.insertSamples(S.normalizeBoardStats(await bridge.statsRead('boards')), pending), now());
-    } catch {
+      log.debug('stats', 'stats.read', { what: 'boards', boards: Object.keys(boards.boards || {}).length, held: pending.length });
+    } catch (e) {
       /* unreadable: keep what is here */
+      log.warn('stats', 'stats.read.failed', { what: 'boards', kind: errorKind(e) });
     }
     if (!closed) onBoards(null);
   }
@@ -99,6 +117,8 @@ export function createStats({ bridge, getSettings, isMain = true, tracked, focus
         const next = S.pruneBoardStats(S.insertSamples(stored, items), now());
         try {
           const rev = await bridge.statsWrite('boards', next, stored.rev);
+          log.debug('stats', 'stats.stored', { what: 'boards', samples: items.length, tries: i + 1, rev: Number(rev) || 0 });
+          storeWorked('boards');
           // what other windows stored comes in too; samples taken meanwhile stay
           boards = S.insertSamples({ ...next, rev }, pending);
           if (!closed) onBoards(null);
@@ -108,8 +128,9 @@ export function createStats({ bridge, getSettings, isMain = true, tracked, focus
         }
       }
       throw new Error('stats-conflict');
-    } catch {
+    } catch (e) {
       pending = [...items, ...pending].slice(-500);
+      storeFailed('boards', { kind: errorKind(e), held: pending.length, retry_ms: RETRY_MS });
       scheduleBoards(RETRY_MS);
     } finally {
       boardsFlushing = false;
@@ -139,6 +160,8 @@ export function createStats({ bridge, getSettings, isMain = true, tracked, focus
 
   const statsSettings = () => S.normalizeStatsSettings(getSettings()?.stats);
   const setStatus = (s) => {
+    // the sampler's state, at debug when it changes (not on every tick)
+    if (s.state !== status.state) log.debug('stats', 'sampler.state', { state: s.state, from: status.state });
     status = s;
     if (!closed) onStatus(s);
   };
@@ -149,16 +172,22 @@ export function createStats({ bridge, getSettings, isMain = true, tracked, focus
     return a === null ? t : t === null ? a : Math.max(a, t);
   };
 
-  async function sampleBoard(board) {
+  async function sampleBoard(board, how = 'background') {
+    const t0 = now();
     try {
       const res = await bridge.fetchCatalog(board);
       const at = now();
       tried.delete(board);
-      recordCatalog(board, res?.data, at);
+      const sample = recordCatalog(board, res?.data, at);
       if (!closed) onCatalog(board, res, at);
+      log.debug('stats', 'stats.sampled', { board, how, sample: Boolean(sample), freshness: String(res?.freshness || ''), ms: at - t0 });
       return true;
-    } catch {
+    } catch (e) {
       tried.set(board, now());
+      // the sampler's own (it waits its interval): at debug; a manual one: said
+      const fields = { board, how, kind: errorKind(e), ms: now() - t0 };
+      if (how === 'manual') log.warn('stats', 'stats.sample.failed', fields);
+      else log.debug('stats', 'stats.sample.failed', fields);
       return false;
     }
   }
@@ -181,8 +210,9 @@ export function createStats({ bridge, getSettings, isMain = true, tracked, focus
     let busy = 0;
     try {
       busy = (await bridge.fetchBusy?.()) || 0;
-    } catch {
+    } catch (e) {
       busy = 0;
+      log.debug('stats', 'queue.busy.failed', { kind: errorKind(e) });
     }
     if (closed) return;
     if (busy > 0) return setStatus({ state: 'busy', board: due.board });
@@ -205,13 +235,17 @@ export function createStats({ bridge, getSettings, isMain = true, tracked, focus
     const due = S.manualDue(list, (b) => S.lastSampleAt(boards, b), now());
     if (!due.length) return;
     manual = { done: 0, total: due.length };
+    const t0 = now();
+    let ok = 0;
+    log.info('stats', 'stats.sample.manual', { boards: due.length, listed: list.length });
     try {
       for (const b of due) {
         if (closed) break;
         setStatus({ state: 'manual', board: b, done: manual.done, total: manual.total });
-        await sampleBoard(b);
+        if (await sampleBoard(b, 'manual')) ok += 1;
         manual.done += 1;
       }
+      log.info('stats', 'stats.sample.manual.done', { boards: due.length, ok, ms: now() - t0 });
     } finally {
       manual = null;
       if (!closed) {
@@ -236,8 +270,10 @@ export function createStats({ bridge, getSettings, isMain = true, tracked, focus
     try {
       mine = Y.normalizeMine(await bridge.statsRead('mine'));
       mineLoaded = true;
-    } catch {
+      log.debug('stats', 'stats.read', { what: 'mine', days: Object.keys(mine.days || {}).length });
+    } catch (e) {
       /* unreadable: counting waits */
+      log.warn('stats', 'stats.read.failed', { what: 'mine', kind: errorKind(e) });
     }
     if (!closed) onMine();
   }
@@ -272,14 +308,17 @@ export function createStats({ bridge, getSettings, isMain = true, tracked, focus
           const rev = await bridge.statsWrite('mine', next, stored.rev);
           mine = { ...next, rev };
           mineLoaded = true;
+          log.debug('stats', 'stats.stored', { what: 'mine', tries: i + 1, rev: Number(rev) || 0 });
+          storeWorked('mine');
           return;
         } catch (e) {
           if (!isConflict(e)) throw e;
         }
       }
       throw new Error('stats-conflict');
-    } catch {
+    } catch (e) {
       // the counts go back, with what came in meanwhile
+      storeFailed('mine', { kind: errorKind(e), retry_ms: RETRY_MS });
       delta = Y.mergeDeltas(d, delta);
       scheduleMine(RETRY_MS);
     } finally {

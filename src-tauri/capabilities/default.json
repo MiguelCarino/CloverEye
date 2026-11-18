@@ -38,6 +38,8 @@
     "allow-diagnostics-text",
     "allow-diagnostics-save",
     "allow-diagnostics-note",
+    "allow-diagnostics-log",
+    "allow-set-log-detail",
     "allow-ai-detect",
     "allow-ai-chat",
     "allow-ai-stop",

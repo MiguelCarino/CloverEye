@@ -15,6 +15,8 @@ import { ARCHIVES, ARCHIVE_OFF, archivesFor } from './archive-model.js';
 import { normalizeDisplay } from './display-model.js';
 import { normalizeStatsSettings, SAMPLE_INTERVALS } from './stats-model.js';
 import { assistantControls } from './ai-setup-view.js';
+import { log, setDetailed } from './log.js';
+import { errorKind } from './log-model.js';
 
 // Settings' sections by heading id, for the section list beside them. The
 // English names are the translation keys (the headings use the same).
@@ -402,7 +404,7 @@ function settingsContent({ settings, boards, onChange, onRunSetup, onDeleteMySta
           }),
         )
       : null,
-    diagnostics ? diagnosticsSection(diagnostics) : null,
+    diagnostics ? diagnosticsSection(diagnostics, s, onChange) : null,
     h(
       'section',
       { class: 'settings__section', 'aria-labelledby': 'set-about' },
@@ -886,8 +888,11 @@ function archiveSection(s, boardList, onChange) {
   );
 }
 
-/** Diagnostics: one text file to attach to a bug report (src-tauri/src/diag.rs). */
-function diagnosticsSection(diag) {
+/** Diagnostics: one text file to attach to a bug report (src-tauri/src/diag.rs),
+ *  and the Detailed logs switch (ui/js/log.js; the app reads it from the
+ *  settings too, so every window follows). */
+function diagnosticsSection(diag, s, onChange) {
+  const detailed = s.diagnostics?.detailed === true;
   const status = h('p', { class: 'field__hint', 'data-key': 'diag-status', 'aria-live': 'polite', hidden: true });
   const say = (text) => {
     status.textContent = text;
@@ -898,6 +903,7 @@ function diagnosticsSection(diag) {
     try {
       await job();
     } catch (e) {
+      log.warn('settings', 'diagnostics.failed', { kind: errorKind(e) });
       say(t('Couldn’t make the diagnostics: {0}', String(e?.message ?? e)));
     } finally {
       btn.disabled = false;
@@ -909,8 +915,38 @@ function diagnosticsSection(diag) {
     h('h2', { class: 'settings__heading', id: 'set-diag', text: 'Diagnostics' }),
     h('p', {
       class: 'field__hint',
-      text: 'If something goes wrong, attach a diagnostics file to your report. It lists CloverEye’s and the system’s versions, recent WebKit crashes and what the post helper did this session and the one before. It has no posts, captcha answers, cookies or passwords.',
+      text: 'If something goes wrong, attach a diagnostics file to your report. It lists CloverEye’s and the system’s versions, recent WebKit crashes and what CloverEye did this session and the one before. It has no posts, captcha answers, cookies or passwords.',
     }),
+    h(
+      'div',
+      { class: 'switch-row' },
+      h(
+        'div',
+        { class: 'switch-row__text' },
+        h('div', { class: 'switch-row__title', id: 'sw-logdetail-t', text: 'Detailed logs' }),
+        h('div', {
+          class: 'switch-row__desc',
+          id: 'sw-logdetail-d',
+          text: 'Adds every step and its timing, from every part of CloverEye and the assistant, so a problem can be traced. The file grows faster. It still has no posts, names, captchas, prompts or answers.',
+        }),
+      ),
+      h('button', {
+        type: 'button',
+        class: 'switch',
+        role: 'switch',
+        'aria-checked': String(detailed),
+        'aria-labelledby': 'sw-logdetail-t',
+        'aria-describedby': 'sw-logdetail-d',
+        'data-key': 'switch-log-detail',
+        onclick: () => {
+          const next = structuredClone(s);
+          next.diagnostics = { ...next.diagnostics, detailed: !detailed };
+          setDetailed(!detailed, { tell: true });
+          log.info('settings', 'log.detailed', { on: !detailed });
+          onChange(next, { focus: 'switch-log-detail' });
+        },
+      }),
+    ),
     h(
       'div',
       { class: 'inline' },

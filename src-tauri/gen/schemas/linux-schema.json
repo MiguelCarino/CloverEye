@@ -381,6 +381,12 @@
           "markdownDescription": "Enables the check_ffmpeg command without any pre-configured scope."
         },
         {
+          "description": "Enables the diagnostics_log command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-diagnostics-log",
+          "markdownDescription": "Enables the diagnostics_log command without any pre-configured scope."
+        },
+        {
           "description": "Enables the diagnostics_note command without any pre-configured scope.",
           "type": "string",
           "const": "allow-diagnostics-note",
@@ -549,6 +555,12 @@
           "markdownDescription": "Enables the save_media command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_log_detail command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-log-detail",
+          "markdownDescription": "Enables the set_log_detail command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_settings command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-settings",
@@ -601,6 +613,12 @@
           "type": "string",
           "const": "deny-check-ffmpeg",
           "markdownDescription": "Denies the check_ffmpeg command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the diagnostics_log command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-diagnostics-log",
+          "markdownDescription": "Denies the diagnostics_log command without any pre-configured scope."
         },
         {
           "description": "Denies the diagnostics_note command without any pre-configured scope.",
@@ -769,6 +787,12 @@
           "type": "string",
           "const": "deny-save-media",
           "markdownDescription": "Denies the save_media command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_log_detail command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-log-detail",
+          "markdownDescription": "Denies the set_log_detail command without any pre-configured scope."
         },
         {
           "description": "Denies the set_settings command without any pre-configured scope.",

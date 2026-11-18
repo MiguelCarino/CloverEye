@@ -51,6 +51,37 @@ impl Endpoint {
     pub fn is_thread(&self) -> bool {
         matches!(self, Endpoint::Thread(..))
     }
+
+    /// The endpoint's kind ("catalog", "thread"...), for log lines.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Endpoint::Boards => "boards",
+            Endpoint::Catalog(_) => "catalog",
+            Endpoint::Threads(_) => "threads",
+            Endpoint::Page(..) => "page",
+            Endpoint::Thread(..) => "thread",
+            Endpoint::Archive(_) => "archive",
+        }
+    }
+
+    /// What a log line says about this endpoint: its kind, board and thread
+    /// or page number. Never the address itself.
+    pub fn log_fields(&self) -> Vec<(&'static str, String)> {
+        let mut out = vec![("kind", self.kind().to_string())];
+        match self {
+            Endpoint::Boards => {}
+            Endpoint::Catalog(b) | Endpoint::Threads(b) | Endpoint::Archive(b) => out.push(("board", b.clone())),
+            Endpoint::Page(b, n) => {
+                out.push(("board", b.clone()));
+                out.push(("page", n.to_string()));
+            }
+            Endpoint::Thread(b, no) => {
+                out.push(("board", b.clone()));
+                out.push(("thread", no.to_string()));
+            }
+        }
+        out
+    }
 }
 
 /// Full-size file URL: `https://i.4cdn.org/<board>/<tim><ext>`.
@@ -91,6 +122,16 @@ mod tests {
         assert!(Endpoint::Page("g".into(), 0).url().is_err());
         assert!(media_url("g", 1, ".webm?x").is_err());
         assert!(media_url("g", 1, "webm").is_err());
+    }
+
+    #[test]
+    fn log_fields_name_the_kind_board_and_number_only() {
+        assert_eq!(Endpoint::Boards.log_fields(), vec![("kind", "boards".to_string())]);
+        assert_eq!(
+            Endpoint::Thread("g".into(), 123).log_fields(),
+            vec![("kind", "thread".to_string()), ("board", "g".to_string()), ("thread", "123".to_string())]
+        );
+        assert_eq!(Endpoint::Page("v".into(), 2).log_fields()[2], ("page", "2".to_string()));
     }
 
     #[test]

@@ -16,8 +16,10 @@ use clovereye_ffcheck::FfmpegCheck;
 use serde_json::Value;
 use tauri::{Emitter, EventTarget, Manager};
 
-mod ai;
+// first: its log macros (log_info! ...) are used by every module below
+#[macro_use]
 mod diag;
+mod ai;
 mod extra;
 mod library;
 mod links;
@@ -58,6 +60,58 @@ fn fetch_busy(state: tauri::State<'_, AppState>) -> usize {
     state.busy.load(Ordering::SeqCst)
 }
 
+/// Whether stored settings turn detailed logs on (Settings › Diagnostics).
+fn detail_in(settings: &Value) -> bool {
+    settings.pointer("/diagnostics/detailed") == Some(&Value::Bool(true))
+}
+
+/// The settings last read or written, to name the keys a save changed.
+static LAST_SETTINGS: std::sync::Mutex<Option<Value>> = std::sync::Mutex::new(None);
+
+/// Which settings a save changed, by name ("display.workMode", "tags"):
+/// never their values. Objects keyed by plain names go one level down;
+/// lists and objects keyed by data (lastRead's "g/123") stay whole.
+fn changed_keys(old: Option<&Value>, new: &Value) -> Vec<String> {
+    fn plain(o: &serde_json::Map<String, Value>) -> bool {
+        o.keys().all(|k| !k.is_empty() && k.len() <= 32 && k.bytes().all(|c| c.is_ascii_alphabetic() || c == b'_'))
+    }
+    let empty = serde_json::Map::new();
+    let old = old.and_then(Value::as_object).unwrap_or(&empty);
+    let Some(new) = new.as_object() else { return Vec::new() };
+    let mut keys: Vec<&String> = old.keys().chain(new.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    let mut out = Vec::new();
+    for k in keys {
+        let (a, b) = (old.get(k), new.get(k));
+        if a == b {
+            continue;
+        }
+        match (a.and_then(Value::as_object), b.and_then(Value::as_object)) {
+            (Some(x), Some(y)) if plain(x) && plain(y) => {
+                let mut subs: Vec<&String> = x.keys().chain(y.keys()).collect();
+                subs.sort();
+                subs.dedup();
+                out.extend(subs.into_iter().filter(|s| x.get(*s) != y.get(*s)).map(|s| format!("{k}.{s}")));
+            }
+            _ => out.push(k.clone()),
+        }
+    }
+    out.truncate(40);
+    out
+}
+
+/// Reads settings.json at start for the Detailed logs switch, before any
+/// window asks for it.
+fn detail_from_disk(app: &tauri::AppHandle) {
+    let Ok(path) = settings_path(app) else { return };
+    if let Ok(Some(bytes)) = offline::read_capped(&path, MAX_SETTINGS_BYTES * 4) {
+        if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
+            diag::set_detailed(detail_in(&v));
+        }
+    }
+}
+
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -69,14 +123,35 @@ fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// The stored settings object, or `null` on first launch. A corrupt file
 /// also reads as `null`, so the UI starts from defaults instead of failing.
 #[tauri::command]
-async fn get_settings(app: tauri::AppHandle) -> Result<Option<Value>, String> {
+async fn get_settings(app: tauri::AppHandle, webview: tauri::Webview) -> Result<Option<Value>, String> {
     let path = settings_path(&app)?;
+    let t0 = std::time::Instant::now();
+    let win = webview.label().to_string();
     // read through a cap: a file larger than any the app writes reads as corrupt
     match offline::read_capped(&path, MAX_SETTINGS_BYTES * 4) {
-        Ok(Some(bytes)) => Ok(serde_json::from_slice::<Value>(&bytes).ok().filter(Value::is_object)),
-        Ok(None) => Ok(None),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("reading {}: {e}", path.display())),
+        Ok(Some(bytes)) => {
+            let v = serde_json::from_slice::<Value>(&bytes).ok().filter(Value::is_object);
+            match &v {
+                Some(v) => {
+                    log_info!("settings", "settings read", bytes = bytes.len(), keys = v.as_object().map_or(0, |o| o.len()), win = win, ms = diag::ms(t0));
+                    *LAST_SETTINGS.lock().unwrap_or_else(|e| e.into_inner()) = Some(v.clone());
+                }
+                None => log_warn!("settings", "settings.json is not a settings object; starting from defaults", bytes = bytes.len(), win = win),
+            }
+            Ok(v)
+        }
+        Ok(None) => {
+            log_warn!("settings", "settings.json is larger than CloverEye reads; starting from defaults", win = win);
+            Ok(None)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            log_info!("settings", "no settings file yet (first start)", win = win);
+            Ok(None)
+        }
+        Err(e) => {
+            log_error!("settings", "settings.json could not be read", error = e, win = win);
+            Err(format!("reading {}: {e}", path.display()))
+        }
     }
 }
 
@@ -89,8 +164,10 @@ async fn set_settings(app: tauri::AppHandle, webview: tauri::Webview, settings: 
     if !settings.is_object() {
         return Err("settings must be a JSON object".into());
     }
+    let t0 = std::time::Instant::now();
     let bytes = serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?;
     if bytes.len() > MAX_SETTINGS_BYTES {
+        log_warn!("settings", "settings refused: too large", bytes = bytes.len(), max = MAX_SETTINGS_BYTES);
         return Err("settings are too large".into());
     }
     let path = settings_path(&app)?;
@@ -100,7 +177,27 @@ async fn set_settings(app: tauri::AppHandle, webview: tauri::Webview, settings: 
     // No .await below: a std Mutex held across the write and the emit.
     static SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = SAVE.lock().unwrap_or_else(|e| e.into_inner());
-    offline::write_atomic(&path, &bytes)?;
+    let write = || -> Result<(), String> {
+        offline::write_atomic(&path, &bytes)?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        log_error!("settings", "settings could not be saved", error = diag::redact(&e, &[]), bytes = bytes.len());
+        return Err(e);
+    }
+    {
+        let mut last = LAST_SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
+        if diag::detailed() {
+            let keys = changed_keys(last.as_ref(), &settings);
+            log_debug!("settings", "settings saved", bytes = bytes.len(), changed = if keys.is_empty() { "none".to_string() } else { keys.join(",") }, win = webview.label(), ms = diag::ms(t0));
+        }
+        *last = Some(settings.clone());
+    }
+    // Settings › Diagnostics › Detailed logs, from whichever window
+    let on = detail_in(&settings);
+    if diag::set_detailed(on) {
+        log_info!("settings", if on { "detailed logs on" } else { "detailed logs off" }, win = webview.label());
+    }
     // Every window keeps the same settings: the others reload from this.
     // The window that saved is skipped when it listens on itself (a
     // listener on every target, `event.listen`, still gets it).
@@ -136,8 +233,13 @@ async fn fetch_boards(state: tauri::State<'_, AppState>) -> Result<Value, String
     let busy = Busy::new(&state.busy);
     tauri::async_runtime::spawn_blocking(move || {
         let _busy = busy;
+        let t0 = std::time::Instant::now();
         let fetched = client.get(&Endpoint::Boards).map_err(|e| e.to_string())?;
-        let _typed: BoardsResponse = fetched.json().map_err(|e| e.to_string())?;
+        let typed: BoardsResponse = fetched.json().map_err(|e| {
+            log_warn!("net", "board list did not read", error = e);
+            e.to_string()
+        })?;
+        log_debug!("net", "board list ready", boards = typed.boards.len(), freshness = freshness(fetched.freshness), bytes = fetched.body.len(), ms = diag::ms(t0));
         serde_json::from_slice::<Value>(&fetched.body).map_err(|e| e.to_string())
     })
     .await
@@ -178,9 +280,14 @@ async fn fetch_catalog(state: tauri::State<'_, AppState>, board: String) -> Resu
     let busy = Busy::new(&state.busy);
     tauri::async_runtime::spawn_blocking(move || {
         let _busy = busy;
-        let fetched = client.get(&Endpoint::Catalog(board)).map_err(load_error)?;
-        let _typed: Catalog = fetched.json().map_err(load_error)?;
+        let t0 = std::time::Instant::now();
+        let fetched = client.get(&Endpoint::Catalog(board.clone())).map_err(load_error)?;
+        let typed: Catalog = fetched.json().map_err(|e| {
+            log_warn!("catalog", "catalog did not read", board = board, error = e);
+            load_error(e)
+        })?;
         let data = serde_json::from_slice::<Value>(&fetched.body).map_err(|e| e.to_string())?;
+        log_debug!("catalog", "catalog ready", board = board, pages = typed.len(), threads = typed.iter().map(|p| p.threads.len()).sum::<usize>(), freshness = freshness(fetched.freshness), bytes = fetched.body.len(), ms = diag::ms(t0));
         Ok(Loaded { freshness: freshness(fetched.freshness), data })
     })
     .await
@@ -196,9 +303,19 @@ async fn fetch_thread(state: tauri::State<'_, AppState>, board: String, no: u64)
     let busy = Busy::new(&state.busy);
     tauri::async_runtime::spawn_blocking(move || {
         let _busy = busy;
-        let fetched = client.get(&Endpoint::Thread(board, no)).map_err(load_error)?;
-        let _typed: Thread = fetched.json().map_err(load_error)?;
+        let t0 = std::time::Instant::now();
+        let fetched = client.get(&Endpoint::Thread(board.clone(), no)).map_err(|e| {
+            if e == FetchError::NotFound {
+                log_debug!("thread", "thread is gone (404)", board = board, thread = no);
+            }
+            load_error(e)
+        })?;
+        let typed: Thread = fetched.json().map_err(|e| {
+            log_warn!("thread", "thread did not read", board = board, thread = no, error = e);
+            load_error(e)
+        })?;
         let data = serde_json::from_slice::<Value>(&fetched.body).map_err(|e| e.to_string())?;
+        log_debug!("thread", "thread ready", board = board, thread = no, posts = typed.posts.len(), freshness = freshness(fetched.freshness), bytes = fetched.body.len(), ms = diag::ms(t0));
         Ok(Loaded { freshness: freshness(fetched.freshness), data })
     })
     .await
@@ -239,7 +356,7 @@ pub(crate) fn post_window_allows(url: &tauri::Url) -> bool {
         .any(|d| host == *d || host.ends_with(&format!(".{d}")))
         || host == "challenges.cloudflare.com";
     if !ok {
-        diag::note(&format!("post helper: kept the site window from opening {host}"));
+        log_info!("post", "kept the site window from opening another site", host = host);
     }
     ok
 }
@@ -249,6 +366,7 @@ pub(crate) fn post_window_allows(url: &tauri::Url) -> bool {
 #[tauri::command]
 async fn open_post_window(app: tauri::AppHandle, board: String, thread: Option<u64>, quote: Option<u64>) -> Result<(), String> {
     let url: tauri::Url = post_url(&board, thread, quote)?.parse().map_err(|e| format!("{e}"))?;
+    log_info!("post", "site post window", board = board, thread = thread.unwrap_or(0), quote = quote.is_some(), reused = app.get_webview_window("post").is_some());
     if let Some(win) = app.get_webview_window("post") {
         win.navigate(url).map_err(|e| e.to_string())?;
         let _ = win.unminimize();
@@ -277,6 +395,16 @@ mod tests {
         assert!(f(&EventTarget::WebviewWindow { label: "w-2".into() }));
         assert!(f(&EventTarget::Webview { label: "w-2".into() }));
         assert!(f(&EventTarget::App));
+    }
+
+    #[test]
+    fn a_save_names_the_keys_it_changed_never_their_values() {
+        let old = serde_json::json!({ "theme": "dark", "display": { "workMode": false, "times": true }, "lastRead": { "g/1": 5 }, "tags": [{ "name": "secret" }], "diagnostics": { "detailed": false } });
+        let new = serde_json::json!({ "theme": "dark", "display": { "workMode": true, "times": true }, "lastRead": { "g/1": 9 }, "tags": [{ "name": "other" }], "diagnostics": { "detailed": true }, "ai": { "enabled": true } });
+        assert_eq!(changed_keys(Some(&old), &new), vec!["ai", "diagnostics.detailed", "display.workMode", "lastRead", "tags"]);
+        assert!(changed_keys(Some(&new), &new).is_empty());
+        assert_eq!(changed_keys(None, &serde_json::json!({ "theme": "x" })), vec!["theme"]);
+        assert!(detail_in(&new) && !detail_in(&old) && !detail_in(&serde_json::json!({ "diagnostics": { "detailed": "yes" } })));
     }
 
     #[test]
@@ -430,6 +558,8 @@ fn xml_escape(s: &str) -> String {
 }
 
 fn main() {
+    diag::init_early();
+    diag::before_report(|app| app.state::<AppState>().client.flush_summary());
     #[cfg(target_os = "linux")]
     {
         appimage_fonts();
@@ -456,7 +586,8 @@ fn main() {
         // arrive, from a terminal; it never posts.
         .setup(|app| {
             diag::init(app.handle());
-            diag::note(&format!("started CloverEye {}", app.package_info().version));
+            detail_from_disk(app.handle());
+            diag::startup(app.handle());
             if let Some(w) = app.get_webview_window("main") {
                 extra::side_buttons(&w);
             }
@@ -471,7 +602,7 @@ fn main() {
                         Ok(v) if std::env::var_os("CLOVEREYE_TRY_CAPTCHA_FILE").is_some() => {
                             let path = std::env::var_os("CLOVEREYE_TRY_CAPTCHA_FILE").unwrap_or_default();
                             let _ = std::fs::write(&path, v.to_string());
-                            diag::note(&format!("post helper: try-captcha saved to {}", std::path::Path::new(&path).display()));
+                            diag::note("post helper: try-captcha saved to CLOVEREYE_TRY_CAPTCHA_FILE");
                         }
                         Ok(v) => diag::note(&format!("post helper: try-captcha answered: {}", v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default())),
                         Err(e) => diag::note(&format!("post helper: try-captcha failed: {e}")),
@@ -491,6 +622,7 @@ fn main() {
                 let label = window.label().to_string();
                 let web = window.app_handle().get_webview_window(&label);
                 if let Some(web) = web.filter(|_| (label == "main" || label.starts_with("w-")) && closing::first(&label)) {
+                    log_debug!("app", "window closing (animation)", win = label);
                     api.prevent_close();
                     let ok = web.eval("window.__ceClosing ? window.__ceClosing() : window.__TAURI__?.window?.getCurrentWindow?.().close()").is_ok();
                     let w = web.clone();
@@ -506,11 +638,14 @@ fn main() {
                 if window.label() == extra::AGENT_LABEL {
                     extra::agent_closed(app);
                 }
-                let content = app
-                    .webview_windows()
-                    .keys()
-                    .any(|l| l != window.label() && (l == "main" || l.starts_with("w-")));
-                if !content && (window.label() == "main" || window.label().starts_with("w-")) {
+                let left = app.webview_windows().keys().filter(|l| *l != window.label() && (*l == "main" || l.starts_with("w-"))).count();
+                let own = window.label() == "main" || window.label().starts_with("w-");
+                if own || window.label() == "post" {
+                    log_info!("app", "window closed", win = window.label(), windows_left = left);
+                }
+                if left == 0 && own {
+                    app.state::<AppState>().client.flush_summary();
+                    log_info!("app", "last window closed; quitting");
                     app.exit(0);
                 }
             }
@@ -548,6 +683,8 @@ fn main() {
             diag::diagnostics_text,
             diag::diagnostics_save,
             diag::diagnostics_note,
+            diag::diagnostics_log,
+            diag::set_log_detail,
             ai::ai_detect,
             ai::ai_chat,
             ai::ai_stop,

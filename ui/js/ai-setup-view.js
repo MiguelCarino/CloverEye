@@ -7,6 +7,8 @@
 import { h, icon, toast, copyText } from './dom.js';
 import * as A from './ai-model.js';
 import { t } from './i18n.js';
+import { log } from './log.js';
+import { errorKind } from './log-model.js';
 
 const PULL = 'ollama pull llama3.1:8b';
 
@@ -19,11 +21,14 @@ export const idleDetect = () => ({ status: 'idle', servers: [], specs: null, err
 export async function runMemory(bridge, detect, ai, after) {
   if (!bridge?.aiLoaded || !ai?.kind || !ai.port) return;
   detect.memory = { ...detect.memory, status: 'checking' };
+  const end = log.time('ai', 'ai.memory');
   try {
     const r = await bridge.aiLoaded(ai.kind, ai.port);
     detect.memory = { status: 'done', supported: Boolean(r?.supported), models: Array.isArray(r?.models) ? r.models : [] };
-  } catch {
+    end({ server: String(ai.kind), supported: detect.memory.supported, loaded: detect.memory.models.length });
+  } catch (e) {
     detect.memory = { status: 'error', supported: false, models: [] };
+    log.warn('ai', 'ai.memory.failed', { server: String(ai.kind), kind: errorKind(e) });
   }
   after();
 }
@@ -36,13 +41,16 @@ const sameModel = (a, b) => (a.includes(':') ? a : `${a}:latest`) === (b.include
 export async function unloadModel(bridge, ai) {
   const label = A.AI_KIND_LABELS[ai?.kind] || 'The model server';
   if (!bridge?.aiUnload || !ai?.kind || !ai.port || !ai.model) return { result: 'none', text: '' };
+  const end = log.time('ai', 'ai.unloaded', 'info');
   try {
     const r = await bridge.aiUnload(ai.kind, ai.port, ai.model);
+    end({ server: String(ai.kind), model: String(ai.model), result: !r?.supported ? 'unsupported' : r.unloaded ? 'unloaded' : 'absent' });
     if (!r?.supported) return { result: 'unsupported', text: t('{0} keeps its models itself: unload it there.', label) };
     return r.unloaded
       ? { result: 'unloaded', text: t('Unloaded {0}: its memory is free again.', r.name || ai.model) }
       : { result: 'absent', text: t('{0} was not in memory.', ai.model) };
   } catch (e) {
+    end({ server: String(ai.kind), model: String(ai.model), result: 'error', kind: errorKind(e) }, 'warn');
     return { result: 'error', text: A.aiErrorText(e?.message ?? e, ai) };
   }
 }
@@ -79,15 +87,28 @@ export async function runDetect(bridge, detect, port, after) {
   if (!bridge?.aiDetect || detect.status === 'checking') return;
   detect.status = 'checking';
   after();
+  const end = log.time('ai', 'ai.detected', 'info');
   try {
     const r = await bridge.aiDetect(port || 0);
     detect.servers = Array.isArray(r?.servers) ? r.servers : [];
     detect.specs = r?.specs || null;
     detect.status = 'done';
     detect.error = '';
+    // what was found: the servers' kinds and ports, how many models, the
+    // computer's memory (the app logs the details itself)
+    end({
+      port: Number(port) || 0,
+      servers: detect.servers.length,
+      kinds: detect.servers.map((x) => `${x.kind}:${x.port}`).join(','),
+      models: detect.servers.reduce((n, x) => n + (Array.isArray(x.models) ? x.models.length : 0), 0),
+      ramGb: Number(detect.specs?.ramGb) || 0,
+      vramGb: Number(detect.specs?.vramGb) || 0,
+      unified: Boolean(detect.specs?.unified),
+    });
   } catch (e) {
     detect.status = 'error';
     detect.error = String(e?.message || e);
+    end({ port: Number(port) || 0, kind: errorKind(e) }, 'warn');
   }
   after();
 }

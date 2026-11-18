@@ -6,6 +6,9 @@
 // keyboard; the clover on Update / Refresh spins for a manual update (a
 // click, F5) and never for polling. Then the reply form with that button
 // at 360, 390 and 1280 px in both themes (no page scroll sideways). Then
+// the pastas panel's grid (columns, the arrow keys by column, P, Enter, the
+// tag chips), New pasta, Save as pasta from the form and a post's menu, the
+// caps, and the panel at 360, 390 and 1280 px in both themes. Then
 // the thread in columns (columns.js): the toggle and L, the wheel and keys
 // sideways, U, new replies in place, back to the list's place, Settings'
 // default, a saved copy, and 360 / 390 / 1280 px in both themes.
@@ -358,6 +361,257 @@ for (const theme of ['dark', 'light']) {
   await page.keyboard.press('Escape');
   check('no console errors (drafts)', errors.length === 0, errors.join(' | '));
   await ctx.close();
+}
+
+// ------------------------------- the pastas grid, New pasta, Save as pasta
+// The panel's cards in a grid (more than one column at 1280 px), the arrow
+// keys across it by its column count, P pins, Enter inserts; New pasta
+// saves under Your own; the reply form's Save as pasta and a post's menu
+// Save as pasta keep the text as an own pasta (pasta-view.js).
+const focusedCard = (page) =>
+  page.evaluate(() => {
+    const a = document.activeElement;
+    const c = a?.closest?.('.pastas__card');
+    return c ? { row: Number(c.querySelector('.pastas__pick').dataset.row), id: c.dataset.pastaId, pick: a.classList.contains('pastas__pick') } : null;
+  });
+const gridCols = (page) => page.evaluate(() => getComputedStyle(document.querySelector('.pastas .pastas__grid')).gridTemplateColumns.trim().split(/\s+/).length);
+const storedOwn = (page) => page.evaluate(() => JSON.parse(localStorage.getItem('clovereye.settings') || '{}').pastas?.own || []);
+const sectionIds = (page, key) =>
+  page.evaluate((k) => {
+    const ul = document.querySelector(`.pastas .pastas__grid[aria-labelledby$="-${k}"]`);
+    return ul ? [...ul.querySelectorAll('[data-pasta-id]')].map((li) => li.dataset.pastaId) : [];
+  }, key);
+{
+  const { ctx, page, outside, errors } = await open(panesHash([{ kind: 'thread', board: 'g', no: 500010 }]));
+  await page.waitForSelector('[data-pane="0"] .thread .post');
+  await settle(page, 300);
+  await page.evaluate(() => (window.__rb.full = 0));
+  await page.click('[data-key="thread-reply"]', { button: 'right' });
+  await page.waitForSelector('.pastas .pastas__card');
+  await settle(page);
+  const panel = await page.evaluate(() => document.querySelector('.pastas').getBoundingClientRect().width);
+  check('grid: the panel is wide at 1280 px', panel >= 600 && panel <= 730, panel);
+  const cols = await gridCols(page);
+  check('grid: more than one column at 1280 px', cols > 1, cols);
+  check('grid: sections have a heading with a count', /^Pinned\s*1$/.test(((await page.textContent('.pastas .pastas__section')) || '').replace(/\s+/g, ' ').trim()), await page.textContent('.pastas .pastas__section'));
+  check('grid: the tag chips are there (All checked)', (await page.locator('.pastas [role="radio"]').count()) === 7 && (await page.getAttribute('[data-key="pastas-tag-all"]', 'aria-checked')) === 'true');
+  check('grid: a greentext preview line is green', (await page.locator('.pastas .pastas__preview .pastas__green').count()) > 0);
+  await page.keyboard.press('ArrowDown');
+  const first = await focusedCard(page);
+  check('grid: ↓ from the search goes into the grid', first?.row === 0 && first.pick, JSON.stringify(first));
+  await page.keyboard.press('ArrowDown');
+  const b0 = await focusedCard(page);
+  check('grid: ↓ from Pinned goes to Built in at the same column', b0?.row === 1, JSON.stringify(b0));
+  await page.keyboard.press('ArrowDown');
+  const b1 = await focusedCard(page);
+  check('grid: ↓ moves by the column count', b1?.row === 1 + cols, `${JSON.stringify(b1)} cols ${cols}`);
+  await page.keyboard.press('ArrowRight');
+  const b2 = await focusedCard(page);
+  check('grid: → moves one card', b2?.row === 2 + cols, JSON.stringify(b2));
+  await page.keyboard.press('ArrowUp');
+  const b3 = await focusedCard(page);
+  check('grid: ↑ moves back a row', b3?.row === 2, JSON.stringify(b3));
+  check('grid: one tab stop (the focused card)', (await page.locator('.pastas .pastas__pick[tabindex="0"]').count()) === 1);
+  await page.keyboard.press('End');
+  const end = await focusedCard(page);
+  await page.keyboard.press('Home');
+  check('grid: End and Home', end?.row > 10 && (await focusedCard(page))?.row === 0, JSON.stringify(end));
+  // P pins the focused card: it moves to Pinned and keeps the focus
+  await page.keyboard.press('ArrowDown');
+  const target = await focusedCard(page);
+  await page.keyboard.press('p');
+  await settle(page);
+  const pinned = await sectionIds(page, 'pinned');
+  const after = await focusedCard(page);
+  check('grid: P pins the focused card', pinned.includes(target.id), `${target.id} in ${pinned.join(',')}`);
+  check('grid: its pin button says so', (await page.getAttribute(`.pastas [data-pasta-id="${target.id}"] .pastas__pin`, 'aria-pressed')) === 'true');
+  check('grid: the focus stays on that card', after?.id === target.id && after.pick, JSON.stringify(after));
+  await page.keyboard.press('P');
+  await settle(page);
+  check('grid: P again unpins it', !(await sectionIds(page, 'pinned')).includes(target.id));
+  // typing goes back to the search; the Tech chip filters
+  await page.click('[data-key="pastas-tag-tech"]');
+  await settle(page);
+  check('grid: the Tech chip is checked', (await page.getAttribute('[data-key="pastas-tag-tech"]', 'aria-checked')) === 'true');
+  const tech = await page.$$eval('.pastas .pastas__card', (cards) => cards.map((c) => [...c.querySelectorAll('.pastas__tag')].map((t) => t.textContent)));
+  check('grid: the Tech chip shows only tech posts', tech.length > 0 && tech.every((t) => t.includes('Tech')), JSON.stringify(tech.slice(0, 3)));
+  await page.keyboard.press('ArrowRight');
+  check('grid: → on the chips moves the check along', (await page.getAttribute('[data-key="pastas-tag-own"]', 'aria-checked')) === 'true');
+  check('grid: Yours with none of your own says how to write one', /New pasta/.test((await page.textContent('.pastas__empty')) || ''));
+  await page.click('[data-key="pastas-tag-all"]');
+  await settle(page);
+  // Enter on a card inserts its text into the reply form
+  await page.locator('[data-key="pastas-search"]').fill('gentoo');
+  await settle(page, 200);
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await settle(page, 300);
+  check('grid: Enter on a card closes the panel', !(await pastasOpen(page)));
+  check('grid: and puts the post into the reply form', (await comValue(page)) === 'Install Gentoo.', JSON.stringify(await comValue(page)));
+  // a click on a card's text inserts too
+  await page.click('[data-key="thread-reply"]', { button: 'right' });
+  await page.waitForSelector('.pastas .pastas__card');
+  await page.locator('.pastas [data-pasta-id="checked"] .pastas__preview').click();
+  await settle(page, 300);
+  check('grid: a click on a card picks it', !(await pastasOpen(page)) && /Checked\.$/.test((await comValue(page)) || ''), JSON.stringify(await comValue(page)));
+  // the form's first open saves its post password (a full redraw, as R
+  // does without any pasta); from here on, nothing pasta-related may
+  await settle(page, 300);
+  await page.evaluate(() => (window.__rb.full = 0));
+
+  // New pasta in the header: saved, shown under Your own, stored
+  await page.click('[data-key="thread-reply"]', { button: 'right' });
+  await page.waitForSelector('.pastas .pastas__card');
+  check('new: the header has New pasta', ((await page.textContent('[data-key="pastas-new"]')) || '').trim() === 'New pasta');
+  await page.click('[data-key="pastas-new"]');
+  await page.fill('[data-key="pastas-own-title"]', 'My grid pasta');
+  await page.fill('[data-key="pastas-own-text"]', '>be me\n>write a pasta');
+  check('new: the counter counts', /^21 \/ 2000$/.test(((await page.textContent('.pastas__chars')) || '').trim()), await page.textContent('.pastas__chars'));
+  await page.click('[data-key="pastas-own-save"]');
+  await settle(page);
+  const mine = await page.evaluate(() => [...document.querySelectorAll('.pastas .pastas__card--own')].map((c) => c.querySelector('.pastas__title').textContent));
+  check('new: it shows under Your own', mine.includes('My grid pasta') && (await sectionIds(page, 'own')).length === 1, mine.join(','));
+  check('new: its card has Edit and Delete', (await page.locator('.pastas .pastas__card--own .pastas__edit-btn').count()) === 1 && (await page.locator('.pastas .pastas__card--own .pastas__delete').count()) === 1);
+  check('new: the focus is on its card', (await focusedCard(page))?.id?.startsWith('own-'));
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(1200); // the grouped save
+  check('new: it is saved with the settings', (await storedOwn(page)).some((p) => p.title === 'My grid pasta' && p.text === '>be me\n>write a pasta'));
+
+  // the reply form's Save as pasta: off while the comment is empty
+  await page.locator('[data-key="compose-com"]').fill('');
+  check('form: Save as pasta is off with an empty comment', await page.isDisabled('[data-key="compose-save-pasta"]'));
+  await page.locator('[data-key="compose-com"]').fill('  Saved from the form  \n>with greentext');
+  check('form: Save as pasta is on with text', !(await page.isDisabled('[data-key="compose-save-pasta"]')));
+  await page.click('[data-key="compose-save-pasta"]');
+  await page.waitForSelector('dialog.pasta-save');
+  check('form: the title prompt has the first line, trimmed', (await page.inputValue('[data-key="pasta-save-title"]')) === 'Saved from the form');
+  check('form: the title has the focus', (await active(page)) === 'pasta-save-title');
+  await page.keyboard.press('Enter');
+  await settle(page);
+  check('form: the prompt closes', (await page.locator('dialog.pasta-save').count()) === 0);
+  check('form: a toast says it was saved', (await toastText(page)) === 'Saved to your pastas', await toastText(page));
+  check('form: the focus is back on Save as pasta', (await active(page)) === 'compose-save-pasta');
+  check('form: the comment is still there', (await comValue(page)) === '  Saved from the form  \n>with greentext');
+  await page.waitForTimeout(1200);
+  check('form: the pasta is saved', (await storedOwn(page)).some((p) => p.title === 'Saved from the form' && p.text === '  Saved from the form\n>with greentext'), JSON.stringify((await storedOwn(page)).map((p) => p.text)));
+  // Escape in the prompt saves nothing
+  await page.click('[data-key="compose-save-pasta"]');
+  await page.waitForSelector('dialog.pasta-save');
+  await page.keyboard.press('Escape');
+  await settle(page);
+  check('form: Escape in the prompt saves nothing', (await page.locator('dialog.pasta-save').count()) === 0 && (await storedOwn(page)).length === 2 && (await page.locator('.composer').count()) === 1);
+
+  // a post's menu: Save as pasta with that post's plain text
+  const no = await page.evaluate(() => {
+    for (const p of document.querySelectorAll('[data-pane="0"] .thread .post')) {
+      const body = p.querySelector('.post__com');
+      if (body && body.textContent.trim().length > 3 && p.querySelector('.post__menu')) return p.querySelector('.post__menu').dataset.key;
+    }
+    return '';
+  });
+  check('menu: a post with text and a menu', Boolean(no), no);
+  await page.click(`[data-key="${no}"]`);
+  await page.waitForSelector('.menu [role="menuitem"]');
+  const items = await page.$$eval('.menu [role="menuitem"]', (b) => b.map((x) => x.textContent));
+  check('menu: it has Save as pasta', items.includes('Save as pasta'), items.join(' | '));
+  await page.locator('.menu [role="menuitem"]', { hasText: 'Save as pasta' }).click();
+  await page.waitForSelector('dialog.pasta-save');
+  const title = await page.inputValue('[data-key="pasta-save-title"]');
+  check('menu: the prompt has a title from its first line', title.trim().length > 0 && !/</.test(title), title);
+  await page.fill('[data-key="pasta-save-title"]', 'From a post');
+  await page.click('[data-key="pasta-save-ok"]');
+  await settle(page);
+  check('menu: a toast says it was saved', (await toastText(page)) === 'Saved to your pastas');
+  check('menu: the focus is back on the post’s menu button', (await active(page)) === no, await active(page));
+  await page.waitForTimeout(1200);
+  const fromPost = (await storedOwn(page)).find((p) => p.title === 'From a post');
+  check('menu: the post’s text is saved, without HTML', Boolean(fromPost) && fromPost.text.length > 0 && !/<[a-z]/i.test(fromPost.text) && !/&gt;|&amp;/.test(fromPost.text), JSON.stringify(fromPost));
+  // it is in the panel under Your own
+  await page.click('[data-key="thread-reply"]', { button: 'right' });
+  await page.waitForSelector('.pastas .pastas__card');
+  check('menu: the panel shows all three of your own', (await sectionIds(page, 'own')).length === 3);
+  await page.keyboard.press('Escape');
+  check('pastas: New pasta and Save as pasta rebuild no window', (await page.evaluate(() => window.__rb.full)) === 0, await page.evaluate(() => window.__rb.full));
+  check('no console errors (pastas grid)', errors.length === 0, errors.join(' | '));
+  check('no outside requests (pastas grid)', outside.length === 0, outside.join(' '));
+  await ctx.close();
+}
+
+// own pastas are capped: a clear message when full
+{
+  const own = Array.from({ length: 200 }, (_, i) => ({ id: `own-cap-${String(i).padStart(4, '0')}`, title: `Cap ${i}`, text: `cap ${i}`, at: i }));
+  const { ctx, page, errors } = await open(panesHash([{ kind: 'thread', board: 'g', no: 500010 }]), { settings: { ...SETTINGS, pastas: { pinned: ['bump'], own } } });
+  await page.waitForSelector('[data-pane="0"] .thread .post');
+  await settle(page, 300);
+  await focusPane(page);
+  await page.keyboard.press('r');
+  await page.waitForSelector('.composer');
+  await page.locator('[data-key="compose-com"]').fill('one more');
+  await page.click('[data-key="compose-save-pasta"]');
+  await settle(page);
+  check('full: no prompt when there is no room', (await page.locator('dialog.pasta-save').count()) === 0);
+  check('full: a toast says to delete one first', /delete one first/.test(await toastText(page)), await toastText(page));
+  await page.click('[data-key="thread-reply"]', { button: 'right' });
+  await page.waitForSelector('.pastas .pastas__card');
+  check('full: the panel draws at most 200 cards and says so', (await page.locator('.pastas .pastas__card').count()) === 200 && /Showing 200 of/.test((await page.textContent('.pastas__count')) || ''));
+  await page.click('[data-key="pastas-new"]');
+  await page.fill('[data-key="pastas-own-text"]', 'no room');
+  await page.click('[data-key="pastas-own-save"]');
+  check('full: New pasta says there is no room', /delete one first/.test((await page.textContent('.pastas__problem')) || ''));
+  check('no console errors (pastas full)', errors.length === 0, errors.join(' | '));
+  await ctx.close();
+}
+
+// the panel at 360, 390 and 1280 px in both themes
+for (const theme of ['dark', 'light']) {
+  for (const width of [360, 390, 1280]) {
+    const { ctx, page, outside, errors } = await open(panesHash([{ kind: 'thread', board: 'g', no: 500010 }]), {
+      viewport: { width, height: width < 800 ? 780 : 800 },
+      settings: { ...SETTINGS, theme, pastas: { pinned: ['bump', 'arch-btw'], own: [{ id: 'own-shot-0001', title: 'My own pasta', text: '>be me\n>save a pasta\n>it shows up here', at: 1 }] } },
+    });
+    await page.waitForSelector('[data-pane="0"] .thread .post');
+    await settle(page, 300);
+    await page.locator('[data-pane="0"] .thread .post').first().click({ position: { x: 4, y: 4 } });
+    await page.keyboard.press('r');
+    await page.waitForSelector('.composer [data-key="compose-pastas"]');
+    await settle(page, 300);
+    await page.click('[data-key="compose-pastas"]');
+    await page.waitForSelector('.pastas .pastas__card');
+    await settle(page, 300);
+    const tag = `pastas ${width} ${theme}`;
+    const cols = await gridCols(page);
+    if (width < 480) check(`${tag}: one or two columns`, cols === 1 || cols === 2, cols);
+    else check(`${tag}: more than one column`, cols > 1, cols);
+    const fit = await page.evaluate(() => {
+      const r = document.querySelector('.pastas').getBoundingClientRect();
+      const W = document.documentElement.clientWidth;
+      const cards = [...document.querySelectorAll('.pastas .pastas__card')].every((c) => {
+        const b = c.getBoundingClientRect();
+        return b.left >= r.left - 0.5 && b.right <= r.right + 0.5;
+      });
+      return { inside: r.left >= 0 && r.right <= W + 0.5 && r.top >= 0 && r.bottom <= innerHeight + 0.5, sheet: Math.round(r.width) === W, cards };
+    });
+    check(`${tag}: the panel fits the window`, fit.inside);
+    if (width < 480) check(`${tag}: a full-width sheet`, fit.sheet);
+    check(`${tag}: the cards stay inside the panel`, fit.cards);
+    check(`${tag}: no page scroll sideways`, !(await hScroll(page)));
+    if (OUT) await page.screenshot({ path: `${OUT}/pastas-${width}-${theme}.png` });
+    await page.keyboard.press('Escape');
+    await page.locator('[data-key="compose-com"]').fill('>keep this one\nfor later');
+    await page.click('[data-key="compose-save-pasta"]');
+    await page.waitForSelector('dialog.pasta-save');
+    await settle(page, 400);
+    const dlg = await page.evaluate(() => {
+      const r = document.querySelector('dialog.pasta-save').getBoundingClientRect();
+      return r.left >= 0 && r.right <= document.documentElement.clientWidth + 0.5;
+    });
+    check(`${tag}: the Save as pasta prompt fits`, dlg);
+    if (OUT && width !== 1280) await page.screenshot({ path: `${OUT}/pastas-save-${width}-${theme}.png` });
+    await page.keyboard.press('Escape');
+    check(`${tag}: no console errors`, errors.length === 0, errors.join(' | '));
+    check(`${tag}: no outside requests`, outside.length === 0, outside.join(' '));
+    await ctx.close();
+  }
 }
 
 // The reply form's foot at 360 and 390 px in the longer languages: Post
@@ -715,6 +969,145 @@ for (const theme of ['dark', 'light']) {
     check(`${tag}: no outside requests`, outside.length === 0, outside.join(' '));
     await ctx.close();
   }
+}
+
+// ------------------------- review fixes: pastas panel, save prompt, log dialog
+// The panel is placed again when its list changes height (a chip): opened
+// above its button, it stays next to it and inside the window. The chips
+// wrap on a phone-width sheet (Yours reachable with a mouse) and nothing
+// clips their focus ring. The Save as pasta prompt says how much it saves.
+{
+  const { ctx, page, outside, errors } = await open(panesHash([{ kind: 'thread', board: 'g', no: 500010 }]));
+  await page.waitForSelector('[data-pane="0"] .thread .post');
+  await settle(page, 300);
+  await focusPane(page);
+  await page.keyboard.press('r');
+  await page.waitForSelector('.composer [data-key="compose-pastas"]');
+  await settle(page, 300);
+  const placed = () =>
+    page.evaluate(() => {
+      const p = document.querySelector('.pastas').getBoundingClientRect();
+      const a = document.querySelector('[data-key="compose-pastas"]').getBoundingClientRect();
+      return { top: p.top, bottom: p.bottom, aTop: a.top, aBottom: a.bottom, H: innerHeight };
+    });
+  const nextTo = (r) => (r.bottom <= r.aTop + 0.5 ? r.aTop - r.bottom <= 16 : r.top >= r.aBottom - 0.5 ? r.top - r.aBottom <= 16 : false);
+  await page.click('[data-key="compose-pastas"]');
+  await page.waitForSelector('.pastas');
+  await settle(page, 250);
+  await page.click('[data-key="pastas-tag-own"]');
+  await settle(page, 200);
+  let r = await placed();
+  check('pastas place: after a shorter chip it stays next to its button', nextTo(r) && r.top >= 0 && r.bottom <= r.H + 0.5, JSON.stringify(r));
+  await page.keyboard.press('Escape');
+  await settle(page, 200);
+  await page.click('[data-key="compose-pastas"]');
+  await page.waitForSelector('.pastas');
+  await settle(page, 250);
+  await page.click('[data-key="pastas-tag-all"]');
+  await settle(page, 200);
+  r = await placed();
+  check('pastas place: after a taller chip it stays inside the window', r.top >= 0 && r.bottom <= r.H + 0.5 && nextTo(r), JSON.stringify(r));
+  const ring = await page.evaluate(() => {
+    const c = document.querySelector('.pastas__chips');
+    const chip = c.querySelector('.pastas__chip').getBoundingClientRect();
+    const cs = getComputedStyle(c);
+    return { overflow: cs.overflowX + '/' + cs.overflowY, room: chip.top - c.getBoundingClientRect().top };
+  });
+  check('pastas chips: the focus ring is not clipped', ring.overflow === 'visible/visible' || ring.room >= 3, JSON.stringify(ring));
+  await page.keyboard.press('Escape');
+  await settle(page, 200);
+  // the Save as pasta prompt: how much it saves, the box scrolls
+  await page.locator('[data-key="compose-com"]').fill('>be me\n' + 'a long line that goes on and on '.repeat(5) + '\n>third\n>fourth\n>fifth\n>sixth');
+  await page.click('[data-key="compose-save-pasta"]');
+  await page.waitForSelector('dialog.pasta-save');
+  const size = (await page.textContent('[data-key="pasta-save-size"]')) || '';
+  check('save prompt: says how many lines and characters it saves', /^6 lines, \d+ characters$/.test(size), size);
+  const box = await page.evaluate(() => {
+    const t = document.querySelector('[data-key="pasta-save-text"]');
+    return { scrolls: getComputedStyle(t).overflowY === 'auto', focusable: t.tabIndex === 0, label: Boolean(document.getElementById(t.getAttribute('aria-labelledby'))) };
+  });
+  check('save prompt: the text box scrolls, takes the focus and is labelled', box.scrolls && box.focusable && box.label, JSON.stringify(box));
+  await page.keyboard.press('Escape');
+  check('no console errors (place, prompt)', errors.length === 0, errors.join(' | '));
+  check('no outside requests (place, prompt)', outside.length === 0, outside.join(' '));
+  await ctx.close();
+}
+
+for (const theme of ['dark', 'light']) {
+  for (const width of [360, 390]) {
+    const tag = `review ${width} ${theme}`;
+    const { ctx, page, outside, errors } = await open(panesHash([{ kind: 'thread', board: 'g', no: 500010 }]), { viewport: { width, height: 800 }, settings: { ...SETTINGS, theme } });
+    await page.waitForSelector('[data-pane="0"] .thread .post');
+    await settle(page, 300);
+    await page.click('[data-key="thread-reply"]', { button: 'right' });
+    await page.waitForSelector('.pastas');
+    await settle(page, 300);
+    const chips = await page.evaluate(() => {
+      const panel = document.querySelector('.pastas').getBoundingClientRect();
+      const own = document.querySelector('[data-key="pastas-tag-own"]').getBoundingClientRect();
+      const hit = document.elementFromPoint(own.left + own.width / 2, own.top + own.height / 2);
+      const all = [...document.querySelectorAll('.pastas__chip')].every((c) => {
+        const b = c.getBoundingClientRect();
+        return b.left >= panel.left - 0.5 && b.right <= panel.right + 0.5;
+      });
+      return { all, hit: hit?.dataset?.key || hit?.closest?.('[data-key]')?.dataset?.key || '' };
+    });
+    check(`${tag}: every chip is in the panel, Yours under the mouse`, chips.all && chips.hit === 'pastas-tag-own', JSON.stringify(chips));
+    check(`${tag}: no page scroll sideways (chips)`, !(await hScroll(page)));
+    if (OUT) await page.screenshot({ path: `${OUT}/review-chips-${width}-${theme}.png` });
+    await page.keyboard.press('Escape');
+    await ctx.close();
+
+    // the log dialog: its actions in the window, an empty filter says so
+    const s = await open(panesHash([{ kind: 'thread', board: 'g', no: 500010 }]), { viewport: { width, height: 800 }, settings: { ...SETTINGS, theme } });
+    await s.page.waitForSelector('[data-pane="0"] .thread .post');
+    if (await s.page.locator('[data-key="rail-toggle"]').isVisible()) {
+      await s.page.click('[data-key="rail-toggle"]');
+      await settle(s.page, 250);
+    }
+    await s.page.click('[data-key="settings"]');
+    await s.page.waitForSelector('[data-key="diag-show"]');
+    await s.page.click('[data-key="diag-show"]');
+    await s.page.waitForSelector('dialog.log-dialog .log-view');
+    await settle(s.page, 400);
+    const acts = await s.page.evaluate(() => {
+      const a = document.querySelector('.log-dialog__actions').getBoundingClientRect();
+      const body = document.querySelector('.log-dialog__body').getBoundingClientRect();
+      const inside = [...document.querySelectorAll('.log-filters .input')].every((e) => e.getBoundingClientRect().right <= body.right + 0.5);
+      return { bottom: inside ? a.bottom : Infinity, H: innerHeight, inside };
+    });
+    check(`${tag}: the log dialog's actions are in the window`, acts.bottom <= acts.H + 0.5, JSON.stringify(acts));
+    await s.page.locator('[data-key="log-search"]').fill('zqxnothingmatches');
+    await settle(s.page, 400);
+    const empty = await s.page.evaluate(() => ({ view: document.querySelector('[data-key="log-view"]').textContent, live: document.querySelector('[data-key="log-count"]').getAttribute('aria-live') }));
+    check(`${tag}: no match says so, and the count is announced`, empty.view === 'No lines match the filters.' && empty.live === 'polite', JSON.stringify(empty));
+    check(`${tag}: no page scroll sideways (log dialog)`, !(await hScroll(s.page)));
+    if (OUT) await s.page.screenshot({ path: `${OUT}/review-logdlg-${width}-${theme}.png` });
+    check(`${tag}: no console errors`, errors.length === 0 && s.errors.length === 0, [...errors, ...s.errors].join(' | '));
+    check(`${tag}: no outside requests`, outside.length === 0 && s.outside.length === 0, [...outside, ...s.outside].join(' '));
+    await s.ctx.close();
+  }
+}
+
+// Another window's Detailed logs switch alone redraws nothing here
+// (shell.js applySettings, log-model.js onlyDiagnosticsDiffer).
+{
+  const { ctx, page, errors } = await open(panesHash([{ kind: 'thread', board: 'g', no: 500010 }, { kind: 'catalog', board: 'g' }]));
+  await page.waitForSelector('[data-pane="0"] .thread .post');
+  await settle(page, 600);
+  await page.evaluate(() => (window.__rb.full = 0));
+  for (const on of [true, false, true]) {
+    await page.evaluate((v) => {
+      const s = JSON.parse(localStorage.getItem('clovereye.settings') || '{}');
+      const next = JSON.stringify({ ...s, diagnostics: { detailed: v } });
+      window.dispatchEvent(new StorageEvent('storage', { key: 'clovereye.settings', newValue: next, oldValue: JSON.stringify(s) }));
+    }, on);
+    await settle(page, 200);
+  }
+  const full = await page.evaluate(() => window.__rb.full);
+  check('Detailed logs from another window: no whole-window redraw', full === 0, String(full));
+  check('no console errors (detail switch)', errors.length === 0, errors.join(' | '));
+  await ctx.close();
 }
 
 await browser.close();
